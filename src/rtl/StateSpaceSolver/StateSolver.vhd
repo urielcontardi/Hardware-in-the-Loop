@@ -41,17 +41,16 @@ Entity StateSolver is
     );
     Port (
         sysclk      : in std_logic;
-        reset_n     : in std_logic;
         -- Interface
         valid_i     : in std_logic;
-        busy_o      : out std_logic
+        busy_o      : out std_logic;
         -- Inputs
-        a_vec_i     : in vector_fp_t(0 to N_SS - 1);
-        x_vec_i     : in vector_fp_t(0 to N_SS - 1);
-        b_vec_i     : in vector_fp_t(0 to N_IN - 1);
-        u_vec_i     : in vector_fp_t(0 to N_IN - 1);
+        AVec_i      : in vector_fp_t(0 to N_SS - 1);
+        XVec_i      : in vector_fp_t(0 to N_SS - 1);
+        BVec_i      : in vector_fp_t(0 to N_IN - 1);
+        UVec_i      : in vector_fp_t(0 to N_IN - 1);
         -- State Result
-        state_o    : out fixed_point_data_t;
+        XdVec_o     : out fixed_point_data_t
     );
 End entity;
 
@@ -65,15 +64,14 @@ Architecture rtl of StateSolver is
     constant MULTIPLIER_DELAY   : integer := 6;
 
     -- Sequencer
-    signal index                : integer range 0 to TOTAL_OPERATIONS;
-    signal data_valid           : std_logic := '0';
+    signal index                : integer range 0 to TOTAL_OPERATIONS := 0;
 
     -- Pipeline
-    signal pipeline             : std_logic_vector(MULTIPLIER_DELAY - 1 downto 0);
+    signal pipeline             : std_logic_vector(MULTIPLIER_DELAY - 1 downto 0) := (others => '0');
 
     -- Multiplier Signals
     signal aVector, bVector     : vector_fp_t(0 to N_SS + N_IN - 1);
-    signal aFactor, bFactor   : fixed_point_data_t;
+    signal aFactor, bFactor     : fixed_point_data_t;
     signal product              : std_logic_vector(63 downto 0);
     
     -- Accumulator
@@ -97,7 +95,7 @@ Begin
     -- Assign Output
     --------------------------------------------------------------------------
     busy_o      <= '1' when pipeline /= (pipeline'range => '0') else '0';
-    result_o    <= result(result_o'range);
+    XdVec_o    <= result(XdVec_o'range);
 
     --------------------------------------------------------------------------
     -- Multiplier
@@ -114,15 +112,16 @@ Begin
     aFactor    <= aVector(index);
     bFactor    <= bVector(index);
 
-    -- Concatenate a_vec_i with b_vec_i and x_vec_i with u_vec_i to facilitate
+    -- Concatenate AVec_i with BVec_i and XVec_i with UVec_i to facilitate
     -- calculations. This allows for more efficient code
-    aVector <= a_vec_i & b_vec_i;
-    bVector <= x_vec_i & u_vec_i;
+    aVector <= AVec_i & BVec_i;
+    bVector <= XVec_i & UVec_i;
     
     --------------------------------------------------------------------------
     -- Sequencer
     --------------------------------------------------------------------------
     process(sysclk)
+        variable data_valid           : std_logic := '0';
     begin
         if rising_edge(sysclk) then
 
@@ -131,13 +130,13 @@ Begin
                 -- Responsible for feeding the multiplier and iterating over all the data 
                 -- that needs to be multiplied
                 --------------------------------------------------------------------------
-                data_valid <= '0';
+                data_valid := '0';
                 if index < TOTAL_OPERATIONS - 1 then
                     index <= index + 1;
-                    data_valid <= '1';
-                elsif init_i = '1' then
+                    data_valid := '1';
+                elsif valid_i = '1' then
                     index <= 0;
-                    data_valid <= '1';
+                    data_valid := '1';
                 end if;
 
                 --------------------------------------------------------------------------
@@ -152,7 +151,7 @@ Begin
                 -- The multiplier will have valid data after the delay of MULTIPLIER_DELAY.
                 -- Therefore, each term is added to the previously multiplied.
                 --------------------------------------------------------------------------
-                if init_i = '1' then
+                if valid_i = '1' then
                     result <= (others => '0');
                 elsif pipeline(pipeline'left) = '1' then
                     result <= std_logic_vector(signed(result) + signed(product));
