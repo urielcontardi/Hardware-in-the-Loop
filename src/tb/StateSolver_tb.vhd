@@ -52,22 +52,26 @@ Architecture behavior of StateSolver_tb is
     --------------------------------------------------------------------------
     -- Factors
     --------------------------------------------------------------------------
-    constant FACTORS       : vector_fp_t(0 to N_SS + N_IN - 1) := (
-        x"00000002", x"00000003", x"00000004", x"00000005", x"00000006",
-        x"00000007" , x"00000008" 
+    constant VECTOR1      : vector_fp_t(0 to N_SS - 1) := (
+        x"00000002", x"00000003", x"00000004", x"00000005", x"00000006"
+    );
+
+    constant VECTOR2      : vector_fp_t(0 to N_IN - 1) := (
+        x"00000008", x"00000009"
     );
 
     --------------------------------------------------------------------------
     -- UUT ports
     --------------------------------------------------------------------------
-    -- Inputs
-    signal sysclk  : std_logic := '0';
-    signal reset_n : std_logic := '0';
-    signal init_i  : std_logic := '0';
-    signal a_vec_i : vector_fp_t(0 to N_SS + N_IN - 1) := FACTORS;
-    signal b_vec_i : vector_fp_t(0 to N_SS + N_IN - 1) := FACTORS;
-    signal result_o : fixed_point_data_t;
-    signal busy_o  : std_logic;
+    signal sysclk       : std_logic := '0';
+    signal reset_n      : std_logic := '0';
+    signal valid_i      : std_logic := '0';
+    signal busy_o       : std_logic;
+    signal AVec_i      : vector_fp_t(0 to N_SS - 1) := VECTOR1;
+    signal XVec_i      : vector_fp_t(0 to N_SS - 1) := VECTOR1;
+    signal BVec_i      : vector_fp_t(0 to N_IN - 1) := VECTOR2;
+    signal UVec_i      : vector_fp_t(0 to N_IN - 1) := VECTOR2;
+    signal XdVec_o     : fixed_point_data_t;
 
 Begin
 
@@ -86,18 +90,19 @@ Begin
     )
     Port map(
         sysclk  => sysclk,
-        reset_n => reset_n,
-        init_i  => init_i, 
-        a_vec_i => a_vec_i,
-        b_vec_i => b_vec_i,
-        result_o => result_o,
-        busy_o  => busy_o 
+        valid_i => valid_i,
+        busy_o  => busy_o,
+        AVec_i  => AVec_i,
+        XVec_i  => XVec_i,
+        BVec_i  => BVec_i,
+        UVec_i  => UVec_i,
+        XdVec_o => XdVec_o
     );
 
     --------------------------------------------------------------------------
     -- Stimulus
     --------------------------------------------------------------------------
-    stimulus: process
+    Stimulus: process
 
         procedure  tickSignal (signal tick : out std_logic ) is
         begin
@@ -106,7 +111,7 @@ Begin
             tick <= '0';
         end procedure;
 
-    begin
+    Begin
         wait for CLK_PERIOD * 5;
         wait until rising_edge(sysclk);
         reset_n <= '1';
@@ -115,9 +120,9 @@ Begin
         --------------------------------------------------------------------------
         -- Stimulus
         --------------------------------------------------------------------------
-        tickSignal(init_i);
+        tickSignal(valid_i);
         wait for CLK_PERIOD *100;
 
-    end process stimulus;
+    End process;
 
 End architecture;

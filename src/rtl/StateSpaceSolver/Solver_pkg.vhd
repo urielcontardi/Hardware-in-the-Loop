@@ -40,7 +40,7 @@ Package Solver_pkg is
     constant FP_TOTAL_BITS  : integer := M_BITS + N_BITS;
 
     subtype fixed_point_data_t is std_logic_vector(FP_TOTAL_BITS - 1 downto 0);
-    type matrix_fp_t is array(natural range <>, natural range <>) of fixed_point_data_t;
     type vector_fp_t is array (natural range <>) of fixed_point_data_t;
+    type matrix_fp_t is array(natural range <>, natural range <>) of fixed_point_data_t;
 
 End package;
