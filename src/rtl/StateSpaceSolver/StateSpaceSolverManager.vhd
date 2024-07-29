@@ -1,0 +1,21 @@
+--! \file		StateSpaceSolverManager.vhd
+--!
+--! \brief		
+--!
+--! \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
+--! \date       21-07-2024
+--!
+--! \version    1.0
+--!
+--! \copyright	Copyright (c) 2024 - All Rights reserved.
+--!
+--! \note		Target devices : No specific target
+--! \note		Tool versions  : No specific tool
+--! \note		Dependencies   : No specific dependencies
+--!
+--! \ingroup	None
+--! \warning	None
+--!
+--! \note		Revisions:
+--!				- 1.0	21-07-2024	<urielcontardi@hotmail.com>
+--!				First revision.
