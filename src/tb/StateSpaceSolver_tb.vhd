@@ -53,12 +53,24 @@ Architecture behavior of StateSpaceSolver_tb is
     --------------------------------------------------------------------------
     -- Factors
     --------------------------------------------------------------------------
-    constant VECTOR1      : vector_fp_t(0 to N_SS - 1) := (
-        x"00000002", x"00000003", x"00000004", x"00000005", x"00000006"
+    constant UVEC      : vector_fp_t(0 to N_IN - 1) := (
+        x"00000002", x"00000003"
     );
 
-    constant VECTOR2      : vector_fp_t(0 to N_IN - 1) := (
-        x"00000008", x"00000009"
+    constant AMATRIX : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := (
+    (x"00000001", x"00000002", x"00000003", x"00000004", x"00000005"),
+    (x"00000010", x"00000011", x"00000012", x"00000013", x"00000014"),
+    (x"00000020", x"00000021", x"00000022", x"00000023", x"00000024"),
+    (x"00000030", x"00000031", x"00000032", x"00000033", x"00000034"),
+    (x"00000040", x"00000041", x"00000042", x"00000043", x"00000044") 
+    );
+
+    constant BMATRIX : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := (
+    (x"00000100", x"00000200"),
+    (x"00001000", x"00001100"),
+    (x"00002000", x"00002100"),
+    (x"00003000", x"00003100"),
+    (x"00004000", x"00004100") 
     );
 
     --------------------------------------------------------------------------
@@ -67,9 +79,9 @@ Architecture behavior of StateSpaceSolver_tb is
     signal sysclk       : std_logic := '0';
     signal start_i      : std_logic := '0';
     signal busy_o       : std_logic;
-    signal UVec_i       : vector_fp_t(0 to N_IN - 1);
-    signal AMatrix_i    : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1);
-    signal BMatrix_i    : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1);
+    signal UVec_i       : vector_fp_t(0 to N_IN - 1) := UVEC;
+    signal AMatrix_i    : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := AMATRIX;
+    signal BMatrix_i    : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := BMATRIX;
     signal XVec_o       : vector_fp_t(0 to N_SS - 1);
 
 Begin

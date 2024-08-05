@@ -1,11 +1,11 @@
 
 { 
-    crc :  4566532619247369216  , 
+    crc :  3000667576341457550  , 
     ccp_crc :  0  , 
-    cmdline : " --incr --debug typical --relax --mt 2 -L xil_defaultlib -L xbip_utils_v3_0_10 -L xbip_pipe_v3_0_6 -L xbip_bram18k_v3_0_6 -L mult_gen_v12_0_17 -L secureip -L xpm --snapshot StateSolver_tb_behav xil_defaultlib.StateSolver_tb" , 
-    buildDate : "Oct 19 2021" , 
-    buildTime : "03:16:22" , 
-    linkCmd : "D:\\Xilinx\\Vivado\\2021.2\\data\\..\\tps\\mingw\\6.2.0\\win64.o\\nt\\bin\\gcc.exe -Wa,-W  -O -Wl,--stack,104857600 -o \"xsim.dir/StateSolver_tb_behav/xsimk.exe\"   \"xsim.dir/StateSolver_tb_behav/obj/xsim_0.win64.obj\" \"xsim.dir/StateSolver_tb_behav/obj/xsim_1.win64.obj\" \"xsim.dir/StateSolver_tb_behav/obj/xsim_2.win64.obj\" \"xsim.dir/StateSolver_tb_behav/obj/xsim_3.win64.obj\" -L\"D:\\Xilinx\\Vivado\\2021.2\\lib\\win64.o\" -lrdi_simulator_kernel   -lrdi_simbridge_kernel" , 
+    cmdline : " --incr --debug typical --relax --mt 8 -L xil_defaultlib -L xbip_utils_v3_0_10 -L xbip_pipe_v3_0_6 -L xbip_bram18k_v3_0_6 -L mult_gen_v12_0_17 -L secureip -L xpm --snapshot StateSolver_tb_behav xil_defaultlib.StateSolver_tb" , 
+    buildDate : "May 22 2024" , 
+    buildTime : "18:54:44" , 
+    linkCmd : "/usr/bin/gcc -Wa,-W  -O -fPIC  -m64  -Wl,--no-as-needed  -Wl,--unresolved-symbols=ignore-all  -o \"xsim.dir/StateSolver_tb_behav/xsimk\"   \"xsim.dir/StateSolver_tb_behav/obj/xsim_0.lnx64.o\" \"xsim.dir/StateSolver_tb_behav/obj/xsim_1.lnx64.o\" \"xsim.dir/StateSolver_tb_behav/obj/xsim_2.lnx64.o\" \"xsim.dir/StateSolver_tb_behav/obj/xsim_3.lnx64.o\" -L\"/opt/Xilinx/Vivado/2024.1/lib/lnx64.o\" -lrdi_simulator_kernel    -L/opt/Xilinx/Vivado/2024.1/lib/lnx64.o/../../tps/lnx64/gcc-9.3.0/bin/../lib64 -Wl,--disable-new-dtags -Wl,-rpath=/opt/Xilinx/Vivado/2024.1/lib/lnx64.o/../../tps/lnx64/gcc-9.3.0/bin/../lib64 -lrdi_simbridge_kernel" , 
     aggregate_nets : 
     [ 
     ] 

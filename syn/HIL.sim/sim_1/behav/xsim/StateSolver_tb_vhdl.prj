@@ -1,9 +1,0 @@
-# compile vhdl design source files
-vhdl xil_defaultlib  \
-"../../../../HIL.gen/sources_1/ip/StateSolverMultiplier/sim/StateSolverMultiplier.vhd" \
-"../../../../../src/rtl/StateSpaceSolver/Solver_pkg.vhd" \
-"../../../../../src/rtl/StateSpaceSolver/StateSolver.vhd" \
-"../../../../../src/tb/StateSolver_tb.vhd" \
-
-# Do not sort compile order
-nosort
