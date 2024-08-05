@@ -1,0 +1,4 @@
+vhdl xil_defaultlib  \
+"../../../../HIL.gen/sources_1/ip/StateSolverMultiplier/sim/StateSolverMultiplier.vhd" \
+
+nosort

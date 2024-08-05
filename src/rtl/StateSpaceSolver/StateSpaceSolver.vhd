@@ -64,15 +64,23 @@ End entity;
 --------------------------------------------------------------------------
 Architecture rtl of StateSpaceSolver is
     
+    -- Constant
+    constant RESET_DELAY_CYCLES : integer := 50;
+    
     -- State Space Vector
     type AVec_t is array (0 to N_SS - 1) of vector_fp_t(0 to N_SS - 1);
     type BVec_t is array (0 to N_SS - 1) of vector_fp_t(0 to N_IN - 1);
 
+    signal XdVec        : vector_fp_t(0 to N_SS - 1) := (others => (others => '0')); -- Differential state vector
     signal AVec         : AVec_t;
+    signal XVec         : vector_fp_t(0 to N_SS - 1) := (others => (others => '0')); -- State Vector
     signal BVec         : BVec_t;
-    signal XdVec        : vector_fp_t(0 to N_SS - 1); -- Differential state vector
-    signal XVec         : vector_fp_t(0 to N_SS - 1); -- State Vector
+    signal UVec         : vector_fp_t(0 to N_IN - 1) := (others => (others => '0'));
+
+    -- Control Signals
+    signal startCalc    : std_logic := '0';
     signal busyVec      : std_logic_vector(N_SS - 1 downto 0);
+    signal busy         : std_logic;
 
     --------------------------------------------------------------------------
     -- Functions
@@ -97,7 +105,8 @@ Begin
     --------------------------------------------------------------------------
     -- Assign Output
     --------------------------------------------------------------------------
-    busy_o <= '1' when busyVec /= (busyVec'range => '0') else '0';
+    busy_o <= busy;
+    XVec_o <= XdVec;
 
     --------------------------------------------------------------------------
     -- State Space Solver Instantiation
@@ -115,17 +124,42 @@ Begin
         Port map(
             sysclk      => sysclk,
             -- Interface
-            valid_i     => start_i,
+            valid_i     => startCalc,
             busy_o      => busyVec(aa),
             -- Inputs
             AVec_i     => AVec(aa),
             XVec_i     => XVec,
             BVec_i     => BVec(aa),
-            UVec_i     => UVec_i,
+            UVec_i     => UVec,
             -- State Result
             XdVec_o    => XdVec(aa)
         ); 
 
     End generate;
+
+    busy <= '1' when busyVec /= (busyVec'range => '0') else '0';
+
+    --------------------------------------------------------------------------
+    -- Control Process
+    --------------------------------------------------------------------------
+    StateDelay : process (sysclk)
+        variable reset_ctr  : integer := 0;
+    begin
+        if rising_edge(sysclk) then
+
+            if reset_ctr < RESET_DELAY_CYCLES then
+                reset_ctr := reset_ctr + 1;
+                startCalc <= '1';
+            elsif start_i = '1' AND busy = '0' then
+                UVec        <= UVec_i;
+                XVec        <= XdVec;
+                startCalc   <= '1';
+            else
+                startCalc <= '0';
+            end if;
+    
+        end if;
+    end process;
+    
 
 End architecture;

@@ -1,0 +1,21 @@
+# Ignore everything
+*
+
+# Keep everything bellow
+
+# Allows to include files in subdirectories without having to include every
+# parent folder as well.
+!*/
+
+# Project Files
+!/*.xpr
+!/*.xdc
+!/.gitignore
+
+# IPs
+!/HIL.srcs/sources_1/ip/**
+!/HIL.ip_user_files/**
+
+# Binaries
+!/*.bit
+!/*.bin
