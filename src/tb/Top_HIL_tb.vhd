@@ -2,12 +2,12 @@
 --!
 --! \brief		
 --!
---! \author		Uriel Abe Contardi (contardii@weg.net)
+--! \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
 --! \date       04-08-2024
 --!
 --! \version    1.0
 --!
---! \copyright	Copyright (c) 2024 WEG - All Rights reserved.
+--! \copyright	Copyright (c) 2024 - All Rights reserved.
 --!
 --! \note		Target devices : No specific target
 --! \note		Tool versions  : No specific tool
@@ -17,7 +17,7 @@
 --! \warning	None
 --!
 --! \note		Revisions:
---!				- 1.0	04-08-2024	<contardii@weg.net>
+--!				- 1.0	04-08-2024	<urielcontardi@hotmail.com>
 --!				First revision.
 --------------------------------------------------------------------------
 -- Default libraries
