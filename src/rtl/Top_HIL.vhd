@@ -2,23 +2,24 @@
 --!
 --! \brief		
 --!
---! \author		Uriel Abe Contardi (e-uriel@weg.net)
---! \date       16-04-2024
+--! \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
+--! \date       24-07-2025
 --!
 --! \version    1.0
 --!
---! \copyright	Copyright (c) 2022 WEG - All Rights reserved.
+--! \copyright	Copyright (c) 2025 - All Rights reserved.
 --!
 --! \note		Target devices : No specific target
 --! \note		Tool versions  : No specific tool
 --! \note		Dependencies   : No specific dependencies
 --!
---! \ingroup	WCW
+--! \ingroup	None
 --! \warning	None
 --!
 --! \note		Revisions:
---!				- 1.0	16-04-2024	<e-uriel@weg.net>
+--!				- 1.0	24-07-2025	<urielcontardi@hotmail.co>
 --!				First revision.
+
 --------------------------------------------------------------------------
 -- Default libraries
 --------------------------------------------------------------------------
