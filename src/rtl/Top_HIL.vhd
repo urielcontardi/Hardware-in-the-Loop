@@ -30,14 +30,14 @@ use ieee.numeric_std.all;
 --------------------------------------------------------------------------
 -- User packages
 --------------------------------------------------------------------------
-use work.Solver_pkg.all;
+use work.BilinearSolverPkg.all;
 
 --------------------------------------------------------------------------
 -- Entity declaration
 --------------------------------------------------------------------------
 Entity Top_HIL is
     Generic (
-        CLK_FREQUENCY          : integer   := 160e6; -- PLL IP
+        CLK_FREQUENCY          : integer   := 200e6;
         STATE_SPACE_FREQUENCY  : integer   := 10e6
     );
     Port (
@@ -71,26 +71,18 @@ Architecture rtl of Top_HIL is
     constant VDC_NEG_VALUE          : fixed_point_data_t := x"FD120000";
 
     --------------------------------------------------------------------------
-    -- LCL State Space Model
+    -- TIM Parameters
     --------------------------------------------------------------------------
-    constant N_SS_LCL : integer := 5;
-    constant N_IN_LCL : integer := 2;
-
-    constant AMATRIX : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := (
-    (x"00010000", x"00000000", x"00000000", x"FFFFFED6", x"00000000"),
-    (x"00000000", x"00010000", x"00000000", x"00000027", x"FFFFFFD9"),
-    (x"00000000", x"00000000", x"00010000", x"00000000", x"00000000"),
-    (x"000000DA", x"FFFFFF26", x"FFFFFF26", x"0000FFA9", x"00000057"),
-    (x"00000000", x"0000051F", x"00000000", x"0000020C", x"0000FDF4")
-    );
-
-    constant BMATRIX : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := (
-    (x"0000012A", x"00000000"),
-    (x"00000000", x"00000000"),
-    (x"00000000", x"00000000"),
-    (x"00000000", x"00000000"),
-    (x"00000000", x"00000000")
-    );
+    constant DATA_WIDTH          : natural := 42;  -- Data width for fixed-point representation
+    constant CLOCK_FREQUENCY     : natural := 200e6;        -- Clock frequency
+    constant DISCRETIZATION_STEP : real    := 100.0e-9;     -- Discretization step
+    constant param_rs            : real    := 0.0;          -- Stator resistance
+    constant param_rr            : real    := 0.2826;       -- Rotor resistance
+    constant param_ls            : real    := 3.1364e-3;    -- Stator inductance
+    constant param_lr            : real    := 6.3264e-3;    -- Rotor inductance
+    constant param_lm            : real    := 109.9442e-3;  -- Mutual inductance
+    constant param_j             : real    := 0.192;        -- Moment of inertia
+    constant param_poles         : real    := 2.0;           -- Number of poles
 
     --------------------------------------------------------------------------
     -- Signals
@@ -109,27 +101,7 @@ Begin
     --------------------------------------------------------------------------
     -- PLL 
     --------------------------------------------------------------------------
-    --PLL_Inst : work.HIL_PLL
     sysclk <= clk_i;
-
-    --------------------------------------------------------------------------
-    -- StateSpace Solver Sample Frequency
-    --------------------------------------------------------------------------
-    SampleFrequency : process (sysclk)
-        constant SAMPLE_FREQ_CTR    : integer := CLK_FREQUENCY/STATE_SPACE_FREQUENCY;
-        variable ctrSampleFreq      : integer := 0;
-    begin
-        if rising_edge(sysclk) then
-
-            if ctrSampleFreq < SAMPLE_FREQ_CTR then
-                ctrSampleFreq := ctrSampleFreq + 1;
-                sampleTick <= '0';
-            else
-                sampleTick <= '1';
-            end if;
-            
-        end if;
-    end process;
 
     --------------------------------------------------------------------------
     -- State Space Input 
@@ -155,25 +127,35 @@ Begin
     --------------------------------------------------------------------------
     -- State Space Solver
     --------------------------------------------------------------------------
-    StateSpacePhasesGen : for i in 0 to 2 generate
-        StateSpaceSolver_Inst : Entity work.StateSpaceSolver
-        Generic map(
-            N_SS    => N_SS_LCL,
-            N_IN    => N_IN_LCL
-        )
-        Port map(
-            sysclk      => sysclk,
-            -- Interface
-            start_i     => sampleTick,
-            busy_o      => open,
-            -- Vector Inputs
-            UVec_i      => UVec(i),
-            -- Coefficients
-            AMatrix_i   => AMATRIX,
-            BMatrix_i   => BMATRIX,
-            -- Vector Outputs 
-            XVec_o      => XVec(i)
-        ); 
-    End generate;
+    TIMSolver_Inst: Entity work.TIM_Solver
+    Generic map(
+        DATA_WIDTH          => DATA_WIDTH,          
+        CLOCK_FREQUENCY     => CLOCK_FREQUENCY,     
+        DISCRETIZATION_STEP => DISCRETIZATION_STEP, 
+        param_rs            => param_rs,            
+        param_rr            => param_rr,            
+        param_ls            => param_ls,            
+        param_lr            => param_lr,            
+        param_lm            => param_lm,            
+        param_j             => param_j,             
+        param_poles         => param_poles
+    )
+    Port map(
+        sysclk              : in std_logic;
+        reset_n             : in std_logic;
+        va_i                : in std_logic_vector(DATA_WIDTH-1 downto 0);
+        vb_i                : in std_logic_vector(DATA_WIDTH-1 downto 0);
+        vc_i                : in std_logic_vector(DATA_WIDTH-1 downto 0);
+        torque_load_i       : in std_logic_vector(DATA_WIDTH-1 downto 0);
+        ia_o                : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        ib_o                : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        ic_o                : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        flux_stator_alpha_o : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        flux_stator_beta_o  : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        torque_em_o         : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        speed_mech_o        : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        data_valid_o        : out std_logic;    -- Output data valid flag
+        ready_o             : out std_logic     -- Ready for new inputs
+    );
 
 End Architecture;
