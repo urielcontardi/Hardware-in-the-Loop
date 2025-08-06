@@ -1,4 +1,4 @@
---! \file		Top_HIL_tb.vhd
+--! \file		tb_TopHIL.vhd
 --!
 --! \brief		
 --!
@@ -36,10 +36,10 @@ use std.env.finish;
 --------------------------------------------------------------------------
 -- Entity declaration
 --------------------------------------------------------------------------
-Entity Top_HIL_tb is
+Entity tb_TopHIL is
 End entity;
 
-Architecture behavior of Top_HIL_tb is
+Architecture behavior of tb_TopHIL is
 
     --------------------------------------------------------------------------
     -- Clock definition
