@@ -1,0 +1,5 @@
+vhdl xil_defaultlib  \
+"../../../../HIL.gen/sources_1/ip/BilinearSolverUnit_DSP/sim/BilinearSolverUnit_DSP.vhd" \
+
+# Do not sort compile order
+nosort
