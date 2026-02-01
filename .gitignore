@@ -1,2 +1,9 @@
 .vscode
+
+# GHDL generated files
+*.cf
+*.ghw
+
+# Simulation outputs
+**/*.ghw
 *.code-workspace
