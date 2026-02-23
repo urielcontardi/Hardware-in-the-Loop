@@ -4,6 +4,14 @@
 *.cf
 *.ghw
 
-# Simulation outputs
-**/*.ghw
+# Build artifacts
+build/
 *.code-workspace
+
+# Python / cocotb
+__pycache__/
+*.pyc
+.venv/
+sim_build/
+results.xml
+verification/cocotb/results.xml
