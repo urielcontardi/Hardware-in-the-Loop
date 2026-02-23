@@ -7,16 +7,21 @@
 #   make sim-serial         - Run SerialManager testbench
 #   make sim-tim            - Run TIM Solver testbench
 #   make sim-top            - Run Top_HIL testbench
-#   make sim-all            - Run all testbenches
+#   make sim-all            - Run all VHDL testbenches
 #   make wave-serial        - Run SerialManager and open GTKWave
 #   make wave-tim           - Run TIM Solver and open GTKWave
 #   make wave-top           - Run Top_HIL and open GTKWave
 #   make compile            - Compile all sources (no sim)
+#   make cocotb             - Run all cocotb (Python) tests
+#   make cocotb TESTCASE=<name> - Run a single cocotb test
+#   make cocotb-waves       - Run cocotb tests + waveform dump
+#   make cocotb-setup       - Install cocotb Python dependencies
 #   make clean              - Remove all generated files
 #
 # Dependencies:
-#   - GHDL   (VHDL simulator)
+#   - GHDL   (VHDL simulator, with VPI support for cocotb)
 #   - GTKWave (waveform viewer, optional)
+#   - uv     (Python package manager, for cocotb tests)
 #
 
 # =============================================================================
@@ -242,6 +247,26 @@ sim-all: sim-serial sim-tim sim-top
 	@echo ""
 
 # =============================================================================
+# cocotb (Python) Testbenches
+# =============================================================================
+COCOTB_DIR := verification/cocotb
+TESTCASE   ?=
+
+.PHONY: cocotb cocotb-waves cocotb-setup cocotb-clean
+
+cocotb:
+	@$(MAKE) -C $(COCOTB_DIR) test TESTCASE=$(TESTCASE)
+
+cocotb-waves:
+	@$(MAKE) -C $(COCOTB_DIR) waves TESTCASE=$(TESTCASE)
+
+cocotb-setup:
+	@$(MAKE) -C $(COCOTB_DIR) setup
+
+cocotb-clean:
+	@$(MAKE) -C $(COCOTB_DIR) clean
+
+# =============================================================================
 # GTKWave targets
 # =============================================================================
 .PHONY: wave-serial wave-tim wave-top
@@ -262,7 +287,7 @@ wave-top: sim-top
 # Clean
 # =============================================================================
 .PHONY: clean
-clean:
+clean: cocotb-clean
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@rm -f *.cf *.o
@@ -275,25 +300,31 @@ clean:
 .PHONY: help
 help:
 	@echo ""
-	@echo "╔══════════════════════════════════════════════════════╗"
-	@echo "║         HIL Project — Makefile Targets              ║"
-	@echo "╠══════════════════════════════════════════════════════╣"
-	@echo "║                                                     ║"
-	@echo "║  Simulation:                                        ║"
-	@echo "║    make sim-serial    SerialManager testbench       ║"
-	@echo "║    make sim-tim       TIM Solver testbench          ║"
-	@echo "║    make sim-top       Top_HIL testbench             ║"
-	@echo "║    make sim-all       Run all testbenches           ║"
-	@echo "║                                                     ║"
-	@echo "║  Waveforms (GTKWave):                               ║"
-	@echo "║    make wave-serial   SerialManager + GTKWave       ║"
-	@echo "║    make wave-tim      TIM Solver + GTKWave          ║"
-	@echo "║    make wave-top      Top_HIL + GTKWave             ║"
-	@echo "║                                                     ║"
-	@echo "║  Build:                                             ║"
-	@echo "║    make compile       Analyze all VHDL sources      ║"
-	@echo "║    make clean         Remove all build artifacts    ║"
-	@echo "║    make help          Show this message             ║"
-	@echo "║                                                     ║"
-	@echo "╚══════════════════════════════════════════════════════╝"
+	@echo "╔══════════════════════════════════════════════════════════╗"
+	@echo "║           HIL Project — Makefile Targets                ║"
+	@echo "╠══════════════════════════════════════════════════════════╣"
+	@echo "║                                                         ║"
+	@echo "║  VHDL Simulation (GHDL):                                ║"
+	@echo "║    make sim-serial    SerialManager testbench           ║"
+	@echo "║    make sim-tim       TIM Solver testbench              ║"
+	@echo "║    make sim-top       Top_HIL testbench                 ║"
+	@echo "║    make sim-all       Run all VHDL testbenches          ║"
+	@echo "║                                                         ║"
+	@echo "║  Waveforms (GTKWave):                                   ║"
+	@echo "║    make wave-serial   SerialManager + GTKWave           ║"
+	@echo "║    make wave-tim      TIM Solver + GTKWave              ║"
+	@echo "║    make wave-top      Top_HIL + GTKWave                 ║"
+	@echo "║                                                         ║"
+	@echo "║  cocotb (Python) Tests:                                 ║"
+	@echo "║    make cocotb        Run all cocotb tests              ║"
+	@echo "║    make cocotb TESTCASE=<name>  Run a single test       ║"
+	@echo "║    make cocotb-waves  Run cocotb + waveform dump        ║"
+	@echo "║    make cocotb-setup  Install Python dependencies       ║"
+	@echo "║                                                         ║"
+	@echo "║  Build:                                                 ║"
+	@echo "║    make compile       Analyze all VHDL sources          ║"
+	@echo "║    make clean         Remove all build artifacts        ║"
+	@echo "║    make help          Show this message                 ║"
+	@echo "║                                                         ║"
+	@echo "╚══════════════════════════════════════════════════════════╝"
 	@echo ""
