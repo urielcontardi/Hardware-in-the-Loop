@@ -166,8 +166,8 @@ Architecture rtl of TIM_Solver is
         variable result : matrix_fp_t(matrix_real'range(1), matrix_real'range(2));
     begin
         for i in matrix_real'range(1) loop
-            for j in matrix_real'range(2) loop
-                result(i, j) := to_fp(matrix_real(i, j));
+            for col in matrix_real'range(2) loop
+                result(i, col) := to_fp(matrix_real(i, col));
             end loop;
         end loop;
         return result;
@@ -189,14 +189,14 @@ Architecture rtl of TIM_Solver is
         variable temp_unsigned : unsigned(FP_TOTAL_BITS - 1 downto 0);
     begin
         for i in matrix_int'range(1) loop
-            for j in matrix_int'range(2) loop
-                if matrix_int(i, j) < 0 then
+            for col in matrix_int'range(2) loop
+                if matrix_int(i, col) < 0 then
                     -- If negative, set MSB to '1' and all other bits to '0'
-                    result(i, j) := (FP_TOTAL_BITS - 1 => '1', others => '0');
+                    result(i, col) := (FP_TOTAL_BITS - 1 => '1', others => '0');
                 else
                     -- If positive, convert to unsigned representation
-                    temp_unsigned := to_unsigned(matrix_int(i, j), FP_TOTAL_BITS);
-                    result(i, j) := std_logic_vector(temp_unsigned);
+                    temp_unsigned := to_unsigned(matrix_int(i, col), FP_TOTAL_BITS);
+                    result(i, col) := std_logic_vector(temp_unsigned);
                 end if;
             end loop;
         end loop;
