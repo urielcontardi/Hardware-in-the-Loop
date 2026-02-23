@@ -26,6 +26,8 @@ def get_vhdl_sources() -> list[Path]:
     sources = [
         # Packages (must be first)
         common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
+        # DSP simulation stub (must be before BilinearSolverUnit)
+        common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
         # Primitives
         common / "fifo" / "src" / "fifo.vhd",
         common / "uart" / "src" / "UartTX.vhd",

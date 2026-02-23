@@ -63,6 +63,7 @@ SRC_PKGS := \
 
 # -- Primitives / leaf modules
 SRC_PRIMITIVES := \
+	$(BILSOLVER)/BilienarSolverUnit_DSP.vhd \
 	$(FIFO_SRC)/fifo.vhd \
 	$(UART_SRC)/UartTX.vhd \
 	$(UART_SRC)/UartRX.vhd \
