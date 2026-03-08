@@ -333,4 +333,18 @@ Begin
         end if;
     end process;
 
+    --------------------------------------------------------------------------
+    -- Output Assignments
+    -- Xvec_fp(0) = ψ_rα (rotor flux alpha)
+    -- Xvec_fp(1) = ψ_rβ (rotor flux beta)
+    -- Xvec_fp(2) = i_sα (stator current alpha)
+    -- Xvec_fp(3) = i_sβ (stator current beta)
+    -- Xvec_fp(4) = ω_m  (mechanical speed)
+    --------------------------------------------------------------------------
+    ialpha_o            <= Xvec_fp(2);
+    ibeta_o             <= Xvec_fp(3);
+    flux_stator_alpha_o <= Xvec_fp(0);
+    flux_stator_beta_o  <= Xvec_fp(1);
+    speed_mech_o        <= Xvec_fp(4);
+
 End architecture;
