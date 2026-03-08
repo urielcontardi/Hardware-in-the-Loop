@@ -12,8 +12,8 @@ Register Map:
     0x04  VC_MOTOR      (R)
     0x05  I_ALPHA       (R)
     0x06  I_BETA        (R)
-    0x07  FLUX_ALPHA    (R)
-    0x08  FLUX_BETA     (R)
+    0x07  FLUX_ALPHA    (R)   -- Rotor flux alpha
+    0x08  FLUX_BETA     (R)   -- Rotor flux beta
     0x09  SPEED_MECH    (R)
 """
 

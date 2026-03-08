@@ -76,8 +76,8 @@ Architecture behavior of tb_TIMSolver is
     signal torque_load_i         : std_logic_vector(DATA_WIDTH-1 downto 0) := to_fp(0.0);
     signal ialpha_o              : std_logic_vector(DATA_WIDTH-1 downto 0);
     signal ibeta_o               : std_logic_vector(DATA_WIDTH-1 downto 0);
-    signal flux_stator_alpha_o   : std_logic_vector(DATA_WIDTH-1 downto 0);
-    signal flux_stator_beta_o    : std_logic_vector(DATA_WIDTH-1 downto 0);
+    signal flux_rotor_alpha_o    : std_logic_vector(DATA_WIDTH-1 downto 0);
+    signal flux_rotor_beta_o     : std_logic_vector(DATA_WIDTH-1 downto 0);
     signal speed_mech_o          : std_logic_vector(DATA_WIDTH-1 downto 0);
     signal data_valid_o          : std_logic;    -- Output data valid flag
 
@@ -112,8 +112,8 @@ Begin
         torque_load_i       => torque_load_i,       
         ialpha_o            => ialpha_o,             
         ibeta_o             => ibeta_o,                
-        flux_stator_alpha_o => flux_stator_alpha_o, 
-        flux_stator_beta_o  => flux_stator_beta_o,       
+        flux_rotor_alpha_o  => flux_rotor_alpha_o, 
+        flux_rotor_beta_o   => flux_rotor_beta_o,       
         speed_mech_o        => speed_mech_o,        
         data_valid_o        => data_valid_o
     );
