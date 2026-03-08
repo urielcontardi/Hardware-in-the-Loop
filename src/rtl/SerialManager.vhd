@@ -26,8 +26,8 @@
 --!               Addr 0x04  VC_MOTOR      (R)    Motor voltage phase C
 --!               Addr 0x05  I_ALPHA       (R)    Stator current alpha
 --!               Addr 0x06  I_BETA        (R)    Stator current beta
---!               Addr 0x07  FLUX_ALPHA    (R)    Stator flux alpha
---!               Addr 0x08  FLUX_BETA     (R)    Stator flux beta
+--!               Addr 0x07  FLUX_ALPHA    (R)    Rotor flux alpha
+--!               Addr 0x08  FLUX_BETA     (R)    Rotor flux beta
 --!               Addr 0x09  SPEED_MECH    (R)    Mechanical speed
 --!
 --! \author     Uriel Abe Contardi (urielcontardi@hotmail.com)
@@ -82,8 +82,8 @@ Entity SerialManager is
         vc_motor_i      : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Motor voltage C
         ialpha_i        : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Stator current alpha
         ibeta_i         : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Stator current beta
-        flux_alpha_i    : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Stator flux alpha
-        flux_beta_i     : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Stator flux beta
+        flux_alpha_i    : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Rotor flux alpha
+        flux_beta_i     : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Rotor flux beta
         speed_mech_i    : in  std_logic_vector(DATA_WIDTH-1 downto 0);  --! Mechanical speed
         data_valid_i    : in  std_logic              --! Data valid strobe from TIM solver
     );

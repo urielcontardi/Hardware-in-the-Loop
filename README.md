@@ -156,8 +156,8 @@ from drivers.uart_driver import UartTxDriver, UartRxDriver
 | 0x04 | VC_MOTOR     | R      | Phase C voltage                |
 | 0x05 | I_ALPHA      | R      | Stator current α               |
 | 0x06 | I_BETA       | R      | Stator current β               |
-| 0x07 | FLUX_ALPHA   | R      | Stator flux α                  |
-| 0x08 | FLUX_BETA    | R      | Stator flux β                  |
+| 0x07 | FLUX_ALPHA   | R      | Rotor flux α                   |
+| 0x08 | FLUX_BETA    | R      | Rotor flux β                   |
 | 0x09 | SPEED_MECH   | R      | Mechanical speed               |
 
 **Protocol:**
