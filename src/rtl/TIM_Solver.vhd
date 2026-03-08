@@ -60,12 +60,12 @@ Entity TIM_Solver is
         -- Discretization parameters
         CLOCK_FREQUENCY     : natural := 200e6;        -- Clock frequency
         Ts                  : real    := 100.0e-9;     -- Discretization step
-        -- Motor parameters
-        rs            : real    := 0.0;          -- Stator resistance
-        rr            : real    := 0.2826;       -- Rotor resistance
-        ls            : real    := 3.1364e-3;    -- Stator inductance
-        lr            : real    := 6.3264e-3;    -- Rotor inductance
-        lm            : real    := 109.9442e-3;  -- Mutual inductance
+        -- Motor parameters (leakage inductances — total = leakage + mutual)
+        rs            : real    := 0.435;         -- Stator resistance
+        rr            : real    := 0.2826;        -- Rotor resistance
+        ls            : real    := 3.1364e-3;     -- Stator leakage inductance
+        lr            : real    := 6.3264e-3;     -- Rotor leakage inductance
+        lm            : real    := 109.9442e-3;   -- Mutual inductance
         j             : real    := 0.192;        -- Moment of inertia
         npp           : real    := 2.0           -- Number of pair poles
     );
@@ -130,13 +130,17 @@ Architecture rtl of TIM_Solver is
     type vector_t is array(natural range <>) of real;
     type matrix_Y_t is array(natural range <>, natural range <>) of integer;
 
-    constant K                 : real := 1.0/(lm*lm - ls*lr);
+    -- Total inductances (leakage + mutual), matching the C model
+    constant Ls_total           : real := ls + lm;
+    constant Lr_total           : real := lr + lm;
+
+    constant K                 : real := 1.0/(lm*lm - Ls_total*Lr_total);
     constant AMATRIX           : matrix_t(0 to N_SS - 1, 0 to N_SS - 1) := (
-        ( -Ts*rr/lr                 , -Ts*npp                    , Ts*lm*rr/lr                 , 0.0                          , 0.0),
-        ( Ts*npp                    , -Ts*rr/lr                  , 0.0                         , Ts*lm*rr/lr                  , 0.0),
-        ( -Ts*lm*rr*K/lr            , -Ts*lm*npp*K               , Ts*(lm*lm*rr*K/lr)+(lr*rs*K), 0.0                          , 0.0),
-        ( Ts*lm*npp*K               , -Ts*lm*rr*K/lr             , 0.0                         , Ts*(lm*lm*rr*K/lr)+(lr*rs*K) , 0.0),
-        ( Ts*(3.0*npp*lm)/(2.0*j*lr), Ts*(-3.0*npp*lm)/(2.0*j*lr), 0.0                         , 0.0                          , 0.0)
+        ( -Ts*rr/Lr_total                     , -Ts*npp                                , Ts*lm*rr/Lr_total                     , 0.0                                        , 0.0),
+        ( Ts*npp                              , -Ts*rr/Lr_total                        , 0.0                                   , Ts*lm*rr/Lr_total                          , 0.0),
+        ( -Ts*lm*rr*K/Lr_total                , -Ts*lm*npp*K                           , Ts*(lm*lm*rr*K/Lr_total)+(Lr_total*rs*K), 0.0                                        , 0.0),
+        ( Ts*lm*npp*K                         , -Ts*lm*rr*K/Lr_total                   , 0.0                                   , Ts*(lm*lm*rr*K/Lr_total)+(Lr_total*rs*K)    , 0.0),
+        ( Ts*(3.0*npp*lm)/(2.0*j*Lr_total)    , Ts*(-3.0*npp*lm)/(2.0*j*Lr_total)     , 0.0                                   , 0.0                                        , 0.0)
     );
 
     -- The Y matrix is only used to allow X states to be multiplied with each other
@@ -151,11 +155,11 @@ Architecture rtl of TIM_Solver is
     );
 
     constant BMATRIX           : matrix_t(0 to N_SS - 1, 0 to N_IN - 1) := (
-        ( 0.0     , 0.0     , 0.0),
-        ( 0.0     , 0.0     , 0.0),
-        ( -Ts*lr*K, 0.0     , 0.0),
-        ( 0.0     , -Ts*lr*K, 0.0),
-        ( 0.0     ,  0.0    , -Ts)
+        ( 0.0          , 0.0          , 0.0),
+        ( 0.0          , 0.0          , 0.0),
+        ( -Ts*Lr_total*K, 0.0          , 0.0),
+        ( 0.0          , -Ts*Lr_total*K, 0.0),
+        ( 0.0          ,  0.0          , -Ts/j)  -- TL/J, division at elaboration time
     );
 
     --------------------------------------------------------------------------
