@@ -67,7 +67,7 @@ waves:
 	@echo ""
 	$(UV) run python run.py --sim $(SIM) --waves $(TEST_ARGS)
 	@echo "Opening GTKWave..."
-	$(GTKWAVE) waves_top_hil.ghw &
+	$(GTKWAVE) sim_build/waves_top_hil.vcd &
 
 # ── Clean build artifacts ──────────────────────────────────────────────
 .PHONY: clean
