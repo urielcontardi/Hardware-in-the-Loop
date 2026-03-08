@@ -173,9 +173,9 @@ class SerialManagerDriver:
         TX Protocol: 'A' (0x41)
         RX Response: 0x55 | REG0_DATA | REG1_DATA | ... | REG9_DATA
         """
-        # Increase timeout for Read All: 10 regs x BYTES_PER_WORD bytes + header
+        # Increase timeout for Read All: generous per-byte timeout
         total_bytes = 1 + RegAddr.NUM_REGS * self.bytes_per_word
-        timeout_ns = self.uart_rx.bit_period_ns * 12 * total_bytes * 2
+        timeout_ns = self.uart_rx.bit_period_ns * 12 * total_bytes * 4
 
         await self.uart_tx.send_byte(self.rx_pin, self.clk, CMD_READ_ALL)
 
