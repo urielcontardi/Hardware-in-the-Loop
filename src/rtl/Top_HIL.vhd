@@ -75,10 +75,10 @@ Entity Top_HIL is
         DISCRETIZATION_STEP : real    := 100.0e-9;      -- Motor model discretization step (s)
         
         -- Motor parameters (default values - can be overridden)
-        MOTOR_RS            : real    := 0.0;           -- Stator resistance (Ohm)
+        MOTOR_RS            : real    := 0.435;         -- Stator resistance (Ohm)
         MOTOR_RR            : real    := 0.2826;        -- Rotor resistance (Ohm)
-        MOTOR_LS            : real    := 3.1364e-3;     -- Stator inductance (H)
-        MOTOR_LR            : real    := 6.3264e-3;     -- Rotor inductance (H)
+        MOTOR_LS            : real    := 3.1364e-3;     -- Stator leakage inductance (H)
+        MOTOR_LR            : real    := 6.3264e-3;     -- Rotor leakage inductance (H)
         MOTOR_LM            : real    := 109.9442e-3;   -- Mutual inductance (H)
         MOTOR_J             : real    := 0.192;         -- Moment of inertia (kg.m²)
         MOTOR_NPP           : real    := 2.0;           -- Number of pole pairs
