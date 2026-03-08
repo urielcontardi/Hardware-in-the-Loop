@@ -19,7 +19,7 @@
 --!
 --!             OUTPUTS:
 --!             - Three-phase currents (Ialpha, Ibeta)
---!             - Stator fluxes
+--!             - Rotor fluxes
 --!             - Mechanical speed
 --!
 --! \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
@@ -86,9 +86,9 @@ Entity TIM_Solver is
         ialpha_o            : out std_logic_vector(DATA_WIDTH-1 downto 0);
         ibeta_o             : out std_logic_vector(DATA_WIDTH-1 downto 0);
         
-        -- Stator fluxes (alpha-beta components)
-        flux_stator_alpha_o : out std_logic_vector(DATA_WIDTH-1 downto 0);
-        flux_stator_beta_o  : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        -- Rotor fluxes (alpha-beta components)
+        flux_rotor_alpha_o  : out std_logic_vector(DATA_WIDTH-1 downto 0);
+        flux_rotor_beta_o   : out std_logic_vector(DATA_WIDTH-1 downto 0);
         
         -- Mechanical outputs
         speed_mech_o        : out std_logic_vector(DATA_WIDTH-1 downto 0);
@@ -343,8 +343,8 @@ Begin
     --------------------------------------------------------------------------
     ialpha_o            <= Xvec_fp(2);
     ibeta_o             <= Xvec_fp(3);
-    flux_stator_alpha_o <= Xvec_fp(0);
-    flux_stator_beta_o  <= Xvec_fp(1);
+    flux_rotor_alpha_o  <= Xvec_fp(0);
+    flux_rotor_beta_o   <= Xvec_fp(1);
     speed_mech_o        <= Xvec_fp(4);
 
 End architecture;

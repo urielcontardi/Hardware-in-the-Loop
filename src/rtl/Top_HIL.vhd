@@ -174,8 +174,8 @@ Architecture rtl of Top_HIL is
     -- TIM Solver intermediate outputs (shared with SerialManager monitor)
     signal ialpha_int           : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
     signal ibeta_int            : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
-    signal flux_alpha_int       : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
-    signal flux_beta_int        : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
+    signal flux_rotor_alpha_int : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
+    signal flux_rotor_beta_int  : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
     signal speed_mech_int       : std_logic_vector(TIM_DATA_WIDTH-1 downto 0);
     signal data_valid_int       : std_logic;
 
@@ -211,8 +211,8 @@ Begin
         vc_motor_i      => vc_motor,
         ialpha_i        => ialpha_int,
         ibeta_i         => ibeta_int,
-        flux_alpha_i    => flux_alpha_int,
-        flux_beta_i     => flux_beta_int,
+        flux_alpha_i    => flux_rotor_alpha_int,
+        flux_beta_i     => flux_rotor_beta_int,
         speed_mech_i    => speed_mech_int,
         data_valid_i    => data_valid_int
     );
@@ -325,9 +325,9 @@ Begin
         -- Output currents (alpha-beta)
         ialpha_o            => ialpha_int,
         ibeta_o             => ibeta_int,
-        -- Stator fluxes
-        flux_stator_alpha_o => flux_alpha_int,
-        flux_stator_beta_o  => flux_beta_int,
+        -- Rotor fluxes
+        flux_rotor_alpha_o  => flux_rotor_alpha_int,
+        flux_rotor_beta_o   => flux_rotor_beta_int,
         -- Mechanical speed
         speed_mech_o        => speed_mech_int,
         -- Data valid
