@@ -110,14 +110,20 @@ def main():
     )
 
     # Run
+    test_args = ["--std=08"]
+    plusargs = []
+    if args.waves:
+        vcd_path = (tb_dir / args.build_dir / "waves_top_hil.vcd").resolve()
+        plusargs.append(f"--vcd={vcd_path}")
+
     runner.test(
         hdl_toplevel="top_hil",
         test_module="tests.test_top_hil",
         build_dir=args.build_dir,
         hdl_toplevel_lang="vhdl",
-        waves=args.waves,
         testcase=args.testcase if args.testcase else None,
-        test_args=["--std=08"],
+        test_args=test_args,
+        plusargs=plusargs,
         parameters=sim_parameters,
     )
 
