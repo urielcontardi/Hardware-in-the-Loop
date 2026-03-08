@@ -176,7 +176,7 @@ Begin
         G_CLK_FREQ      => CLK_FREQ,
         G_BAUD_RATE     => BAUD_RATE,
         G_DATA_WIDTH    => 8,
-        G_TX_FIFO_DEPTH => 4,
+        G_TX_FIFO_DEPTH => 7,
         G_RX_FIFO_DEPTH => 4
     )
     port map (
