@@ -25,11 +25,15 @@ Hardware-in-the-Loop/
 │       ├── drivers/            # Reusable UART & protocol drivers
 │       │   ├── uart_driver.py
 │       │   └── serial_manager_driver.py
+│       ├── models/             # Reference model wrappers (C/Python backends)
 │       ├── tests/              # cocotb test modules
 │       │   └── test_top_hil.py
 │       ├── run.py              # Python runner (cocotb_tools.runner)
 │       ├── Makefile            # Convenience targets
 │       └── pyproject.toml      # Dependencies (managed by uv)
+│
+│   └── reference_models/       # External reference models (git submodules)
+│       └── induction-motor-model/
 │
 ├── common/                     # Shared VHDL modules (git submodule)
 │   └── modules/
@@ -97,6 +101,12 @@ cd verification/cocotb
 uv run python run.py                            # All tests
 uv run python run.py -k test_pwm_enable         # Single test
 uv run python run.py --waves                    # With waveforms
+uv run python run.py --top tim_solver -k test_tim_solver_matches_reference_model
+```
+
+Or from project root:
+```bash
+make cocotb-tim-ref
 ```
 
 ### All Targets
@@ -114,6 +124,7 @@ make help               # Show all available targets
 | `test_read_all_registers`       | Dump all 10 registers with Read All cmd    |
 | `test_pwm_enable`               | Enable PWM and verify gate output activity |
 | `test_full_chain_motor_outputs` | Full chain: config → PWM → TIM → readback  |
+| `test_tim_solver_matches_reference_model` | TIM_Solver vs C reference-model comparison |
 
 ### Adding New Tests
 
