@@ -30,6 +30,7 @@ GTKWAVE  ?= gtkwave
 # ── Test configuration ──────────────────────────────────────────────────
 SIM      ?= ghdl
 TESTCASE ?=
+TOP      ?= top_hil
 
 # Build test args
 TEST_ARGS :=
@@ -55,7 +56,7 @@ test:
 	@echo "║     cocotb: Top_HIL Testbench ($(SIM))        ║"
 	@echo "╚══════════════════════════════════════════════╝"
 	@echo ""
-	$(UV) run python run.py --sim $(SIM) $(TEST_ARGS)
+	$(UV) run python run.py --sim $(SIM) --top $(TOP) $(TEST_ARGS)
 
 # ── Run tests with waveform dump ────────────────────────────────────────
 .PHONY: waves
@@ -65,9 +66,19 @@ waves:
 	@echo "║   cocotb: Top_HIL + Waveforms ($(SIM))        ║"
 	@echo "╚══════════════════════════════════════════════╝"
 	@echo ""
-	$(UV) run python run.py --sim $(SIM) --waves $(TEST_ARGS)
+	$(UV) run python run.py --sim $(SIM) --top $(TOP) --waves $(TEST_ARGS)
 	@echo "Opening GTKWave..."
 	$(GTKWAVE) sim_build/waves_top_hil.vcd &
+
+# ── TIM_Solver reference model comparison ───────────────────────────────
+.PHONY: tim-ref
+tim-ref:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ cocotb: TIM_Solver vs C Reference ($(SIM))    ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python run.py --sim $(SIM) --top tim_solver -k test_tim_solver_matches_reference_model
 
 # ── Clean build artifacts ──────────────────────────────────────────────
 .PHONY: clean
@@ -90,8 +101,9 @@ help:
 	@echo "║  Testing:                                               ║"
 	@echo "║    make              Run all tests                      ║"
 	@echo "║    make test         Run all tests                      ║"
-	@echo "║    make test TESTCASE=<name>  Run a single test         ║"
+	@echo "║    make test TOP=<top> TESTCASE=<name> Run one test     ║"
 	@echo "║    make waves        Run tests + open GTKWave           ║"
+	@echo "║    make tim-ref      TIM_Solver vs C reference model    ║"
 	@echo "║                                                         ║"
 	@echo "║  Setup:                                                 ║"
 	@echo "║    make setup        Install Python deps via uv         ║"
@@ -104,6 +116,7 @@ help:
 	@echo "║    test_read_all_registers                               ║"
 	@echo "║    test_pwm_enable                                       ║"
 	@echo "║    test_full_chain_motor_outputs                         ║"
+	@echo "║    test_tim_solver_matches_reference_model (TOP=tim_solver) ║"
 	@echo "║                                                         ║"
 	@echo "╚══════════════════════════════════════════════════════════╝"
 	@echo ""
