@@ -18,34 +18,52 @@ from pathlib import Path
 from cocotb_tools.runner import get_runner
 
 
-def get_vhdl_sources() -> list[Path]:
-    """Return all VHDL source files in dependency order."""
+def get_vhdl_sources(top: str) -> list[Path]:
+    """Return VHDL source files in dependency order for a selected top-level."""
     project_root = Path(__file__).resolve().parent.parent.parent
     common = project_root / "common" / "modules"
 
-    sources = [
-        # Packages (must be first)
-        common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
-        # DSP simulation stub (must be before BilinearSolverUnit)
-        common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
-        # Primitives
-        common / "fifo" / "src" / "fifo.vhd",
-        common / "uart" / "src" / "UartTX.vhd",
-        common / "uart" / "src" / "UartRX.vhd",
-        common / "edge_detector" / "src" / "EdgeDetector.vhd",
-        common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
-        # Mid-level
-        common / "uart" / "src" / "UartFull.vhd",
-        common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
-        common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
-        common / "npc_modulator" / "src" / "NPCModulator.vhd",
-        common / "npc_modulator" / "src" / "NPCGateDriver.vhd",
-        common / "npc_modulator" / "src" / "NPCManager.vhd",
-        # Project RTL
-        project_root / "src" / "rtl" / "SerialManager.vhd",
-        project_root / "src" / "rtl" / "TIM_Solver.vhd",
-        project_root / "src" / "rtl" / "Top_HIL.vhd",
-    ]
+    if top == "top_hil":
+        sources = [
+            # Packages (must be first)
+            common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
+            # DSP simulation stub (must be before BilinearSolverUnit)
+            common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
+            # Primitives
+            common / "fifo" / "src" / "fifo.vhd",
+            common / "uart" / "src" / "UartTX.vhd",
+            common / "uart" / "src" / "UartRX.vhd",
+            common / "edge_detector" / "src" / "EdgeDetector.vhd",
+            common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
+            # Mid-level
+            common / "uart" / "src" / "UartFull.vhd",
+            common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
+            common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
+            common / "npc_modulator" / "src" / "NPCModulator.vhd",
+            common / "npc_modulator" / "src" / "NPCGateDriver.vhd",
+            common / "npc_modulator" / "src" / "NPCManager.vhd",
+            # Project RTL
+            project_root / "src" / "rtl" / "SerialManager.vhd",
+            project_root / "src" / "rtl" / "TIM_Solver.vhd",
+            project_root / "src" / "rtl" / "Top_HIL.vhd",
+        ]
+    elif top == "tim_solver":
+        sources = [
+            # Packages (must be first)
+            common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
+            # DSP simulation stub (must be before BilinearSolverUnit)
+            common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
+            # Primitives required by TIM_Solver
+            common / "edge_detector" / "src" / "EdgeDetector.vhd",
+            common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
+            # Bilinear solver modules
+            common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
+            common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
+            # Project RTL under test
+            project_root / "src" / "rtl" / "TIM_Solver.vhd",
+        ]
+    else:
+        raise ValueError(f"Unsupported top-level: {top}")
 
     # Verify all sources exist
     for src in sources:
@@ -76,6 +94,13 @@ def main():
         help="Simulator to use (default: ghdl)",
     )
     parser.add_argument(
+        "--top",
+        type=str,
+        default="top_hil",
+        choices=["top_hil", "tim_solver"],
+        help="Top-level DUT to simulate (default: top_hil)",
+    )
+    parser.add_argument(
         "--build-dir",
         type=str,
         default="sim_build",
@@ -92,18 +117,26 @@ def main():
     runner = get_runner(args.sim)
 
     # VHDL sources
-    sources = get_vhdl_sources()
+    sources = get_vhdl_sources(args.top)
 
-    # Simulation parameters (generic overrides for faster UART simulation)
-    sim_parameters = {
-        "CLK_FREQUENCY": 100_000_000,   # 100 MHz
-        "BAUD_RATE": 1_000_000,         # 1 Mbaud (faster sim)
-    }
+    if args.top == "top_hil":
+        test_module = "tests.test_top_hil"
+        # Generic overrides for faster UART simulation
+        sim_parameters = {
+            "CLK_FREQUENCY": 100_000_000,   # 100 MHz
+            "BAUD_RATE": 1_000_000,         # 1 Mbaud
+        }
+    else:
+        test_module = "tests.test_tim_solver_reference"
+        # Keep Ts generic default; only reduce clock for faster run.
+        sim_parameters = {
+            "CLOCK_FREQUENCY": 100_000_000,
+        }
 
     # Build (analyze + elaborate)
     runner.build(
         sources=[str(s) for s in sources],
-        hdl_toplevel="top_hil",
+        hdl_toplevel=args.top,
         build_dir=args.build_dir,
         build_args=["--std=08"],
         always=True,
@@ -117,8 +150,8 @@ def main():
         plusargs.append(f"--vcd={vcd_path}")
 
     runner.test(
-        hdl_toplevel="top_hil",
-        test_module="tests.test_top_hil",
+        hdl_toplevel=args.top,
+        test_module=test_module,
         build_dir=args.build_dir,
         hdl_toplevel_lang="vhdl",
         testcase=args.testcase if args.testcase else None,

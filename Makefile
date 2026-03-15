@@ -252,14 +252,18 @@ sim-all: sim-serial sim-tim sim-top
 # =============================================================================
 COCOTB_DIR := verification/cocotb
 TESTCASE   ?=
+TOP        ?= top_hil
 
-.PHONY: cocotb cocotb-waves cocotb-setup cocotb-clean
+.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-setup cocotb-clean
 
 cocotb:
-	@$(MAKE) -C $(COCOTB_DIR) test TESTCASE=$(TESTCASE)
+	@$(MAKE) -C $(COCOTB_DIR) test TOP=$(TOP) TESTCASE=$(TESTCASE)
 
 cocotb-waves:
-	@$(MAKE) -C $(COCOTB_DIR) waves TESTCASE=$(TESTCASE)
+	@$(MAKE) -C $(COCOTB_DIR) waves TOP=$(TOP) TESTCASE=$(TESTCASE)
+
+cocotb-tim-ref:
+	@$(MAKE) -C $(COCOTB_DIR) tim-ref
 
 cocotb-setup:
 	@$(MAKE) -C $(COCOTB_DIR) setup
@@ -318,7 +322,8 @@ help:
 	@echo "║                                                         ║"
 	@echo "║  cocotb (Python) Tests:                                 ║"
 	@echo "║    make cocotb        Run all cocotb tests              ║"
-	@echo "║    make cocotb TESTCASE=<name>  Run a single test       ║"
+	@echo "║    make cocotb TOP=<top> TESTCASE=<name> Run one test   ║"
+	@echo "║    make cocotb-tim-ref  TIM_Solver vs C reference       ║"
 	@echo "║    make cocotb-waves  Run cocotb + waveform dump        ║"
 	@echo "║    make cocotb-setup  Install Python dependencies       ║"
 	@echo "║                                                         ║"
