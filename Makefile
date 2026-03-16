@@ -276,6 +276,15 @@ cocotb-clean:
 # =============================================================================
 # GUI (Tauri) Targets
 # =============================================================================
+# When invoked from a tty terminal that sits under an active graphical session
+# (e.g. VS Code remote, SSH with X forwarding, or a bare TTY in a GNOME session),
+# DISPLAY may be empty even though an X server is running.
+# _GUI_DISPLAY resolves in order:
+#   1. Whatever is already in DISPLAY (normal desktop terminal).
+#   2. The display extracted from `who` output, e.g. ":1" from "user :1 (...)".
+#   3. Hard-coded fallback ":1".
+_GUI_DISPLAY := $(or $(DISPLAY),$(shell who | grep -oP '\(:\d+\)' | tr -d '()' | head -1),:1)
+
 .PHONY: gui-setup gui-check gui-dev gui-build gui-build-linux
 
 gui-setup:
@@ -283,21 +292,21 @@ gui-setup:
 	@cd $(GUI_DIR) && npm install
 
 gui-check:
-	@echo "Checking GUI frontend and backend..."
-	@cd $(GUI_DIR) && npm run frontend:build
-	@cd $(GUI_DIR)/src-tauri && source "$$HOME/.cargo/env" && cargo check
+	@echo "Checking GUI frontend and backend (DISPLAY=$(_GUI_DISPLAY))..."
+	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run frontend:build
+	@cd $(GUI_DIR)/src-tauri && source "$$HOME/.cargo/env" && DISPLAY=$(_GUI_DISPLAY) cargo check
 
 gui-dev:
-	@echo "Starting GUI in development mode..."
-	@cd $(GUI_DIR) && npm run dev
+	@echo "Starting GUI in development mode (DISPLAY=$(_GUI_DISPLAY))..."
+	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run dev
 
 gui-build:
-	@echo "Building GUI (default tauri bundle targets)..."
-	@cd $(GUI_DIR) && npm run build
+	@echo "Building GUI (default tauri bundle targets, DISPLAY=$(_GUI_DISPLAY))..."
+	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run build
 
 gui-build-linux:
-	@echo "Building GUI Linux bundles (deb,rpm)..."
-	@cd $(GUI_DIR) && npm run build:linux
+	@echo "Building GUI Linux bundles (deb,rpm, DISPLAY=$(_GUI_DISPLAY))..."
+	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run build:linux
 
 # =============================================================================
 # GTKWave targets
