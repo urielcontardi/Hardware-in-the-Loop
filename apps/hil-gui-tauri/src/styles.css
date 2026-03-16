@@ -1,0 +1,164 @@
+:root {
+  --bg: #0f1722;
+  --bg-card: #182232;
+  --bg-card-2: #1f2d40;
+  --fg: #e9f0ff;
+  --muted: #a4b3cc;
+  --accent: #3ec7a6;
+  --accent-2: #efb05a;
+  --danger: #ef6f7a;
+  --grid: #2a3a52;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--fg);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(1400px 700px at 100% -10%, #1e3d57 0%, transparent 40%),
+    radial-gradient(1200px 800px at -20% 110%, #28364d 0%, transparent 35%),
+    linear-gradient(145deg, #101827 0%, #0b111b 65%, #070d16 100%);
+}
+
+#app {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+h1 {
+  margin: 0 0 14px;
+  font-size: 1.4rem;
+}
+
+.layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 320px 1fr;
+}
+
+.card {
+  background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-card-2) 100%);
+  border: 1px solid #324764;
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 10px 30px rgba(4, 9, 17, 0.35);
+}
+
+.controls {
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+label {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+input,
+select,
+button {
+  border-radius: 8px;
+  border: 1px solid #456083;
+  background: #0f1a2a;
+  color: var(--fg);
+  font-size: 0.9rem;
+  padding: 9px 10px;
+}
+
+button {
+  cursor: pointer;
+  background: linear-gradient(180deg, #15314e 0%, #10253a 100%);
+}
+
+button.primary {
+  border-color: #37a88e;
+  background: linear-gradient(180deg, #1a6d5c 0%, #164e43 100%);
+}
+
+button.danger {
+  border-color: #be5a66;
+  background: linear-gradient(180deg, #7a2f3a 0%, #622833 100%);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.status {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.status.ok {
+  color: var(--accent);
+}
+
+.plot-box {
+  display: grid;
+  gap: 10px;
+}
+
+#plot {
+  width: 100%;
+  min-height: 360px;
+  border: 1px solid #334a68;
+  border-radius: 10px;
+  background: #0b1220;
+  overflow: hidden;
+}
+
+.metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+}
+
+.metric {
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #324a66;
+  background: #111b2b;
+}
+
+.metric .name {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.metric .value {
+  font-family: "IBM Plex Mono", "Consolas", monospace;
+  font-size: 0.95rem;
+  margin-top: 4px;
+}
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  #plot {
+    min-height: 280px;
+  }
+}
