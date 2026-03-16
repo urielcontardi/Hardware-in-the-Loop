@@ -192,9 +192,11 @@ async def test_tim_solver_matches_reference_model(dut):
     dut._log.info(f"  NRMSE flux_beta   = {nrmse_flux_beta:.6f}")
     dut._log.info(f"  MAE speed_mech    = {mae_speed:.6f} rad/s")
 
-    # Conservative thresholds to account for fixed-point arithmetic differences.
-    assert nrmse_i_alpha < 0.30, f"i_alpha mismatch too high: {nrmse_i_alpha:.6f}"
-    assert nrmse_i_beta < 0.30, f"i_beta mismatch too high: {nrmse_i_beta:.6f}"
-    assert nrmse_flux_alpha < 0.35, f"flux_alpha mismatch too high: {nrmse_flux_alpha:.6f}"
-    assert nrmse_flux_beta < 0.35, f"flux_beta mismatch too high: {nrmse_flux_beta:.6f}"
+    # Thresholds account for Q14.28 fixed-point quantization but not implementation bugs.
+    # With Ts=100ns and the corrected A-matrix, expected NRMSE is well below 10% for
+    # all electrical states; speed stays near zero in the 50 µs window so MAE bound holds.
+    assert nrmse_i_alpha < 0.10, f"i_alpha mismatch too high: {nrmse_i_alpha:.6f}"
+    assert nrmse_i_beta < 0.10, f"i_beta mismatch too high: {nrmse_i_beta:.6f}"
+    assert nrmse_flux_alpha < 0.10, f"flux_alpha mismatch too high: {nrmse_flux_alpha:.6f}"
+    assert nrmse_flux_beta < 0.10, f"flux_beta mismatch too high: {nrmse_flux_beta:.6f}"
     assert mae_speed < 2.0, f"speed mismatch too high: {mae_speed:.6f} rad/s"
