@@ -5,6 +5,7 @@ description = "cocotb testbenches for Hardware-in-the-Loop (HIL) project"
 requires-python = ">=3.12"
 dependencies = [
     "cocotb>=2.0.1",
+    "plotly>=5.0",
 ]
 
 [tool.pytest.ini_options]
