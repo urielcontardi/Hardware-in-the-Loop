@@ -5,10 +5,10 @@ import uPlot from "uplot";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type TelemetrySample = {
-  t_ms: number;
-  regs: number[];
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+type TelemetrySample = { t_ms: number; regs: number[] };
 
 type StreamConfig = {
   portName: string;
@@ -19,393 +19,489 @@ type StreamConfig = {
   dataWidth: number;
 };
 
-const REG_NAMES = [
-  "VDC_BUS",
-  "TORQUE_LOAD",
-  "VA_MOTOR",
-  "VB_MOTOR",
-  "VC_MOTOR",
-  "I_ALPHA",
-  "I_BETA",
-  "FLUX_ALPHA",
-  "FLUX_BETA",
-  "SPEED_MECH",
-];
+// ─────────────────────────────────────────────────────────────────────────────
+// Channel definitions
+// ─────────────────────────────────────────────────────────────────────────────
+const FP_SCALE = 268_435_456; // 2^28  (Q14.28)
 
-const app = document.querySelector("#app");
-if (!app) {
-  throw new Error("App root not found");
-}
+const CHANNELS = [
+  { name: "VDC_BUS",     unit: "V",     color: "#4fc3f7" },
+  { name: "TORQUE_LOAD", unit: "N·m",   color: "#ffb74d" },
+  { name: "VA_MOTOR",    unit: "V",     color: "#81c784" },
+  { name: "VB_MOTOR",    unit: "V",     color: "#ce93d8" },
+  { name: "VC_MOTOR",    unit: "V",     color: "#4dd0e1" },
+  { name: "I_ALPHA",     unit: "A",     color: "#fff176" },
+  { name: "I_BETA",      unit: "A",     color: "#ef9a9a" },
+  { name: "FLUX_ALPHA",  unit: "Wb",    color: "#80cbc4" },
+  { name: "FLUX_BETA",   unit: "Wb",    color: "#b39ddb" },
+  { name: "SPEED_MECH",  unit: "rad/s", color: "#ffcc80" },
+] as const;
 
+const N_CH = CHANNELS.length;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Application state
+// ─────────────────────────────────────────────────────────────────────────────
+const samples: TelemetrySample[] = [];
+const MAX_SAMPLES = 60_000;
+let latestRegs = new Array<number>(N_CH).fill(0);
+let visibleChannels = new Array<boolean>(N_CH).fill(true);
+let renderPending = false;
+
+let cfg = { baudRate: 115200, sampleHz: 80, flushMs: 50, chunkSamples: 32, dataWidth: 42 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DOM scaffold
+// ─────────────────────────────────────────────────────────────────────────────
+const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
-  <h1>HIL Real-Time Monitor</h1>
-  <div class="layout">
-    <aside class="card controls">
-      <div class="field">
-        <label for="port">Serial Port</label>
-        <div class="row">
-          <select id="port"></select>
-          <button id="refreshPorts">Refresh</button>
-        </div>
+  <header class="topbar">
+    <div class="topbar-brand">
+      <img src="/lse_logo.png" alt="LSE" class="app-logo" />
+      <div>
+        <span class="app-name">HIL Monitor</span>
+        <span class="app-sub">Hardware-in-the-Loop</span>
       </div>
+    </div>
+    <div class="topbar-right">
+      <div id="stream-badge" class="badge badge-idle">● IDLE</div>
+      <button id="btn-settings" class="icon-btn" title="Stream settings">⚙</button>
+    </div>
+  </header>
 
-      <div class="row">
-        <div class="field">
-          <label for="baud">Baud</label>
-          <input id="baud" type="number" value="115200" min="9600" step="100" />
-        </div>
-        <div class="field">
-          <label for="sampleHz">Sample Hz</label>
-          <input id="sampleHz" type="number" value="80" min="1" max="2000" />
-        </div>
-      </div>
+  <div class="workspace">
+    <!-- ── SIDEBAR ── -->
+    <aside class="sidebar">
 
-      <div class="row">
-        <div class="field">
-          <label for="flushMs">Flush ms</label>
-          <input id="flushMs" type="number" value="50" min="10" max="500" />
+      <section class="panel">
+        <div class="panel-title">SERIAL CONNECTION</div>
+        <div class="conn-row">
+          <select id="port" class="port-select"></select>
+          <button id="refreshPorts" class="icon-btn" title="Refresh ports">↺</button>
         </div>
-        <div class="field">
-          <label for="chunkSamples">Chunk size</label>
-          <input id="chunkSamples" type="number" value="32" min="2" max="1024" />
+        <div class="btn-row">
+          <button id="startStream" class="btn btn-primary">▶ Start</button>
+          <button id="stopStream" class="btn btn-danger">■ Stop</button>
         </div>
-      </div>
+      </section>
 
-      <div class="row">
-        <button class="primary" id="startStream">Start Stream</button>
-        <button class="danger" id="stopStream">Stop Stream</button>
-      </div>
-
-      <div class="field">
-        <label for="channel">Plot channel</label>
-        <select id="channel"></select>
-      </div>
-
-      <hr style="border: 0; border-top: 1px solid #31465f;" />
-
-      <div class="row">
-        <div class="field">
-          <label for="vdc">VDC_BUS write</label>
-          <input id="vdc" type="number" value="320000" step="1" />
+      <section class="panel panel-channels">
+        <div class="panel-title">
+          CHANNELS
+          <span class="panel-title-actions">
+            <button id="checkAll"   class="link-btn">all</button>
+            <span class="sep">/</span>
+            <button id="uncheckAll" class="link-btn">none</button>
+          </span>
         </div>
-        <div class="field" style="align-self: end;">
-          <button id="writeVdc">Write VDC</button>
-        </div>
-      </div>
+        <div id="channelList" class="channel-list"></div>
+      </section>
 
-      <div class="row">
-        <div class="field">
-          <label for="torque">TORQUE_LOAD write</label>
-          <input id="torque" type="number" value="0" step="1" />
+      <section class="panel">
+        <div class="panel-title">WRITE REGISTERS</div>
+        <div class="write-row">
+          <label>VDC_BUS</label>
+          <input id="vdc"    type="number" value="320.0" step="any" class="write-input" />
+          <span class="write-unit">V</span>
+          <button id="writeVdc"    class="btn btn-write">↑</button>
         </div>
-        <div class="field" style="align-self: end;">
-          <button id="writeTorque">Write Torque</button>
+        <div class="write-row">
+          <label>TORQUE</label>
+          <input id="torque" type="number" value="0.0"   step="any" class="write-input" />
+          <span class="write-unit">N·m</span>
+          <button id="writeTorque" class="btn btn-write">↑</button>
         </div>
-      </div>
+      </section>
 
-      <p id="status" class="status">Idle</p>
+      <div id="status" class="status-bar">● Idle</div>
     </aside>
 
-    <section class="card plot-box">
-      <div id="plot"></div>
-      <div id="metrics" class="metrics"></div>
-    </section>
+    <!-- ── PLOT AREA ── -->
+    <main class="plot-area">
+      <div class="plot-toolbar">
+        <button id="clearPlot" class="btn btn-sm">Clear</button>
+        <span id="plot-info" class="plot-info">0 samples</span>
+      </div>
+      <div id="plot" class="plot-container"></div>
+    </main>
+  </div>
+
+  <!-- ── SETTINGS MODAL ── -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span>⚙ Stream Settings</span>
+        <button id="closeSettings" class="icon-btn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Baud Rate</label>
+          <input id="cfg-baud"         type="number" value="115200" min="9600"  step="100" />
+        </div>
+        <div class="field">
+          <label>Sample Rate (Hz)</label>
+          <input id="cfg-sampleHz"     type="number" value="80"     min="1"     max="2000" />
+        </div>
+        <div class="field">
+          <label>Flush Interval (ms)</label>
+          <input id="cfg-flushMs"      type="number" value="50"     min="10"    max="500" />
+        </div>
+        <div class="field">
+          <label>Chunk Size (samples)</label>
+          <input id="cfg-chunkSamples" type="number" value="32"     min="2"     max="1024" />
+        </div>
+        <div class="field">
+          <label>Data Width (bits)</label>
+          <input id="cfg-dataWidth"    type="number" value="42"     min="8"     max="64" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="applySettings"  class="btn btn-primary">Apply</button>
+        <button id="cancelSettings" class="btn">Cancel</button>
+      </div>
+    </div>
   </div>
 `;
 
-const elements = {
-  port: document.querySelector("#port") as HTMLSelectElement,
-  refreshPorts: document.querySelector("#refreshPorts") as HTMLButtonElement,
-  baud: document.querySelector("#baud") as HTMLInputElement,
-  sampleHz: document.querySelector("#sampleHz") as HTMLInputElement,
-  flushMs: document.querySelector("#flushMs") as HTMLInputElement,
-  chunkSamples: document.querySelector("#chunkSamples") as HTMLInputElement,
-  startStream: document.querySelector("#startStream") as HTMLButtonElement,
-  stopStream: document.querySelector("#stopStream") as HTMLButtonElement,
-  writeVdc: document.querySelector("#writeVdc") as HTMLButtonElement,
-  writeTorque: document.querySelector("#writeTorque") as HTMLButtonElement,
-  vdc: document.querySelector("#vdc") as HTMLInputElement,
-  torque: document.querySelector("#torque") as HTMLInputElement,
-  channel: document.querySelector("#channel") as HTMLSelectElement,
-  status: document.querySelector("#status") as HTMLParagraphElement,
-  plot: document.querySelector("#plot") as HTMLDivElement,
-  metrics: document.querySelector("#metrics") as HTMLDivElement,
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// DOM refs
+// ─────────────────────────────────────────────────────────────────────────────
+const elPort           = document.querySelector<HTMLSelectElement>("#port")!;
+const elRefreshPorts   = document.querySelector<HTMLButtonElement>("#refreshPorts")!;
+const elStartStream    = document.querySelector<HTMLButtonElement>("#startStream")!;
+const elStopStream     = document.querySelector<HTMLButtonElement>("#stopStream")!;
+const elVdc            = document.querySelector<HTMLInputElement>("#vdc")!;
+const elTorque         = document.querySelector<HTMLInputElement>("#torque")!;
+const elWriteVdc       = document.querySelector<HTMLButtonElement>("#writeVdc")!;
+const elWriteTorque    = document.querySelector<HTMLButtonElement>("#writeTorque")!;
+const elStatus         = document.querySelector<HTMLDivElement>("#status")!;
+const elBadge          = document.querySelector<HTMLDivElement>("#stream-badge")!;
+const elPlotContainer  = document.querySelector<HTMLDivElement>("#plot")!;
+const elPlotInfo       = document.querySelector<HTMLSpanElement>("#plot-info")!;
+const elClearPlot      = document.querySelector<HTMLButtonElement>("#clearPlot")!;
+const elChannelList    = document.querySelector<HTMLDivElement>("#channelList")!;
+const elCheckAll       = document.querySelector<HTMLButtonElement>("#checkAll")!;
+const elUncheckAll     = document.querySelector<HTMLButtonElement>("#uncheckAll")!;
+const elSettingsBtn    = document.querySelector<HTMLButtonElement>("#btn-settings")!;
+const elSettingsModal  = document.querySelector<HTMLDivElement>("#settings-modal")!;
+const elCloseSettings  = document.querySelector<HTMLButtonElement>("#closeSettings")!;
+const elCancelSettings = document.querySelector<HTMLButtonElement>("#cancelSettings")!;
+const elApplySettings  = document.querySelector<HTMLButtonElement>("#applySettings")!;
+const elCfgBaud        = document.querySelector<HTMLInputElement>("#cfg-baud")!;
+const elCfgSampleHz    = document.querySelector<HTMLInputElement>("#cfg-sampleHz")!;
+const elCfgFlushMs     = document.querySelector<HTMLInputElement>("#cfg-flushMs")!;
+const elCfgChunkSamples= document.querySelector<HTMLInputElement>("#cfg-chunkSamples")!;
+const elCfgDataWidth   = document.querySelector<HTMLInputElement>("#cfg-dataWidth")!;
 
-REG_NAMES.forEach((name, index) => {
-  const option = document.createElement("option");
-  option.value = String(index);
-  option.textContent = `${index.toString(16).padStart(2, "0")} - ${name}`;
-  elements.channel.append(option);
+// ─────────────────────────────────────────────────────────────────────────────
+// Build channel rows in sidebar
+// ─────────────────────────────────────────────────────────────────────────────
+const valueSpans: HTMLSpanElement[] = [];
+
+CHANNELS.forEach((ch, i) => {
+  const row   = document.createElement("label");  row.className = "ch-row";
+
+  const dot   = document.createElement("span");   dot.className = "ch-dot";
+  dot.style.background = ch.color;
+
+  const cb    = document.createElement("input");  cb.type = "checkbox";  cb.checked = true;
+  cb.className = "ch-cb";  cb.dataset.idx = String(i);
+
+  const name  = document.createElement("span");   name.className = "ch-name";
+  name.textContent = ch.name;
+
+  const val   = document.createElement("span");   val.className = "ch-value";
+  val.id = `val-${i}`;  val.textContent = "0.0000";
+  valueSpans.push(val);
+
+  const unit  = document.createElement("span");   unit.className = "ch-unit";
+  unit.textContent = ch.unit;
+
+  row.append(dot, cb, name, val, unit);
+  elChannelList.append(row);
+
+  cb.addEventListener("change", () => {
+    visibleChannels[i] = cb.checked;
+    plot.setSeries(i + 1, { show: cb.checked });
+  });
 });
-elements.channel.value = "9";
 
-const samples: TelemetrySample[] = [];
-const maxBufferSamples = 60_000;
-let renderPending = false;
-let latestRegs = new Array<number>(10).fill(0);
+// ─────────────────────────────────────────────────────────────────────────────
+// uPlot — multi-channel
+// ─────────────────────────────────────────────────────────────────────────────
+function plotSize(): { width: number; height: number } {
+  return {
+    width:  Math.max(400, elPlotContainer.clientWidth),
+    height: Math.max(300, elPlotContainer.clientHeight),
+  };
+}
 
-const initWidth = Math.max(640, elements.plot.clientWidth - 2);
 const plot = new uPlot(
   {
-    width: initWidth,
-    height: 360,
+    ...plotSize(),
     pxAlign: 0,
-    scales: {
-      x: { time: false },
-    },
+    cursor: { show: true, drag: { x: true, y: false, uni: 50 } },
+    scales: { x: { time: false } },
     axes: [
       {
-        grid: { stroke: "#243850", width: 1 },
-        stroke: "#8ea3c0",
+        stroke: "#3a5575",
+        grid:  { stroke: "#0e1d30", width: 1 },
+        ticks: { stroke: "#0e1d30" },
       },
       {
-        grid: { stroke: "#243850", width: 1 },
-        stroke: "#8ea3c0",
+        stroke: "#3a5575",
+        grid:  { stroke: "#0e1d30", width: 1 },
+        ticks: { stroke: "#0e1d30" },
       },
     ],
     series: [
       { label: "t [s]" },
-      {
-        label: "signal",
-        stroke: "#3ec7a6",
-        width: 1.3,
-      },
+      ...CHANNELS.map((ch) => ({
+        label: ch.name,
+        stroke: ch.color,
+        width: 1.5,
+        show: true,
+      })),
     ],
+    legend: { show: true, live: true },
   },
-  [[], []],
-  elements.plot,
+  [new Array<number>(0), ...CHANNELS.map(() => new Array<number>(0))],
+  elPlotContainer,
 );
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function rawToFloat(raw: number): number { return raw / FP_SCALE; }
+function floatToRaw(v: number): number   { return Math.round(v * FP_SCALE); }
+
 function setStatus(text: string, kind: "ok" | "error" | "idle" = "idle"): void {
-  elements.status.textContent = text;
-  elements.status.className = "status";
-  if (kind === "ok") {
-    elements.status.classList.add("ok");
-  }
-  if (kind === "error") {
-    elements.status.classList.add("error");
-  }
+  elStatus.textContent = `● ${text}`;
+  elStatus.className = `status-bar${kind !== "idle" ? " " + kind : ""}`;
 }
 
-function renderMetrics(): void {
-  elements.metrics.innerHTML = "";
-  for (let i = 0; i < REG_NAMES.length; i++) {
-    const card = document.createElement("div");
-    card.className = "metric";
-
-    const name = document.createElement("div");
-    name.className = "name";
-    name.textContent = `${i.toString(16).padStart(2, "0")} ${REG_NAMES[i]}`;
-
-    const value = document.createElement("div");
-    value.className = "value";
-    value.textContent = String(latestRegs[i] ?? 0);
-
-    card.append(name, value);
-    elements.metrics.append(card);
-  }
+function setBadge(state: "idle" | "streaming" | "error"): void {
+  const labels = { idle: "● IDLE", streaming: "● STREAMING", error: "● ERROR" } as const;
+  elBadge.className = `badge badge-${state}`;
+  elBadge.textContent = labels[state];
 }
 
-function decimateMinMax(data: TelemetrySample[], channelIdx: number, maxPoints: number): [number[], number[]] {
-  if (data.length === 0) {
-    return [[], []];
-  }
+// Build plot data arrays with uniform stride decimation (all channels aligned)
+function buildPlotData(maxPts: number): number[][] {
+  const n = samples.length;
+  if (n === 0) return [[], ...CHANNELS.map(() => [])];
 
-  if (data.length <= maxPoints) {
-    const x = data.map((d) => d.t_ms * 0.001);
-    const y = data.map((d) => d.regs[channelIdx] ?? 0);
-    return [x, y];
-  }
+  const step = n <= maxPts ? 1 : Math.ceil(n / maxPts);
+  const indices: number[] = [];
+  for (let i = 0; i < n; i += step) indices.push(i);
 
-  const bucketCount = Math.max(2, Math.floor(maxPoints / 2));
-  const bucketSize = data.length / bucketCount;
+  const xArr = indices.map((i) => samples[i].t_ms * 0.001);
+  const yArrs = CHANNELS.map((_, ch) =>
+    indices.map((i) => rawToFloat(samples[i].regs[ch] ?? 0)),
+  );
 
-  const x: number[] = [];
-  const y: number[] = [];
-
-  for (let bucket = 0; bucket < bucketCount; bucket++) {
-    const start = Math.floor(bucket * bucketSize);
-    const end = Math.min(data.length, Math.floor((bucket + 1) * bucketSize));
-
-    if (end <= start) {
-      continue;
-    }
-
-    let minIdx = start;
-    let maxIdx = start;
-    let minVal = data[start].regs[channelIdx] ?? 0;
-    let maxVal = minVal;
-
-    for (let i = start + 1; i < end; i++) {
-      const value = data[i].regs[channelIdx] ?? 0;
-      if (value < minVal) {
-        minVal = value;
-        minIdx = i;
-      }
-      if (value > maxVal) {
-        maxVal = value;
-        maxIdx = i;
-      }
-    }
-
-    if (minIdx <= maxIdx) {
-      x.push(data[minIdx].t_ms * 0.001, data[maxIdx].t_ms * 0.001);
-      y.push(minVal, maxVal);
-    } else {
-      x.push(data[maxIdx].t_ms * 0.001, data[minIdx].t_ms * 0.001);
-      y.push(maxVal, minVal);
-    }
-  }
-
-  return [x, y];
+  return [xArr, ...yArrs];
 }
 
 function scheduleRender(): void {
-  if (renderPending) {
-    return;
-  }
+  if (renderPending) return;
   renderPending = true;
 
   requestAnimationFrame(() => {
     renderPending = false;
-    const selected = Number(elements.channel.value);
-    const width = Math.max(640, elements.plot.clientWidth - 2);
-    const maxPlotPoints = Math.max(240, width);
 
-    const [x, y] = decimateMinMax(samples, selected, maxPlotPoints);
-    plot.setData([x, y]);
+    const { width } = plotSize();
+    const maxPts = Math.max(600, width * 2);
 
-    renderMetrics();
+    plot.setData(buildPlotData(maxPts) as uPlot.AlignedData);
+
+    // Update channel value displays
+    for (let i = 0; i < N_CH; i++) {
+      valueSpans[i].textContent = rawToFloat(latestRegs[i]).toFixed(4);
+    }
+
+    elPlotInfo.textContent = `${samples.length.toLocaleString()} samples`;
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Serial port
+// ─────────────────────────────────────────────────────────────────────────────
 async function refreshPorts(): Promise<void> {
   try {
     const ports = await invoke<string[]>("list_serial_ports");
-    elements.port.innerHTML = "";
+    elPort.innerHTML = "";
+
     if (ports.length === 0) {
-      const option = document.createElement("option");
-      option.value = "";
-      option.textContent = "No ports found";
-      elements.port.append(option);
+      elPort.innerHTML = `<option value="">No ports found</option>`;
       setStatus("No serial ports found", "error");
       return;
     }
 
-    ports.forEach((port: string) => {
-      const option = document.createElement("option");
-      option.value = port;
-      option.textContent = port;
-      elements.port.append(option);
-    });
+    for (const p of ports) {
+      const opt = document.createElement("option");
+      opt.value = opt.textContent = p;
+      elPort.append(opt);
+    }
 
-    setStatus(`Found ${ports.length} ports`, "ok");
-  } catch (error) {
-    setStatus(`Failed to list ports: ${String(error)}`, "error");
+    setStatus(`${ports.length} port(s) found`, "ok");
+  } catch (e) {
+    setStatus(`Port list error: ${String(e)}`, "error");
   }
 }
 
-function getStreamConfig(): StreamConfig {
+function buildStreamConfig(): StreamConfig {
   return {
-    portName: elements.port.value,
-    baudRate: Number(elements.baud.value),
-    sampleHz: Number(elements.sampleHz.value),
-    flushMs: Number(elements.flushMs.value),
-    chunkSamples: Number(elements.chunkSamples.value),
-    dataWidth: 42,
+    portName:     elPort.value,
+    baudRate:     cfg.baudRate,
+    sampleHz:     cfg.sampleHz,
+    flushMs:      cfg.flushMs,
+    chunkSamples: cfg.chunkSamples,
+    dataWidth:    cfg.dataWidth,
   };
 }
 
-elements.refreshPorts.addEventListener("click", () => {
-  void refreshPorts();
-});
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings modal
+// ─────────────────────────────────────────────────────────────────────────────
+function openSettings(): void {
+  elCfgBaud.value         = String(cfg.baudRate);
+  elCfgSampleHz.value     = String(cfg.sampleHz);
+  elCfgFlushMs.value      = String(cfg.flushMs);
+  elCfgChunkSamples.value = String(cfg.chunkSamples);
+  elCfgDataWidth.value    = String(cfg.dataWidth);
+  elSettingsModal.classList.remove("hidden");
+}
 
-elements.channel.addEventListener("change", () => {
-  scheduleRender();
-});
+function closeSettings(): void { elSettingsModal.classList.add("hidden"); }
 
-elements.startStream.addEventListener("click", async () => {
-  const config = getStreamConfig();
-  if (!config.portName) {
-    setStatus("Select a serial port before starting", "error");
-    return;
-  }
+function applySettings(): void {
+  cfg = {
+    baudRate:     Number(elCfgBaud.value),
+    sampleHz:     Number(elCfgSampleHz.value),
+    flushMs:      Number(elCfgFlushMs.value),
+    chunkSamples: Number(elCfgChunkSamples.value),
+    dataWidth:    Number(elCfgDataWidth.value),
+  };
+  closeSettings();
+  setStatus("Settings applied", "ok");
+}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Event listeners
+// ─────────────────────────────────────────────────────────────────────────────
+elRefreshPorts.addEventListener("click", () => void refreshPorts());
+
+elStartStream.addEventListener("click", async () => {
+  const config = buildStreamConfig();
+  if (!config.portName) { setStatus("Select a serial port first", "error"); return; }
   try {
+    samples.length = 0;
     await invoke("start_stream", { config });
-    setStatus("Streaming started", "ok");
-  } catch (error) {
-    setStatus(`Could not start stream: ${String(error)}`, "error");
+    setBadge("streaming");
+    setStatus("Streaming…", "ok");
+  } catch (e) {
+    setStatus(`Start failed: ${String(e)}`, "error");
+    setBadge("error");
   }
 });
 
-elements.stopStream.addEventListener("click", async () => {
+elStopStream.addEventListener("click", async () => {
   try {
     await invoke("stop_stream");
-    setStatus("Streaming stopped", "ok");
-  } catch (error) {
-    setStatus(`Could not stop stream: ${String(error)}`, "error");
+    setBadge("idle");
+    setStatus("Stream stopped");
+  } catch (e) {
+    setStatus(`Stop failed: ${String(e)}`, "error");
   }
 });
 
-elements.writeVdc.addEventListener("click", async () => {
+elWriteVdc.addEventListener("click", async () => {
   try {
     await invoke("write_vdc_bus", {
-      port_name: elements.port.value,
-      baud_rate: Number(elements.baud.value),
-      value: Number(elements.vdc.value),
-      data_width: 42,
+      port_name:  elPort.value,
+      baud_rate:  cfg.baudRate,
+      value:      floatToRaw(Number(elVdc.value)),
+      data_width: cfg.dataWidth,
     });
     setStatus("VDC_BUS updated", "ok");
-  } catch (error) {
-    setStatus(`Write VDC failed: ${String(error)}`, "error");
-  }
+  } catch (e) { setStatus(`Write VDC failed: ${String(e)}`, "error"); }
 });
 
-elements.writeTorque.addEventListener("click", async () => {
+elWriteTorque.addEventListener("click", async () => {
   try {
     await invoke("write_torque_load", {
-      port_name: elements.port.value,
-      baud_rate: Number(elements.baud.value),
-      value: Number(elements.torque.value),
-      data_width: 42,
+      port_name:  elPort.value,
+      baud_rate:  cfg.baudRate,
+      value:      floatToRaw(Number(elTorque.value)),
+      data_width: cfg.dataWidth,
     });
     setStatus("TORQUE_LOAD updated", "ok");
-  } catch (error) {
-    setStatus(`Write torque failed: ${String(error)}`, "error");
-  }
+  } catch (e) { setStatus(`Write torque failed: ${String(e)}`, "error"); }
 });
 
-window.addEventListener("resize", () => {
-  const width = Math.max(640, elements.plot.clientWidth - 2);
-  plot.setSize({ width, height: 360 });
+elClearPlot.addEventListener("click", () => {
+  samples.length = 0;
+  plot.setData([[], ...CHANNELS.map(() => [])] as uPlot.AlignedData);
+  elPlotInfo.textContent = "0 samples";
+});
+
+elCheckAll.addEventListener("click", () => {
+  elChannelList.querySelectorAll<HTMLInputElement>(".ch-cb").forEach((cb) => {
+    cb.checked = true;
+    const idx = Number(cb.dataset.idx);
+    visibleChannels[idx] = true;
+    plot.setSeries(idx + 1, { show: true });
+  });
   scheduleRender();
 });
 
-void listen<TelemetrySample[]>("telemetry-chunk", (event: { payload: TelemetrySample[] }) => {
-  if (!Array.isArray(event.payload)) {
-    return;
+elUncheckAll.addEventListener("click", () => {
+  elChannelList.querySelectorAll<HTMLInputElement>(".ch-cb").forEach((cb) => {
+    cb.checked = false;
+    const idx = Number(cb.dataset.idx);
+    visibleChannels[idx] = false;
+    plot.setSeries(idx + 1, { show: false });
+  });
+});
+
+elSettingsBtn.addEventListener("click", openSettings);
+elCloseSettings.addEventListener("click", closeSettings);
+elCancelSettings.addEventListener("click", closeSettings);
+elApplySettings.addEventListener("click", applySettings);
+elSettingsModal.addEventListener("click", (e) => {
+  if (e.target === elSettingsModal) closeSettings();
+});
+
+// Responsive plot resize via ResizeObserver
+new ResizeObserver(() => {
+  const { width, height } = plotSize();
+  plot.setSize({ width, height });
+}).observe(elPlotContainer);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tauri events
+// ─────────────────────────────────────────────────────────────────────────────
+void listen<TelemetrySample[]>("telemetry-chunk", (ev) => {
+  if (!Array.isArray(ev.payload)) return;
+
+  for (const s of ev.payload) {
+    if (!s || !Array.isArray(s.regs) || s.regs.length < N_CH) continue;
+    samples.push(s);
+    latestRegs = s.regs.slice(0, N_CH);
   }
 
-  for (const sample of event.payload) {
-    if (!sample || !Array.isArray(sample.regs) || sample.regs.length < 10) {
-      continue;
-    }
-    samples.push(sample);
-    latestRegs = sample.regs.slice(0, 10);
-  }
-
-  if (samples.length > maxBufferSamples) {
-    samples.splice(0, samples.length - maxBufferSamples);
-  }
+  if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES);
 
   scheduleRender();
 });
 
-void listen<string>("stream-error", (event: { payload: string }) => {
-  setStatus(event.payload, "error");
+void listen<string>("stream-error", (ev) => {
+  setStatus(ev.payload, "error");
+  setBadge("error");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
 void refreshPorts();
-renderMetrics();
