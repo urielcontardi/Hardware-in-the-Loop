@@ -50,6 +50,9 @@ Hardware-in-the-Loop/
 ├── extras/                     # Notebooks & scripts
 │   └── TIM.ipynb
 │
+├── apps/
+│   └── hil-gui-tauri/          # Desktop GUI (Tauri + Rust + TypeScript)
+│
 └── build/                      # GHDL build artifacts (auto-generated)
 ```
 
@@ -179,3 +182,13 @@ from drivers.uart_driver import UartTxDriver, UartRxDriver
 ## License
 
 See individual module headers for license information.
+
+## Desktop GUI (Tauri)
+
+The repository includes an initial high-performance desktop GUI scaffold for HIL telemetry and control:
+
+- Path: `apps/hil-gui-tauri`
+- Stack: Tauri + Rust backend + TypeScript frontend + uPlot
+- Strategy: buffered IPC (`telemetry-chunk`) + frontend min-max decimation for smooth plotting
+
+See `apps/hil-gui-tauri/README.md` and `apps/hil-gui-tauri/docs/setup_linux.md`.
