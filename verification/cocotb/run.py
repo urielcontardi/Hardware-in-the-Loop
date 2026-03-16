@@ -101,6 +101,13 @@ def main():
         help="Top-level DUT to simulate (default: top_hil)",
     )
     parser.add_argument(
+        "--test",
+        type=str,
+        default=None,
+        choices=["reference", "vf"],
+        help="Test suite to run for tim_solver (default: reference)",
+    )
+    parser.add_argument(
         "--build-dir",
         type=str,
         default="sim_build",
@@ -127,10 +134,19 @@ def main():
             "BAUD_RATE": 1_000_000,         # 1 Mbaud
         }
     else:
-        test_module = "tests.test_tim_solver_reference"
-        # Keep Ts generic default; only reduce clock for faster run.
+        # Select test suite
+        test_suite = args.test or "reference"
+        test_module = {
+            "reference": "tests.test_tim_solver_reference",
+            "vf":        "tests.test_tim_solver_vf",
+        }[test_suite]
+
+        # CLOCK_FREQUENCY must give TIMER_STEPS > solver pipeline latency.
+        # With simulation DSP stub (LATENCY=7): total chain latency ~29 cycles.
+        # 400 MHz × Ts=100ns → TIMER_STEPS=40, giving ~11-cycle margin.
+        # The matrices are computed with Ts=100ns (default generic), so physics is correct.
         sim_parameters = {
-            "CLOCK_FREQUENCY": 100_000_000,
+            "CLOCK_FREQUENCY": 400_000_000,
         }
 
     # Build (analyze + elaborate)
