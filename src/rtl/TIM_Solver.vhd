@@ -289,7 +289,7 @@ Begin
     )
     Port map(
         sysclk              => sysclk,
-        start_i             => clarke_valid,
+        start_i             => clarke_valid and not solver_busy,
         Amatrix_i           => Amatrix_fp,
         Xvec_i              => Xvec_fp,
         Ymatrix_i           => Ymatrix_fp,
