@@ -284,6 +284,8 @@ cocotb-clean:
 #   2. The display extracted from `who` output, e.g. ":1" from "user :1 (...)".
 #   3. Hard-coded fallback ":1".
 _GUI_DISPLAY := $(or $(DISPLAY),$(shell who | grep -oP '\(:\d+\)' | tr -d '()' | head -1),:1)
+# cargo lives in ~/.cargo/bin which is not always in PATH when make is called from a tty.
+_CARGO_ENV   := $${HOME}/.cargo/env
 
 .PHONY: gui-setup gui-check gui-dev gui-build gui-build-linux
 
@@ -294,19 +296,19 @@ gui-setup:
 gui-check:
 	@echo "Checking GUI frontend and backend (DISPLAY=$(_GUI_DISPLAY))..."
 	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run frontend:build
-	@cd $(GUI_DIR)/src-tauri && source "$$HOME/.cargo/env" && DISPLAY=$(_GUI_DISPLAY) cargo check
+	@source $(_CARGO_ENV) && cd $(GUI_DIR)/src-tauri && DISPLAY=$(_GUI_DISPLAY) cargo check
 
 gui-dev:
 	@echo "Starting GUI in development mode (DISPLAY=$(_GUI_DISPLAY))..."
-	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run dev
+	@source $(_CARGO_ENV) && cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run dev
 
 gui-build:
 	@echo "Building GUI (default tauri bundle targets, DISPLAY=$(_GUI_DISPLAY))..."
-	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run build
+	@source $(_CARGO_ENV) && cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run build
 
 gui-build-linux:
 	@echo "Building GUI Linux bundles (deb,rpm, DISPLAY=$(_GUI_DISPLAY))..."
-	@cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run build:linux
+	@source $(_CARGO_ENV) && cd $(GUI_DIR) && DISPLAY=$(_GUI_DISPLAY) npm run build:linux
 
 # =============================================================================
 # GTKWave targets
