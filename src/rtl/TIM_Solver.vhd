@@ -136,11 +136,11 @@ Architecture rtl of TIM_Solver is
 
     constant K                 : real := 1.0/(lm*lm - Ls_total*Lr_total);
     constant AMATRIX           : matrix_t(0 to N_SS - 1, 0 to N_SS - 1) := (
-        ( -Ts*rr/Lr_total                     , -Ts*npp                                , Ts*lm*rr/Lr_total                     , 0.0                                        , 0.0),
-        ( Ts*npp                              , -Ts*rr/Lr_total                        , 0.0                                   , Ts*lm*rr/Lr_total                          , 0.0),
-        ( -Ts*lm*rr*K/Lr_total                , -Ts*lm*npp*K                           , Ts*(lm*lm*rr*K/Lr_total)+(Lr_total*rs*K), 0.0                                        , 0.0),
-        ( Ts*lm*npp*K                         , -Ts*lm*rr*K/Lr_total                   , 0.0                                   , Ts*(lm*lm*rr*K/Lr_total)+(Lr_total*rs*K)    , 0.0),
-        ( Ts*(3.0*npp*lm)/(2.0*j*Lr_total)    , Ts*(-3.0*npp*lm)/(2.0*j*Lr_total)     , 0.0                                   , 0.0                                        , 0.0)
+        ( -Ts*rr/Lr_total                     , -Ts*npp                                , Ts*lm*rr/Lr_total                              , 0.0                                             , 0.0),
+        ( Ts*npp                              , -Ts*rr/Lr_total                        , 0.0                                            , Ts*lm*rr/Lr_total                               , 0.0),
+        ( -Ts*lm*rr*K/Lr_total                , -Ts*lm*npp*K                           , Ts*(lm*lm*rr*K/Lr_total + Lr_total*rs*K)       , 0.0                                             , 0.0),
+        ( Ts*lm*npp*K                         , -Ts*lm*rr*K/Lr_total                   , 0.0                                            , Ts*(lm*lm*rr*K/Lr_total + Lr_total*rs*K)        , 0.0),
+        ( Ts*(3.0*npp*lm)/(2.0*j*Lr_total)    , Ts*(-3.0*npp*lm)/(2.0*j*Lr_total)     , 0.0                                            , 0.0                                             , 0.0)
     );
 
     -- The Y matrix is only used to allow X states to be multiplied with each other
