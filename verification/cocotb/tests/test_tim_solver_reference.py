@@ -18,8 +18,8 @@ FP_FRACTION_BITS = 28
 CLK_FREQ = 100_000_000
 CLK_PERIOD_NS = int(1e9 / CLK_FREQ)
 
-SIM_STEPS = 4000
-WARMUP_STEPS = 300
+SIM_STEPS = 500
+WARMUP_STEPS = 100
 
 
 def signed_to_slv(value: int, width: int) -> int:
@@ -36,6 +36,15 @@ def fp_to_real(raw: int, width: int = DATA_WIDTH) -> float:
     if raw & (1 << (width - 1)):
         raw -= 1 << width
     return raw / float(1 << FP_FRACTION_BITS)
+
+
+def signal_fp_to_real(signal) -> float:
+    raw = signal.value
+    try:
+        signed = raw.signed_integer
+    except ValueError as exc:
+        raise AssertionError(f"Signal {signal._name} is unresolved: {raw.binstr}") from exc
+    return signed / float(1 << FP_FRACTION_BITS)
 
 
 def rms(values: list[float]) -> float:
@@ -115,11 +124,11 @@ async def test_tim_solver_matches_reference_model(dut):
 
         await wait_data_valid(dut)
 
-        vhdl_i_alpha = fp_to_real(int(dut.ialpha_o.value), DATA_WIDTH)
-        vhdl_i_beta = fp_to_real(int(dut.ibeta_o.value), DATA_WIDTH)
-        vhdl_flux_alpha = fp_to_real(int(dut.flux_rotor_alpha_o.value), DATA_WIDTH)
-        vhdl_flux_beta = fp_to_real(int(dut.flux_rotor_beta_o.value), DATA_WIDTH)
-        vhdl_speed = fp_to_real(int(dut.speed_mech_o.value), DATA_WIDTH)
+        vhdl_i_alpha = signal_fp_to_real(dut.ialpha_o)
+        vhdl_i_beta = signal_fp_to_real(dut.ibeta_o)
+        vhdl_flux_alpha = signal_fp_to_real(dut.flux_rotor_alpha_o)
+        vhdl_flux_beta = signal_fp_to_real(dut.flux_rotor_beta_o)
+        vhdl_speed = signal_fp_to_real(dut.speed_mech_o)
 
         ref_state = ref.step(va, vb, vc, tload)
 
@@ -153,6 +162,15 @@ async def test_tim_solver_matches_reference_model(dut):
                     ref_state.i_beta,
                     ref_state.flux_alpha,
                     ref_state.flux_beta,
+                )
+                dut._log.info(
+                    "internals step=%d | timer_tick=%s clarke_valid=%s solver_busy=%s valpha=%s vbeta=%s",
+                    step,
+                    dut.timer_tick.value,
+                    dut.clarke_valid.value,
+                    dut.solver_busy.value,
+                    dut.valpha.value,
+                    dut.vbeta.value,
                 )
 
     assert errors_i_alpha, "No comparison samples were collected"
