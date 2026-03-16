@@ -253,6 +253,8 @@ sim-all: sim-serial sim-tim sim-top
 COCOTB_DIR := verification/cocotb
 TESTCASE   ?=
 TOP        ?= top_hil
+GUI_DIR    := apps/hil-gui-tauri
+SHELL      := /bin/bash
 
 .PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-setup cocotb-clean
 
@@ -270,6 +272,32 @@ cocotb-setup:
 
 cocotb-clean:
 	@$(MAKE) -C $(COCOTB_DIR) clean
+
+# =============================================================================
+# GUI (Tauri) Targets
+# =============================================================================
+.PHONY: gui-setup gui-check gui-dev gui-build gui-build-linux
+
+gui-setup:
+	@echo "Installing GUI dependencies (npm)..."
+	@cd $(GUI_DIR) && npm install
+
+gui-check:
+	@echo "Checking GUI frontend and backend..."
+	@cd $(GUI_DIR) && npm run frontend:build
+	@cd $(GUI_DIR)/src-tauri && source "$$HOME/.cargo/env" && cargo check
+
+gui-dev:
+	@echo "Starting GUI in development mode..."
+	@cd $(GUI_DIR) && npm run dev
+
+gui-build:
+	@echo "Building GUI (default tauri bundle targets)..."
+	@cd $(GUI_DIR) && npm run build
+
+gui-build-linux:
+	@echo "Building GUI Linux bundles (deb,rpm)..."
+	@cd $(GUI_DIR) && npm run build:linux
 
 # =============================================================================
 # GTKWave targets
@@ -326,6 +354,13 @@ help:
 	@echo "║    make cocotb-tim-ref  TIM_Solver vs C reference       ║"
 	@echo "║    make cocotb-waves  Run cocotb + waveform dump        ║"
 	@echo "║    make cocotb-setup  Install Python dependencies       ║"
+	@echo "║                                                         ║"
+	@echo "║  Desktop GUI (Tauri):                                   ║"
+	@echo "║    make gui-setup     Install GUI npm dependencies      ║"
+	@echo "║    make gui-check     Frontend build + cargo check      ║"
+	@echo "║    make gui-dev       Run GUI dev mode                  ║"
+	@echo "║    make gui-build     Full tauri build                  ║"
+	@echo "║    make gui-build-linux Build deb/rpm bundles           ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"
 	@echo "║    make compile       Analyze all VHDL sources          ║"
