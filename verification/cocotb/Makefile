@@ -52,7 +52,7 @@ setup:
 
 # ── Setup: install NVC from GitHub release (.deb for Ubuntu 24.04) ──────
 NVC_VERSION ?= 1.19.3
-NVC_DEB      = nvc_$(NVC_VERSION)-1_amd64_ubuntu-24.04.deb
+NVC_DEB      = nvc_$(NVC_VERSION)-1_amd64.deb
 NVC_URL      = https://github.com/nickg/nvc/releases/download/r$(NVC_VERSION)/$(NVC_DEB)
 
 .PHONY: setup-nvc
