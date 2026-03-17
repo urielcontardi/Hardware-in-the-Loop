@@ -50,24 +50,16 @@ setup:
 	@echo "Installing Python dependencies with uv..."
 	$(UV) sync
 
-# ── Setup: install NVC from GitHub release ──────────────────────────────
-NVC_VERSION ?= 1.15.0
-NVC_TARBALL  = nvc-$(NVC_VERSION).tar.gz
-NVC_URL      = https://github.com/nickg/nvc/releases/download/r$(NVC_VERSION)/$(NVC_TARBALL)
+# ── Setup: install NVC from GitHub release (.deb for Ubuntu 24.04) ──────
+NVC_VERSION ?= 1.19.3
+NVC_DEB      = nvc_$(NVC_VERSION)-1_amd64_ubuntu-24.04.deb
+NVC_URL      = https://github.com/nickg/nvc/releases/download/r$(NVC_VERSION)/$(NVC_DEB)
 
 .PHONY: setup-nvc
 setup-nvc:
 	@echo ""
-	@echo "Installing NVC $(NVC_VERSION) from source..."
-	@echo "  (requires: build-essential automake flex bison pkg-config libzstd-dev)"
-	@sudo apt-get install -y build-essential automake flex bison pkg-config libzstd-dev
-	@cd /tmp && curl -fsSL $(NVC_URL) -o $(NVC_TARBALL) && \
-	  tar xf $(NVC_TARBALL) && \
-	  cd nvc-$(NVC_VERSION) && \
-	  ./autogen.sh && \
-	  ./configure --prefix=/usr/local && \
-	  make -j$$(nproc) && \
-	  sudo make install
+	@echo "Installing NVC $(NVC_VERSION) (Ubuntu 24.04 .deb)..."
+	@cd /tmp && curl -fsSL $(NVC_URL) -o nvc.deb && sudo dpkg -i nvc.deb
 	@nvc --version
 	@echo "NVC installed. Run with: make SIM=nvc"
 
@@ -83,15 +75,19 @@ test:
 
 # ── Run tests with waveform dump ────────────────────────────────────────
 .PHONY: waves
+WAVE_EXT_ghdl = ghw
+WAVE_EXT_nvc  = fst
+WAVE_EXT      = $(WAVE_EXT_$(SIM))
+
 waves:
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
-	@echo "║   cocotb: Top_HIL + Waveforms ($(SIM))        ║"
+	@echo "║   cocotb: $(TOP) + Waveforms ($(SIM))         ║"
 	@echo "╚══════════════════════════════════════════════╝"
 	@echo ""
 	$(UV) run python run.py --sim $(SIM) --top $(TOP) --waves $(TEST_ARGS)
 	@echo "Opening GTKWave..."
-	$(GTKWAVE) sim_build/waves_top_hil.vcd &
+	$(GTKWAVE) sim_build/waves_$(TOP).$(WAVE_EXT) &
 
 # ── TIM_Solver reference model comparison ───────────────────────────────
 .PHONY: tim-ref

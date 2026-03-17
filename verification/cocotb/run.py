@@ -37,8 +37,11 @@ RUN_ARGS = {
 }
 
 # Waveform flag per simulator (format: <flag_template>, <file_extension>)
+# These are simulator runtime args, NOT VPI plusargs — passed via test_args.
+# GHDL: --wave generates GHW (full hierarchy); --vcd only captures top ports.
+# NVC:  --wave generates FST (full hierarchy).
 WAVE_FLAG = {
-    "ghdl": ("--vcd={path}", ".vcd"),
+    "ghdl": ("--wave={path}", ".ghw"),
     "nvc":  ("--wave={path}", ".fst"),
 }
 
@@ -215,11 +218,14 @@ Examples:
         sim_parameters = {"CLOCK_FREQUENCY": 400_000_000}
 
     # ── Waveform setup ───────────────────────────────────────────────────
-    plusargs = []
+    # Wave flags are simulator runtime args → go in test_args, NOT plusargs.
+    # (plusargs are forwarded with '+' prefix which GHDL/NVC do not understand)
+    run_args = list(RUN_ARGS[sim])
     if args.waves:
         flag_tpl, ext = WAVE_FLAG[sim]
         wave_path = (tb_dir / args.build_dir / f"waves_{args.top}{ext}").resolve()
-        plusargs.append(flag_tpl.format(path=wave_path))
+        run_args.append(flag_tpl.format(path=wave_path))
+        print(f"Waveform → {wave_path}")
 
     # ── Build ────────────────────────────────────────────────────────────
     runner.build(
@@ -237,8 +243,7 @@ Examples:
         build_dir=args.build_dir,
         hdl_toplevel_lang="vhdl",
         testcase=args.testcase if args.testcase else None,
-        test_args=RUN_ARGS[sim],
-        plusargs=plusargs,
+        test_args=run_args,
         parameters=sim_parameters,
     )
 
