@@ -80,6 +80,33 @@ tim-ref:
 	@echo ""
 	$(UV) run python run.py --sim $(SIM) --top tim_solver -k test_tim_solver_matches_reference_model
 
+.PHONY: tim-vf
+tim-vf:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ cocotb: TIM_Solver V/F stimulus ($(SIM))      ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python run.py --sim $(SIM) --top tim_solver --test vf -k test_tim_solver_vf_stimulus
+
+.PHONY: report
+report:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ Generating V/F HTML report (C ref only)      ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python scripts/vf_report.py
+
+.PHONY: report-overlay
+report-overlay:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ Generating V/F HTML report + VHDL overlay    ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python scripts/vf_report.py --overlay
+
 # ── Clean build artifacts ──────────────────────────────────────────────
 .PHONY: clean
 clean:
@@ -103,7 +130,10 @@ help:
 	@echo "║    make test         Run all tests                      ║"
 	@echo "║    make test TOP=<top> TESTCASE=<name> Run one test     ║"
 	@echo "║    make waves        Run tests + open GTKWave           ║"
-	@echo "║    make tim-ref      TIM_Solver vs C reference model    ║"
+	@echo "║    make tim-ref        TIM_Solver vs C ref (static)     ║"
+	@echo "║    make tim-vf         TIM_Solver vs C ref (V/F ramp)  ║"
+	@echo "║    make report         HTML report — C model only      ║"
+	@echo "║    make report-overlay HTML report — C + VHDL overlay  ║"
 	@echo "║                                                         ║"
 	@echo "║  Setup:                                                 ║"
 	@echo "║    make setup        Install Python deps via uv         ║"
