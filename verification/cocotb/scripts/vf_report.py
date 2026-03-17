@@ -64,6 +64,8 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
         print("ERROR: plotly not installed.  Run: uv add plotly")
         sys.exit(1)
 
+    overlay = bool(vhdl_rows)
+
     ref_rows = _downsample(ref_rows, 8000)
     t = [r["t_s"] for r in ref_rows]
 
@@ -72,19 +74,37 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
     C_C  = "#a06ad8"   # purple — c channel
     C_VH = "#f0a030"   # amber  — VHDL overlay
 
-    ROWS = 6
-    fig = make_subplots(
-        rows=ROWS, cols=1,
-        shared_xaxes=True,
-        subplot_titles=[
+    if overlay:
+        ROWS = 7
+        subplot_titles = [
+            "Phase Currents  ia, ib, ic  [A]",
+            "Stator Currents  iα, iβ  [A]",
+            "Rotor Flux  ψα, ψβ  [Wb]",
+            "Speed  ωm (mech)  [rad/s]",
+            "Electromagnetic Torque  Te  [N·m]",
+            "V/F Excitation — Phase Voltage Va [V] & f_ref [Hz]",
+            "Error  (VHDL − C ref)  iα, iβ  [A]",
+        ]
+        ylabels = ["Current [A]", "Current [A]", "Flux [Wb]",
+                   "Speed [rad/s]", "Torque [N·m]", "V / Hz", "Error [A]"]
+    else:
+        ROWS = 6
+        subplot_titles = [
             "Phase Currents  ia, ib, ic  [A]",
             "Stator Currents  iα, iβ  [A]",
             "Rotor Flux  ψα, ψβ  [Wb]",
             "Speed  ωm (mech) · ωr (elec)  [rad/s]",
             "Electromagnetic Torque  Te  [N·m]",
             "V/F Excitation — Phase Voltage Va [V] & f_ref [Hz]",
-        ],
-        vertical_spacing=0.05,
+        ]
+        ylabels = ["Current [A]", "Current [A]", "Flux [Wb]",
+                   "Speed [rad/s]", "Torque [N·m]", "V / Hz"]
+
+    fig = make_subplots(
+        rows=ROWS, cols=1,
+        shared_xaxes=True,
+        subplot_titles=subplot_titles,
+        vertical_spacing=0.04 if overlay else 0.05,
     )
 
     def line(y, name, color, dash="solid", row=1):
@@ -108,8 +128,9 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
     line([r["flux_beta"]  for r in ref_rows], "ref ψβ", C_B, "dot", row=3)
 
     # Row 4 — speed
-    line([r["speed_mech"] for r in ref_rows], "ref ωm", C_A,        row=4)
-    line([r["speed_elec"] for r in ref_rows], "ref ωr", C_B, "dot", row=4)
+    line([r["speed_mech"] for r in ref_rows], "ref ωm", C_A, row=4)
+    if not overlay:
+        line([r["speed_elec"] for r in ref_rows], "ref ωr", C_B, "dot", row=4)
 
     # Row 5 — torque
     line([r["torque"] for r in ref_rows], "ref Te", C_A, row=5)
@@ -118,8 +139,8 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
     line([r["va"]       for r in ref_rows], "Va [V]",     "#5a7898",       row=6)
     line([r["f_ref_hz"] for r in ref_rows], "f_ref [Hz]", "#a0c8f0", "dash", row=6)
 
-    # VHDL overlay (dots, rows 1-4)
-    if vhdl_rows:
+    # VHDL overlay (dots, rows 2-4) + error row 7
+    if overlay:
         vhdl_rows = _downsample(vhdl_rows, 2000)
         tv = [r["t_us"] * 1e-6 for r in vhdl_rows]
 
@@ -136,6 +157,36 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
         dots([r["vhdl_flux_beta"]  for r in vhdl_rows], "vhdl ψβ",  row=3, symbol="x")
         dots([r["vhdl_speed"]      for r in vhdl_rows], "vhdl ωm",  row=4)
 
+        # Row 7 — error (VHDL − ref)
+        err_alpha = [r["vhdl_i_alpha"] - r["ref_i_alpha"] for r in vhdl_rows]
+        err_beta  = [r["vhdl_i_beta"]  - r["ref_i_beta"]  for r in vhdl_rows]
+        fig.add_trace(
+            go.Scatter(x=tv, y=err_alpha, name="err iα", mode="lines",
+                       line=dict(color=C_A, width=1.2)),
+            row=7, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(x=tv, y=err_beta, name="err iβ", mode="lines",
+                       line=dict(color=C_B, width=1.2, dash="dot")),
+            row=7, col=1,
+        )
+        # Zero reference line
+        fig.add_trace(
+            go.Scatter(x=[tv[0], tv[-1]], y=[0, 0], name="zero",
+                       mode="lines", line=dict(color="#ffffff", width=0.8, dash="dash"),
+                       showlegend=False),
+            row=7, col=1,
+        )
+
+        # Print stats
+        mae_alpha = sum(abs(e) for e in err_alpha) / len(err_alpha)
+        mae_beta  = sum(abs(e) for e in err_beta)  / len(err_beta)
+        max_alpha = max(abs(e) for e in err_alpha)
+        max_beta  = max(abs(e) for e in err_beta)
+        print("Overlay error stats:")
+        print(f"  iα — MAE={mae_alpha:.4e} A   max={max_alpha:.4e} A")
+        print(f"  iβ — MAE={mae_beta:.4e} A   max={max_beta:.4e} A")
+
     # Layout
     fig.update_layout(
         template="plotly_dark",
@@ -146,13 +197,13 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
             text=(
                 "TIM Solver — V/F Motor Startup  │  "
                 "C Reference Model (MODEL_B2, floating-point)"
-                + ("  +  VHDL TIM_Solver overlay" if vhdl_rows else "")
+                + ("  +  VHDL TIM_Solver overlay" if overlay else "")
             ),
             font=dict(size=14),
         ),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1,
                     font=dict(size=10)),
-        height=1200,
+        height=1400 if overlay else 1200,
     )
 
     for row in range(1, ROWS + 1):
@@ -160,8 +211,6 @@ def _build_report(ref_rows: list[dict], vhdl_rows: list[dict] | None, out_path: 
         fig.update_yaxes(gridcolor="#162233", row=row, col=1)
 
     fig.update_xaxes(title_text="Time [s]", row=ROWS, col=1)
-    ylabels = ["Current [A]", "Current [A]", "Flux [Wb]",
-               "Speed [rad/s]", "Torque [N·m]", "V / Hz"]
     for i, lbl in enumerate(ylabels, 1):
         fig.update_yaxes(title_text=lbl, row=i, col=1)
 
@@ -188,6 +237,24 @@ def main() -> None:
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # When --overlay is requested, read the VHDL CSV first to determine its
+    # time window and run the C model for exactly the same duration.
+    vhdl_rows_preload = None
+    if args.overlay and VHDL_CSV.exists():
+        with VHDL_CSV.open() as f:
+            raw = list(csv.DictReader(f))
+        float_keys = [k for k in raw[0] if k != "step"]
+        for r in raw:
+            for k in float_keys:
+                r[k] = float(r[k])
+        vhdl_rows_preload = raw
+        vhdl_duration = max(r["t_us"] for r in vhdl_rows_preload) * 1e-6
+        print(f"VHDL CSV loaded: {VHDL_CSV} ({len(vhdl_rows_preload)} rows, "
+              f"duration={vhdl_duration*1e6:.1f} µs)")
+        args.duration = vhdl_duration
+    elif args.overlay:
+        print(f"VHDL CSV not found at {VHDL_CSV} — running full duration.")
+
     params = IMPhysicalParams.defaults()
     ref = InductionMotorReferenceModel(params=params, backend="auto")
     vf  = VFControl(
@@ -201,7 +268,10 @@ def main() -> None:
     total_steps = int(args.duration / params.ts)
     decimate    = max(1, total_steps // 50_000)
     print(f"Running C reference model: {total_steps:,} steps "
-          f"({args.duration:.1f} s motor time, 1 point per {decimate} steps) ...")
+          f"({args.duration*1e6:.1f} µs motor time, 1 point per {decimate} steps) ..."
+          if args.duration < 0.01 else
+          f"Running C reference model: {total_steps:,} steps "
+          f"({args.duration:.3f} s motor time, 1 point per {decimate} steps) ...")
 
     ref_csv = REPORTS_DIR / "vf_ref_model.csv"
     ref_rows: list[dict] = []
@@ -255,18 +325,8 @@ def main() -> None:
     if args.no_html:
         return
 
-    vhdl_rows = None
-    if args.overlay and VHDL_CSV.exists():
-        with VHDL_CSV.open() as f:
-            raw = list(csv.DictReader(f))
-        float_keys = [k for k in raw[0] if k != "step"]
-        for r in raw:
-            for k in float_keys:
-                r[k] = float(r[k])
-        vhdl_rows = raw
-        print(f"VHDL CSV loaded: {VHDL_CSV} ({len(vhdl_rows)} rows)")
-    elif args.overlay:
-        print(f"VHDL CSV not found at {VHDL_CSV} — skipping overlay.")
+    # Use preloaded VHDL rows (already parsed at duration-override stage above)
+    vhdl_rows = vhdl_rows_preload
 
     _build_report(ref_rows, vhdl_rows, REPORTS_DIR / "vf_report.html")
 
