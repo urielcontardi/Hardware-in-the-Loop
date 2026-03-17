@@ -253,22 +253,35 @@ sim-all: sim-serial sim-tim sim-top
 COCOTB_DIR := verification/cocotb
 TESTCASE   ?=
 TOP        ?= top_hil
+SIM        ?= ghdl
 GUI_DIR    := apps/hil-gui-tauri
 SHELL      := /bin/bash
 
-.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-setup cocotb-clean
+.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-report cocotb-report-overlay cocotb-setup cocotb-setup-nvc cocotb-clean
 
 cocotb:
-	@$(MAKE) -C $(COCOTB_DIR) test TOP=$(TOP) TESTCASE=$(TESTCASE)
+	@$(MAKE) -C $(COCOTB_DIR) test SIM=$(SIM) TOP=$(TOP) TESTCASE=$(TESTCASE)
 
 cocotb-waves:
-	@$(MAKE) -C $(COCOTB_DIR) waves TOP=$(TOP) TESTCASE=$(TESTCASE)
+	@$(MAKE) -C $(COCOTB_DIR) waves SIM=$(SIM) TOP=$(TOP) TESTCASE=$(TESTCASE)
 
 cocotb-tim-ref:
-	@$(MAKE) -C $(COCOTB_DIR) tim-ref
+	@$(MAKE) -C $(COCOTB_DIR) tim-ref SIM=$(SIM)
+
+cocotb-tim-vf:
+	@$(MAKE) -C $(COCOTB_DIR) tim-vf SIM=$(SIM)
+
+cocotb-report:
+	@$(MAKE) -C $(COCOTB_DIR) report
+
+cocotb-report-overlay:
+	@$(MAKE) -C $(COCOTB_DIR) report-overlay
 
 cocotb-setup:
 	@$(MAKE) -C $(COCOTB_DIR) setup
+
+cocotb-setup-nvc:
+	@$(MAKE) -C $(COCOTB_DIR) setup-nvc
 
 cocotb-clean:
 	@$(MAKE) -C $(COCOTB_DIR) clean

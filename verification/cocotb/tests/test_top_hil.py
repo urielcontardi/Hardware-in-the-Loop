@@ -202,20 +202,13 @@ async def test_pwm_enable(dut):
     await sm.set_vdc_bus(real_to_fp(300.0))
     await ClockCycles(dut.clk_i, 20)
 
-    # Set balanced 3-phase references at 85% modulation.
-    # Genuine 120°-shifted set: Va = +ref, Vb = -ref/2 - ref*√3/2, Vc = -ref/2 + ref*√3/2
-    # Simplified integer approximation: Va=ref, Vb=-ref, Vc=0 is NOT balanced.
-    # Use Va=ref, Vb=-ref//2 - (ref*866//1000), Vc=-ref//2 + (ref*866//1000)
-    # so that Va+Vb+Vc = 0 and |Va|=|Vb|=|Vc|=ref.
-    # CARRIER_MAX = 2500. All phases must have non-zero |ref| < CARRIER_MAX
-    # so the modulator switches between POS/NEG and ZERO on every carrier cycle.
-    ref = CARRIER_MAX * 85 // 100  # 2125
-    sqrt3_half = ref * 866 // 1000  # ≈ ref × √3/2 ≈ 1840
-    va_ref =  ref
-    vb_ref = -(ref // 2) - sqrt3_half   # ≈ -2903 → clamp to -CARRIER_MAX if needed
-    vc_ref = -(ref // 2) + sqrt3_half   # ≈  +778
-    # Clamp to valid NPC range
-    vb_ref = max(vb_ref, -CARRIER_MAX)
+    # Balanced 3-phase at θ=0° (Va at positive peak): va=Vm, vb=vc=-Vm/2.
+    # All |ref| < CARRIER_MAX (2500) so the carrier always crosses |ref| →
+    # ZERO state transitions occur every PWM cycle → NPCGateDriver startup condition met.
+    ref = CARRIER_MAX * 85 // 100  # 2125 (85% modulation)
+    va_ref =  ref          # +2125
+    vb_ref = -(ref // 2)   # -1062  (= Vm·cos(−120°) = −Vm/2)
+    vc_ref = -(ref // 2)   # -1062  (= Vm·cos(−240°) = −Vm/2)
     dut.va_ref_i.value = signed_to_slv(va_ref, NPC_DATA_WIDTH)
     dut.vb_ref_i.value = signed_to_slv(vb_ref, NPC_DATA_WIDTH)
     dut.vc_ref_i.value = signed_to_slv(vc_ref, NPC_DATA_WIDTH)
@@ -276,13 +269,11 @@ async def test_full_chain_motor_outputs(dut):
     await ClockCycles(dut.clk_i, 20)
 
     # ── Step 2: Apply balanced 3-phase refs within CARRIER_MAX ──────
-    # Genuine 120°-shifted set (same as test_pwm_enable).
-    # 85% modulation (|ref| < CARRIER_MAX so ZERO transitions occur).
-    ref = CARRIER_MAX * 85 // 100  # 2125
-    sqrt3_half = ref * 866 // 1000
-    va_ref =  ref
-    vb_ref = max(-(ref // 2) - sqrt3_half, -CARRIER_MAX)
-    vc_ref = -(ref // 2) + sqrt3_half
+    # Balanced at θ=0°: va=Vm, vb=vc=-Vm/2.  All |ref| < CARRIER_MAX.
+    ref = CARRIER_MAX * 85 // 100  # 2125 (85% modulation)
+    va_ref =  ref          # +2125
+    vb_ref = -(ref // 2)   # -1062
+    vc_ref = -(ref // 2)   # -1062
     dut.va_ref_i.value = signed_to_slv(va_ref, NPC_DATA_WIDTH)
     dut.vb_ref_i.value = signed_to_slv(vb_ref, NPC_DATA_WIDTH)
     dut.vc_ref_i.value = signed_to_slv(vc_ref, NPC_DATA_WIDTH)

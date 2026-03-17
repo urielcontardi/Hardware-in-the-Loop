@@ -49,11 +49,20 @@ class IMPhysicalParams:
 
 @dataclass(frozen=True)
 class IMState:
+    # α-β frame
     i_alpha: float
     i_beta: float
     flux_alpha: float
     flux_beta: float
-    speed_mech: float
+    # Phase currents (inverse Clarke from α-β)
+    i_a: float
+    i_b: float
+    i_c: float
+    # Speed
+    speed_mech: float    # ωm  [rad/s]
+    speed_elec: float    # ωr = npp * ωm  [rad/s]
+    # Torque
+    torque: float        # Te  [N·m]
 
 
 class _CIMParams(ctypes.Structure):
@@ -201,12 +210,18 @@ class _CReferenceBackend:
             raise RuntimeError("C model private data pointer is null")
 
         st = priv_ptr.contents.out
+        pub = self._model.out
         return IMState(
             i_alpha=st.is_alpha,
             i_beta=st.is_beta,
             flux_alpha=st.fluxR_alpha,
             flux_beta=st.fluxR_beta,
+            i_a=pub.ia,
+            i_b=pub.ib,
+            i_c=pub.ic,
             speed_mech=st.wm,
+            speed_elec=st.wr,
+            torque=st.Te,
         )
 
 
@@ -270,12 +285,22 @@ class _PythonB2Backend:
         self.flux_beta += dflux_beta * ts
         self.wm += dwm * ts
 
+        # Inverse Clarke for phase currents
+        i_a = self.is_alpha
+        i_b = -0.5 * self.is_alpha + (3.0**0.5 / 2.0) * self.is_beta
+        i_c = -0.5 * self.is_alpha - (3.0**0.5 / 2.0) * self.is_beta
+
         return IMState(
             i_alpha=self.is_alpha,
             i_beta=self.is_beta,
             flux_alpha=self.flux_alpha,
             flux_beta=self.flux_beta,
+            i_a=i_a,
+            i_b=i_b,
+            i_c=i_c,
             speed_mech=self.wm,
+            speed_elec=self.wm * npp,
+            torque=te,
         )
 
 

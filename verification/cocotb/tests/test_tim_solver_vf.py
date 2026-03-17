@@ -23,7 +23,7 @@ FP_FRACTION_BITS = 28
 FP_SCALE = 1 << FP_FRACTION_BITS
 
 # Simulation parameters
-SIM_STEPS = 1000       # steps of Ts each (100µs total motor time)
+SIM_STEPS = 3000       # steps of Ts each (300µs total motor time)
 WARMUP_STEPS = 50      # steps to discard before recording
 
 # V/F control parameters (matching PSIM setup)
@@ -165,8 +165,20 @@ async def test_tim_solver_vf_stimulus(dut):
     nrmse_i_alpha = rms(errors_i_alpha) / max(rms([r["ref_i_alpha"] for r in rows]), 1e-9)
     nrmse_i_beta = rms(errors_i_beta) / max(rms([r["ref_i_beta"] for r in rows]), 1e-9)
 
-    dut._log.info(f"NRMSE i_alpha = {nrmse_i_alpha:.6f}")
-    dut._log.info(f"NRMSE i_beta  = {nrmse_i_beta:.6f}")
+    mae_flux_alpha = sum(abs(r["vhdl_flux_alpha"] - r["ref_flux_alpha"]) for r in rows) / len(rows)
+    mae_flux_beta  = sum(abs(r["vhdl_flux_beta"]  - r["ref_flux_beta"])  for r in rows) / len(rows)
+    mae_speed      = sum(abs(r["vhdl_speed"]       - r["ref_speed"])       for r in rows) / len(rows)
+
+    dut._log.info("VHDL vs C Reference — 300µs window")
+    dut._log.info(f"  NRMSE i_alpha = {nrmse_i_alpha:.6f}")
+    dut._log.info(f"  NRMSE i_beta  = {nrmse_i_beta:.6f}")
+    dut._log.info(f"  MAE flux_alpha = {mae_flux_alpha:.2e} Wb")
+    dut._log.info(f"  MAE flux_beta  = {mae_flux_beta:.2e} Wb")
+    dut._log.info(f"  MAE speed_mech = {mae_speed:.6f} rad/s")
 
     assert nrmse_i_alpha < 0.10, f"i_alpha mismatch: {nrmse_i_alpha:.6f}"
     assert nrmse_i_beta < 0.10, f"i_beta mismatch: {nrmse_i_beta:.6f}"
+    assert mae_flux_alpha < 1e-3, f"flux_alpha MAE={mae_flux_alpha:.2e}"
+    assert mae_flux_beta  < 1e-3, f"flux_beta MAE={mae_flux_beta:.2e}"
+    assert mae_speed      < 2.0,  f"speed MAE={mae_speed:.6f} rad/s"
+    dut._log.info(f"MAE flux_alpha={mae_flux_alpha:.2e}  flux_beta={mae_flux_beta:.2e}  speed={mae_speed:.6f}")
