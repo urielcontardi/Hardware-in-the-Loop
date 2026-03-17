@@ -1,22 +1,51 @@
 """
-cocotb Runner for Top_HIL testbench (GHDL backend).
+cocotb Runner — Top_HIL testbench.
 
-This uses the cocotb 2.x Python-based runner API instead of Makefile.sim,
-which is more reliable with virtual environments and easier to extend.
+Supports GHDL and NVC simulators.  Select with --sim:
 
-Usage (from verification/cocotb/):
-    uv run python run.py                              # Run all tests
-    uv run python run.py -k test_write_read_vdc_bus   # Run single test
-    uv run python run.py --waves                      # Enable waveform dump
+    uv run python run.py --sim ghdl   # default
+    uv run python run.py --sim nvc    # faster (requires NVC ≥ 1.13)
+
+Usage:
+    uv run python run.py                              # all tests, ghdl
+    uv run python run.py --sim nvc --top tim_solver   # NVC, TIM_Solver
+    uv run python run.py -k test_write_read_vdc_bus   # single test
+    uv run python run.py --waves                      # waveform dump
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 from cocotb_tools.runner import get_runner
 
+
+# ---------------------------------------------------------------------------
+# Simulator configuration
+# ---------------------------------------------------------------------------
+
+# Build-time args per simulator (analysis / elaboration flags)
+BUILD_ARGS = {
+    "ghdl": ["--std=08"],
+    "nvc":  ["--std=2008"],
+}
+
+# Run-time args per simulator
+RUN_ARGS = {
+    "ghdl": ["--std=08"],
+    "nvc":  [],
+}
+
+# Waveform flag per simulator (format: <flag_template>, <file_extension>)
+WAVE_FLAG = {
+    "ghdl": ("--vcd={path}", ".vcd"),
+    "nvc":  ("--wave={path}", ".fst"),
+}
+
+
+# ---------------------------------------------------------------------------
+# VHDL source lists
+# ---------------------------------------------------------------------------
 
 def get_vhdl_sources(top: str) -> list[Path]:
     """Return VHDL source files in dependency order for a selected top-level."""
@@ -27,9 +56,9 @@ def get_vhdl_sources(top: str) -> list[Path]:
         sources = [
             common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
         ]
+
     elif top == "bilinear_solver":
-        # BilinearSolverUnitTB is a wrapper that exposes scalar ports for each
-        # vector element, since GHDL VPI cannot expose unconstrained array ports.
+        # BilinearSolverUnitTB wraps the DUT to expose scalar ports for VPI.
         tb_hdl = Path(__file__).resolve().parent / "hdl"
         sources = [
             common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
@@ -37,49 +66,41 @@ def get_vhdl_sources(top: str) -> list[Path]:
             common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
             tb_hdl / "BilinearSolverUnitTB.vhd",
         ]
+
     elif top == "top_hil":
         sources = [
-            # Packages (must be first)
             common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
-            # DSP simulation stub (must be before BilinearSolverUnit)
             common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
-            # Primitives
-            common / "fifo" / "src" / "fifo.vhd",
-            common / "uart" / "src" / "UartTX.vhd",
-            common / "uart" / "src" / "UartRX.vhd",
-            common / "edge_detector" / "src" / "EdgeDetector.vhd",
-            common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
-            # Mid-level
-            common / "uart" / "src" / "UartFull.vhd",
+            common / "fifo"            / "src" / "fifo.vhd",
+            common / "uart"            / "src" / "UartTX.vhd",
+            common / "uart"            / "src" / "UartRX.vhd",
+            common / "edge_detector"   / "src" / "EdgeDetector.vhd",
+            common / "clarke_transform"/ "src" / "ClarkeTransform.vhd",
+            common / "uart"            / "src" / "UartFull.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
-            common / "npc_modulator" / "src" / "NPCModulator.vhd",
-            common / "npc_modulator" / "src" / "NPCGateDriver.vhd",
-            common / "npc_modulator" / "src" / "NPCManager.vhd",
-            # Project RTL
+            common / "npc_modulator"   / "src" / "NPCModulator.vhd",
+            common / "npc_modulator"   / "src" / "NPCGateDriver.vhd",
+            common / "npc_modulator"   / "src" / "NPCManager.vhd",
             project_root / "src" / "rtl" / "SerialManager.vhd",
             project_root / "src" / "rtl" / "TIM_Solver.vhd",
             project_root / "src" / "rtl" / "Top_HIL.vhd",
         ]
+
     elif top == "tim_solver":
         sources = [
-            # Packages (must be first)
             common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
-            # DSP simulation stub (must be before BilinearSolverUnit)
             common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
-            # Primitives required by TIM_Solver
-            common / "edge_detector" / "src" / "EdgeDetector.vhd",
-            common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
-            # Bilinear solver modules
+            common / "edge_detector"   / "src" / "EdgeDetector.vhd",
+            common / "clarke_transform"/ "src" / "ClarkeTransform.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
-            # Project RTL under test
             project_root / "src" / "rtl" / "TIM_Solver.vhd",
         ]
-    else:
-        raise ValueError(f"Unsupported top-level: {top}")
 
-    # Verify all sources exist
+    else:
+        raise ValueError(f"Unsupported top-level: {top!r}")
+
     for src in sources:
         if not src.exists():
             print(f"ERROR: VHDL source not found: {src}", file=sys.stderr)
@@ -88,38 +109,58 @@ def get_vhdl_sources(top: str) -> list[Path]:
     return sources
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
-    parser = argparse.ArgumentParser(description="Run cocotb tests for Top_HIL")
-    parser.add_argument(
-        "-k", "--testcase",
-        type=str,
-        default=None,
-        help="Run only the specified test function (e.g. test_write_read_vdc_bus)",
-    )
-    parser.add_argument(
-        "--waves",
-        action="store_true",
-        help="Enable waveform dump (GHW format for GHDL)",
+    parser = argparse.ArgumentParser(
+        description="Run cocotb tests — supports GHDL and NVC simulators",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Simulators:
+  ghdl  — default, widely available (apt install ghdl)
+  nvc   — faster; see: https://github.com/nickg/nvc/releases
+           Ubuntu quick-install: make setup-nvc  (from verification/cocotb/)
+
+Examples:
+  uv run python run.py                              # all tests, GHDL
+  uv run python run.py --sim nvc                    # all tests, NVC
+  uv run python run.py --sim nvc --top tim_solver --test vf
+  uv run python run.py -k test_pwm_enable --waves
+""",
     )
     parser.add_argument(
         "--sim",
         type=str,
         default="ghdl",
-        help="Simulator to use (default: ghdl)",
+        choices=["ghdl", "nvc"],
+        help="Simulator backend (default: ghdl)",
     )
     parser.add_argument(
         "--top",
         type=str,
         default="top_hil",
         choices=["top_hil", "tim_solver", "clarke_transform", "bilinear_solver"],
-        help="Top-level DUT to simulate (default: top_hil)",
+        help="Top-level DUT (default: top_hil)",
     )
     parser.add_argument(
         "--test",
         type=str,
         default=None,
         choices=["reference", "vf"],
-        help="Test suite to run for tim_solver (default: reference)",
+        help="Test suite for tim_solver (default: reference)",
+    )
+    parser.add_argument(
+        "-k", "--testcase",
+        type=str,
+        default=None,
+        help="Run only the named test function",
+    )
+    parser.add_argument(
+        "--waves",
+        action="store_true",
+        help="Enable waveform dump (VCD for GHDL, FST for NVC)",
     )
     parser.add_argument(
         "--build-dir",
@@ -129,15 +170,16 @@ def main():
     )
     args = parser.parse_args()
 
+    sim = args.sim
+
     # Ensure the test module's directory is importable
     tb_dir = Path(__file__).resolve().parent
     if str(tb_dir) not in sys.path:
         sys.path.insert(0, str(tb_dir))
 
-    # Get the simulator runner
-    runner = get_runner(args.sim)
+    runner = get_runner(sim)
 
-    # Map CLI arg → VHDL entity name as seen by GHDL VPI (always lowercased)
+    # Entity names (VHDL entity as seen by VPI — always lowercase)
     ENTITY_NAME = {
         "top_hil":          "top_hil",
         "tim_solver":       "tim_solver",
@@ -145,64 +187,57 @@ def main():
         "bilinear_solver":  "bilinearsolverunittb",
     }
     entity = ENTITY_NAME[args.top]
-
-    # VHDL sources
     sources = get_vhdl_sources(args.top)
 
+    # ── Per-DUT configuration ────────────────────────────────────────────
     if args.top == "clarke_transform":
-        test_module = "tests.test_clarke_transform"
+        test_module    = "tests.test_clarke_transform"
         sim_parameters = {"DATA_WIDTH": 42, "FRAC_WIDTH": 28}
 
     elif args.top == "bilinear_solver":
-        test_module = "tests.test_bilinear_solver"
-        sim_parameters = {}  # N_SS=5, N_IN=3 hardcoded in BilinearSolverUnitTB wrapper
+        test_module    = "tests.test_bilinear_solver"
+        sim_parameters = {}
 
     elif args.top == "top_hil":
-        test_module = "tests.test_top_hil"
-        # Generic overrides for faster UART simulation
+        test_module    = "tests.test_top_hil"
         sim_parameters = {
-            "CLK_FREQUENCY": 100_000_000,   # 100 MHz
-            "BAUD_RATE": 1_000_000,         # 1 Mbaud
+            "CLK_FREQUENCY": 100_000_000,
+            "BAUD_RATE":     1_000_000,
         }
-    else:
-        # Select test suite
-        test_suite = args.test or "reference"
+
+    else:  # tim_solver
+        test_suite  = args.test or "reference"
         test_module = {
             "reference": "tests.test_tim_solver_reference",
             "vf":        "tests.test_tim_solver_vf",
         }[test_suite]
+        # 400 MHz × Ts=100ns → TIMER_STEPS=40 > solver pipeline latency (~29 cy)
+        sim_parameters = {"CLOCK_FREQUENCY": 400_000_000}
 
-        # CLOCK_FREQUENCY must give TIMER_STEPS > solver pipeline latency.
-        # With simulation DSP stub (LATENCY=7): total chain latency ~29 cycles.
-        # 400 MHz × Ts=100ns → TIMER_STEPS=40, giving ~11-cycle margin.
-        # The matrices are computed with Ts=100ns (default generic), so physics is correct.
-        sim_parameters = {
-            "CLOCK_FREQUENCY": 400_000_000,
-        }
+    # ── Waveform setup ───────────────────────────────────────────────────
+    plusargs = []
+    if args.waves:
+        flag_tpl, ext = WAVE_FLAG[sim]
+        wave_path = (tb_dir / args.build_dir / f"waves_{args.top}{ext}").resolve()
+        plusargs.append(flag_tpl.format(path=wave_path))
 
-    # Build (analyze + elaborate)
+    # ── Build ────────────────────────────────────────────────────────────
     runner.build(
         sources=[str(s) for s in sources],
         hdl_toplevel=entity,
         build_dir=args.build_dir,
-        build_args=["--std=08"],
+        build_args=BUILD_ARGS[sim],
         always=True,
     )
 
-    # Run
-    test_args = ["--std=08"]
-    plusargs = []
-    if args.waves:
-        vcd_path = (tb_dir / args.build_dir / "waves_top_hil.vcd").resolve()
-        plusargs.append(f"--vcd={vcd_path}")
-
+    # ── Run ─────────────────────────────────────────────────────────────
     runner.test(
         hdl_toplevel=entity,
         test_module=test_module,
         build_dir=args.build_dir,
         hdl_toplevel_lang="vhdl",
         testcase=args.testcase if args.testcase else None,
-        test_args=test_args,
+        test_args=RUN_ARGS[sim],
         plusargs=plusargs,
         parameters=sim_parameters,
     )

@@ -256,7 +256,7 @@ TOP        ?= top_hil
 GUI_DIR    := apps/hil-gui-tauri
 SHELL      := /bin/bash
 
-.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-report cocotb-report-overlay cocotb-setup cocotb-clean
+.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-report cocotb-report-overlay cocotb-setup cocotb-setup-nvc cocotb-clean
 
 cocotb:
 	@$(MAKE) -C $(COCOTB_DIR) test TOP=$(TOP) TESTCASE=$(TESTCASE)
@@ -278,6 +278,9 @@ cocotb-report-overlay:
 
 cocotb-setup:
 	@$(MAKE) -C $(COCOTB_DIR) setup
+
+cocotb-setup-nvc:
+	@$(MAKE) -C $(COCOTB_DIR) setup-nvc
 
 cocotb-clean:
 	@$(MAKE) -C $(COCOTB_DIR) clean
