@@ -23,7 +23,21 @@ def get_vhdl_sources(top: str) -> list[Path]:
     project_root = Path(__file__).resolve().parent.parent.parent
     common = project_root / "common" / "modules"
 
-    if top == "top_hil":
+    if top == "clarke_transform":
+        sources = [
+            common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
+        ]
+    elif top == "bilinear_solver":
+        # BilinearSolverUnitTB is a wrapper that exposes scalar ports for each
+        # vector element, since GHDL VPI cannot expose unconstrained array ports.
+        tb_hdl = Path(__file__).resolve().parent / "hdl"
+        sources = [
+            common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
+            common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
+            common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
+            tb_hdl / "BilinearSolverUnitTB.vhd",
+        ]
+    elif top == "top_hil":
         sources = [
             # Packages (must be first)
             common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
@@ -97,7 +111,7 @@ def main():
         "--top",
         type=str,
         default="top_hil",
-        choices=["top_hil", "tim_solver"],
+        choices=["top_hil", "tim_solver", "clarke_transform", "bilinear_solver"],
         help="Top-level DUT to simulate (default: top_hil)",
     )
     parser.add_argument(
@@ -123,10 +137,27 @@ def main():
     # Get the simulator runner
     runner = get_runner(args.sim)
 
+    # Map CLI arg → VHDL entity name as seen by GHDL VPI (always lowercased)
+    ENTITY_NAME = {
+        "top_hil":          "top_hil",
+        "tim_solver":       "tim_solver",
+        "clarke_transform": "clarketransform",
+        "bilinear_solver":  "bilinearsolverunittb",
+    }
+    entity = ENTITY_NAME[args.top]
+
     # VHDL sources
     sources = get_vhdl_sources(args.top)
 
-    if args.top == "top_hil":
+    if args.top == "clarke_transform":
+        test_module = "tests.test_clarke_transform"
+        sim_parameters = {"DATA_WIDTH": 42, "FRAC_WIDTH": 28}
+
+    elif args.top == "bilinear_solver":
+        test_module = "tests.test_bilinear_solver"
+        sim_parameters = {}  # N_SS=5, N_IN=3 hardcoded in BilinearSolverUnitTB wrapper
+
+    elif args.top == "top_hil":
         test_module = "tests.test_top_hil"
         # Generic overrides for faster UART simulation
         sim_parameters = {
@@ -152,7 +183,7 @@ def main():
     # Build (analyze + elaborate)
     runner.build(
         sources=[str(s) for s in sources],
-        hdl_toplevel=args.top,
+        hdl_toplevel=entity,
         build_dir=args.build_dir,
         build_args=["--std=08"],
         always=True,
@@ -166,7 +197,7 @@ def main():
         plusargs.append(f"--vcd={vcd_path}")
 
     runner.test(
-        hdl_toplevel=args.top,
+        hdl_toplevel=entity,
         test_module=test_module,
         build_dir=args.build_dir,
         hdl_toplevel_lang="vhdl",
