@@ -126,6 +126,25 @@ report-overlay:
 	@echo ""
 	$(UV) run python scripts/vf_report.py --overlay
 
+.PHONY: tim-sine
+tim-sine:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ cocotb: TIM_Solver pure sine 60 Hz ($(SIM))  ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python run.py --sim $(SIM) --top tim_solver --test sine
+
+.PHONY: report-sine
+report-sine:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ Generating pure-sine HTML report + overlay   ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python scripts/vf_report.py --sine --duration 0.2 --overlay \
+	    --vhdl-csv reports/sine_vhdl_vs_ref.csv --out reports/sine_report.html
+
 # ── Clean build artifacts ──────────────────────────────────────────────
 .PHONY: clean
 clean:
