@@ -151,7 +151,7 @@ Examples:
         "--test",
         type=str,
         default=None,
-        choices=["reference", "vf"],
+        choices=["reference", "vf", "sine"],
         help="Test suite for tim_solver (default: reference)",
     )
     parser.add_argument(
@@ -213,6 +213,7 @@ Examples:
         test_module = {
             "reference": "tests.test_tim_solver_reference",
             "vf":        "tests.test_tim_solver_vf",
+            "sine":      "tests.test_tim_solver_sine",
         }[test_suite]
         # 400 MHz × Ts=100ns → TIMER_STEPS=40 > solver pipeline latency (~29 cy)
         sim_parameters = {"CLOCK_FREQUENCY": 400_000_000}
