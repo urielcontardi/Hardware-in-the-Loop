@@ -208,20 +208,33 @@ def _build_report(
         row_heights=[0.16, 0.21, 0.21, 0.21, 0.21],
     )
 
-    # Helper: suppress duplicate legend entries with legendgroup
-    _shown: set[str] = set()
+    # Helper: suppress duplicate legend entries with legendgroup.
+    # Deduplication key is (legendgroup, name) so the same signal name can appear
+    # in two different groups (C Reference vs VHDL DUT) without being suppressed.
+    _shown: set[str] = set()        # tracks "group::name" pairs already in legend
+    _group_titled: set[str] = set() # tracks which groups already have a title
 
-    def _t(fig, x, y, name, color, dash="solid", width=1.6, row=1, col=1, group=None):
+    def _t(fig, x, y, name, color, dash="solid", width=1.6, row=1, col=1,
+           group=None, gtitle=None):
         lg = group or name
-        show = lg not in _shown
+        key = f"{lg}::{name}"
+        show = key not in _shown
         if show:
-            _shown.add(lg)
+            _shown.add(key)
+        kw: dict = {}
+        if gtitle and lg not in _group_titled:
+            kw["legendgrouptitle_text"] = gtitle
+            kw["legendgrouptitle"] = dict(
+                text=gtitle, font=dict(size=10, color="#8ba8c8", family="IBM Plex Mono, monospace")
+            )
+            _group_titled.add(lg)
         fig.add_trace(
             go.Scatter(
                 x=x, y=y, name=name,
                 legendgroup=lg,
                 showlegend=show,
                 line=dict(color=color, width=width, dash=dash),
+                **kw,
             ),
             row=row, col=col,
         )
@@ -230,13 +243,13 @@ def _build_report(
     va_a = [_clarke_alpha(r["va"], r["vb"], r["vc"]) for r in ref_rows]
     va_b = [_clarke_beta (r["va"], r["vb"], r["vc"]) for r in ref_rows]
 
-    _t(fig, t_ref_s, va_a,                                 "vα",  C_REF_A,         row=1, col=1)
-    _t(fig, t_ref_s, va_b,                                 "vβ",  C_REF_B, "dash", row=1, col=1)
-    _t(fig, t_ref_s, [r["i_alpha"]    for r in ref_rows],  "iα (C ref)",  C_REF_A,         row=2, col=1, group="C ref iα")
-    _t(fig, t_ref_s, [r["i_beta"]     for r in ref_rows],  "iβ (C ref)",  C_REF_B, "dash", row=3, col=1, group="C ref iβ")
-    _t(fig, t_ref_s, [r["flux_alpha"] for r in ref_rows],  "ψα (C ref)",  C_REF_A,         row=4, col=1, group="C ref ψα")
-    _t(fig, t_ref_s, [r["flux_beta"]  for r in ref_rows],  "ψβ (C ref)",  C_REF_B, "dash", row=4, col=1, group="C ref ψβ")
-    _t(fig, t_ref_s, [r["speed_mech"] for r in ref_rows],  "ωm (C ref)",  C_REF_A,         row=5, col=1, group="C ref ωm")
+    _t(fig, t_ref_s, va_a,                                 "vα",        C_REF_A,         row=1, col=1, group="Input Voltages", gtitle="Input Voltages")
+    _t(fig, t_ref_s, va_b,                                 "vβ",        C_REF_B, "dash", row=1, col=1, group="Input Voltages")
+    _t(fig, t_ref_s, [r["i_alpha"]    for r in ref_rows],  "iα",  C_REF_A,         row=2, col=1, group="C Reference", gtitle="C Reference Model")
+    _t(fig, t_ref_s, [r["i_beta"]     for r in ref_rows],  "iβ",  C_REF_B, "dash", row=3, col=1, group="C Reference")
+    _t(fig, t_ref_s, [r["flux_alpha"] for r in ref_rows],  "ψα",  C_REF_A,         row=4, col=1, group="C Reference")
+    _t(fig, t_ref_s, [r["flux_beta"]  for r in ref_rows],  "ψβ",  C_REF_B, "dash", row=4, col=1, group="C Reference")
+    _t(fig, t_ref_s, [r["speed_mech"] for r in ref_rows],  "ωm",  C_REF_A,         row=5, col=1, group="C Reference")
 
     # VHDL validation window shading on col 1
     vhdl_t_max_s = vhdl_t_max_us * 1e-6
@@ -252,27 +265,27 @@ def _build_report(
     vz_a = [_clarke_alpha(r["va"], r["vb"], r["vc"]) for r in vhdl_rows]
     vz_b = [_clarke_beta (r["va"], r["vb"], r["vc"]) for r in vhdl_rows]
 
-    # Row 1: voltages
-    _t(fig, t_vhd_us, vz_a,                                       "vα",        C_REF_A,         row=1, col=2)
-    _t(fig, t_vhd_us, vz_b,                                       "vβ",        C_REF_B, "dash", row=1, col=2)
+    # Row 1: voltages (deduplicated into "Input Voltages" group from col 1)
+    _t(fig, t_vhd_us, vz_a,                                       "vα",  C_REF_A,         row=1, col=2, group="Input Voltages")
+    _t(fig, t_vhd_us, vz_b,                                       "vβ",  C_REF_B, "dash", row=1, col=2, group="Input Voltages")
 
     # Row 2: iα — C ref vs VHDL
-    _t(fig, t_ref_zoom_us, [r["i_alpha"]      for r in ref_zoom],  "iα (C ref)",  C_REF_A,        row=2, col=2, group="C ref iα")
-    _t(fig, t_vhd_us,      [r["vhdl_i_alpha"] for r in vhdl_rows], "iα (VHDL)",   C_VH_A, "dash", row=2, col=2, group="VHDL iα")
+    _t(fig, t_ref_zoom_us, [r["i_alpha"]      for r in ref_zoom],  "iα",  C_REF_A,        row=2, col=2, group="C Reference")
+    _t(fig, t_vhd_us,      [r["vhdl_i_alpha"] for r in vhdl_rows], "iα",  C_VH_A, "dash", row=2, col=2, group="VHDL DUT", gtitle="VHDL Q14.28 DUT")
 
     # Row 3: iβ — C ref vs VHDL
-    _t(fig, t_ref_zoom_us, [r["i_beta"]       for r in ref_zoom],  "iβ (C ref)",  C_REF_B,        row=3, col=2, group="C ref iβ")
-    _t(fig, t_vhd_us,      [r["vhdl_i_beta"]  for r in vhdl_rows], "iβ (VHDL)",   C_VH_B, "dash", row=3, col=2, group="VHDL iβ")
+    _t(fig, t_ref_zoom_us, [r["i_beta"]       for r in ref_zoom],  "iβ",  C_REF_B,        row=3, col=2, group="C Reference")
+    _t(fig, t_vhd_us,      [r["vhdl_i_beta"]  for r in vhdl_rows], "iβ",  C_VH_B, "dash", row=3, col=2, group="VHDL DUT")
 
     # Row 4: flux
-    _t(fig, t_ref_zoom_us, [r["flux_alpha"]      for r in ref_zoom],  "ψα (C ref)", C_REF_A,        row=4, col=2, group="C ref ψα")
-    _t(fig, t_vhd_us,      [r["vhdl_flux_alpha"] for r in vhdl_rows], "ψα (VHDL)",  C_VH_A, "dash", row=4, col=2, group="VHDL ψα")
-    _t(fig, t_ref_zoom_us, [r["flux_beta"]       for r in ref_zoom],  "ψβ (C ref)", C_REF_B,        row=4, col=2, group="C ref ψβ")
-    _t(fig, t_vhd_us,      [r["vhdl_flux_beta"]  for r in vhdl_rows], "ψβ (VHDL)",  C_VH_B, "dash", row=4, col=2, group="VHDL ψβ")
+    _t(fig, t_ref_zoom_us, [r["flux_alpha"]      for r in ref_zoom],  "ψα", C_REF_A,        row=4, col=2, group="C Reference")
+    _t(fig, t_vhd_us,      [r["vhdl_flux_alpha"] for r in vhdl_rows], "ψα", C_VH_A, "dash", row=4, col=2, group="VHDL DUT")
+    _t(fig, t_ref_zoom_us, [r["flux_beta"]       for r in ref_zoom],  "ψβ", C_REF_B,        row=4, col=2, group="C Reference")
+    _t(fig, t_vhd_us,      [r["vhdl_flux_beta"]  for r in vhdl_rows], "ψβ", C_VH_B, "dash", row=4, col=2, group="VHDL DUT")
 
     # Row 5: speed + error (shared panel)
-    _t(fig, t_ref_zoom_us, [r["speed_mech"] for r in ref_zoom],   "ωm (C ref)", C_REF_A,        row=5, col=2, group="C ref ωm")
-    _t(fig, t_vhd_us,      [r["vhdl_speed"] for r in vhdl_rows],  "ωm (VHDL)",  C_VH_A, "dash", row=5, col=2, group="VHDL ωm")
+    _t(fig, t_ref_zoom_us, [r["speed_mech"] for r in ref_zoom],   "ωm", C_REF_A,        row=5, col=2, group="C Reference")
+    _t(fig, t_vhd_us,      [r["vhdl_speed"] for r in vhdl_rows],  "ωm", C_VH_A, "dash", row=5, col=2, group="VHDL DUT")
 
     err_alpha = [r["vhdl_i_alpha"] - r["ref_i_alpha"] for r in vhdl_rows]
     err_beta  = [r["vhdl_i_beta"]  - r["ref_i_beta"]  for r in vhdl_rows]
@@ -284,9 +297,9 @@ def _build_report(
     print(f"  iα — MAE={mae_alpha:.4e} A   max={max_alpha:.4e} A")
     print(f"  iβ — MAE={mae_beta:.4e} A   max={max_beta:.4e} A")
 
-    # Error traces on row 5 col 2 (secondary y via annotation — same axis, small values)
-    _t(fig, t_vhd_us, err_alpha, f"err iα (MAE={mae_alpha:.1e})", C_ERR_A,        width=1.2, row=5, col=2, group="err iα")
-    _t(fig, t_vhd_us, err_beta,  f"err iβ (MAE={mae_beta:.1e})",  C_ERR_B, "dot", width=1.2, row=5, col=2, group="err iβ")
+    # Error traces on row 5 col 2
+    _t(fig, t_vhd_us, err_alpha, f"err iα  MAE={mae_alpha:.1e} A", C_ERR_A,        width=1.2, row=5, col=2, group="Error (VHDL − C ref)", gtitle="Error (VHDL − C ref)")
+    _t(fig, t_vhd_us, err_beta,  f"err iβ  MAE={mae_beta:.1e} A",  C_ERR_B, "dot", width=1.2, row=5, col=2, group="Error (VHDL − C ref)")
     fig.add_hline(y=0, line=dict(color="rgba(255,255,255,0.25)", width=0.7, dash="dot"),
                   row=5, col=2)
 
@@ -317,24 +330,32 @@ def _build_report(
             x=0.5, xanchor="center",
         ),
         legend=dict(
-            orientation="h",
-            yanchor="bottom", y=-0.12,
-            xanchor="center", x=0.5,
+            orientation="v",
+            yanchor="top", y=1.0,
+            xanchor="left", x=1.02,
             font=dict(size=10),
             bgcolor="rgba(10,20,40,0.85)",
             bordercolor="#2a3f55",
             borderwidth=1,
-            tracegroupgap=6,
+            tracegroupgap=8,
+            groupclick="toggleitem",
         ),
         height=900,
-        margin=dict(l=80, r=40, t=70, b=120),
+        margin=dict(l=80, r=200, t=70, b=40),
     )
+
+    fig.write_html(str(out_path), include_plotlyjs="cdn")
+    print(f"Report saved: {out_path}")
 
 
 # ---------------------------------------------------------------------------
 # Compare-only report (reads combined CSV, no C model re-run)
 # ---------------------------------------------------------------------------
-def _build_compare_only_report(vhdl_rows: list[dict], out_path: Path) -> None:
+def _build_compare_only_report(
+    vhdl_rows: list[dict],
+    out_path: Path,
+    title_suffix: str = "",
+) -> None:
     """Single-column 6-row VHDL vs C ref comparison from a combined CSV."""
     try:
         import plotly.graph_objects as go
@@ -366,37 +387,50 @@ def _build_compare_only_report(vhdl_rows: list[dict], out_path: Path) -> None:
     fig = make_subplots(rows=6, cols=1, shared_xaxes=True,
                         subplot_titles=titles, vertical_spacing=0.05)
 
-    def _tr(x, y, name, color, dash="solid", width=1.6, row=1):
-        fig.add_trace(go.Scatter(x=x, y=y, name=name,
-                                 line=dict(color=color, width=width, dash=dash)),
-                      row=row, col=1)
+    _co_groups: set[str] = set()  # groups that already have a title
+
+    def _tr(x, y, name, color, dash="solid", width=1.6, row=1, group=None, gtitle=None):
+        lg = group or name
+        kw: dict = {}
+        if gtitle and lg not in _co_groups:
+            kw["legendgrouptitle_text"] = gtitle
+            kw["legendgrouptitle"] = dict(
+                text=gtitle, font=dict(size=10, color="#8ba8c8", family="IBM Plex Mono, monospace")
+            )
+            _co_groups.add(lg)
+        fig.add_trace(go.Scatter(
+            x=x, y=y, name=name,
+            legendgroup=lg,
+            line=dict(color=color, width=width, dash=dash),
+            **kw,
+        ), row=row, col=1)
 
     va_a = [_clarke_alpha(r["va"], r["vb"], r["vc"]) for r in rows]
     va_b = [_clarke_beta (r["va"], r["vb"], r["vc"]) for r in rows]
 
-    _tr(t, va_a, "vα", C_REF_A, row=1)
-    _tr(t, va_b, "vβ", C_REF_B, "dash", row=1)
+    _tr(t, va_a, "vα", C_REF_A,        row=1, group="Input Voltages", gtitle="Input Voltages")
+    _tr(t, va_b, "vβ", C_REF_B, "dash", row=1, group="Input Voltages")
 
-    _tr(t, [r["ref_i_alpha"]      for r in rows], "iα (C ref)",  C_REF_A,        row=2)
-    _tr(t, [r["vhdl_i_alpha"]     for r in rows], "iα (VHDL)",   C_VH_A, "dash", row=2)
+    _tr(t, [r["ref_i_alpha"]     for r in rows], "iα", C_REF_A,        row=2, group="C Reference", gtitle="C Reference Model")
+    _tr(t, [r["vhdl_i_alpha"]    for r in rows], "iα", C_VH_A, "dash", row=2, group="VHDL DUT",   gtitle="VHDL Q14.28 DUT")
 
-    _tr(t, [r["ref_i_beta"]       for r in rows], "iβ (C ref)",  C_REF_B,        row=3)
-    _tr(t, [r["vhdl_i_beta"]      for r in rows], "iβ (VHDL)",   C_VH_B, "dash", row=3)
+    _tr(t, [r["ref_i_beta"]      for r in rows], "iβ", C_REF_B,        row=3, group="C Reference")
+    _tr(t, [r["vhdl_i_beta"]     for r in rows], "iβ", C_VH_B, "dash", row=3, group="VHDL DUT")
 
-    _tr(t, [r["ref_flux_alpha"]   for r in rows], "ψα (C ref)",  C_REF_A,        row=4)
-    _tr(t, [r["vhdl_flux_alpha"]  for r in rows], "ψα (VHDL)",   C_VH_A, "dash", row=4)
-    _tr(t, [r["ref_flux_beta"]    for r in rows], "ψβ (C ref)",  C_REF_B,        row=4)
-    _tr(t, [r["vhdl_flux_beta"]   for r in rows], "ψβ (VHDL)",   C_VH_B, "dash", row=4)
+    _tr(t, [r["ref_flux_alpha"]  for r in rows], "ψα", C_REF_A,        row=4, group="C Reference")
+    _tr(t, [r["vhdl_flux_alpha"] for r in rows], "ψα", C_VH_A, "dash", row=4, group="VHDL DUT")
+    _tr(t, [r["ref_flux_beta"]   for r in rows], "ψβ", C_REF_B,        row=4, group="C Reference")
+    _tr(t, [r["vhdl_flux_beta"]  for r in rows], "ψβ", C_VH_B, "dash", row=4, group="VHDL DUT")
 
-    _tr(t, [r["ref_speed"]        for r in rows], "ωm (C ref)",  C_REF_A,        row=5)
-    _tr(t, [r["vhdl_speed"]       for r in rows], "ωm (VHDL)",   C_VH_A, "dash", row=5)
+    _tr(t, [r["ref_speed"]       for r in rows], "ωm", C_REF_A,        row=5, group="C Reference")
+    _tr(t, [r["vhdl_speed"]      for r in rows], "ωm", C_VH_A, "dash", row=5, group="VHDL DUT")
 
     err_alpha = [r["vhdl_i_alpha"] - r["ref_i_alpha"] for r in rows]
     err_beta  = [r["vhdl_i_beta"]  - r["ref_i_beta"]  for r in rows]
     mae_a = sum(abs(e) for e in err_alpha) / len(err_alpha)
     mae_b = sum(abs(e) for e in err_beta)  / len(err_beta)
-    _tr(t, err_alpha, f"err iα (MAE={mae_a:.1e})", C_ERR_A,        width=1.2, row=6)
-    _tr(t, err_beta,  f"err iβ (MAE={mae_b:.1e})", C_ERR_B, "dot", width=1.2, row=6)
+    _tr(t, err_alpha, f"err iα  MAE={mae_a:.1e} A", C_ERR_A,        width=1.2, row=6, group="Error (VHDL − C ref)", gtitle="Error (VHDL − C ref)")
+    _tr(t, err_beta,  f"err iβ  MAE={mae_b:.1e} A", C_ERR_B, "dot", width=1.2, row=6, group="Error (VHDL − C ref)")
     fig.add_hline(y=0, line=dict(color="rgba(255,255,255,0.25)", width=0.7, dash="dot"), row=6, col=1)
 
     fig.update_xaxes(title_text="Time [µs]", row=6, col=1)
@@ -412,19 +446,25 @@ def _build_compare_only_report(vhdl_rows: list[dict], out_path: Path) -> None:
         font=dict(family="IBM Plex Mono, monospace", color="#ccd9ee", size=11),
         title=dict(
             text=(
-                "TIM Solver — VHDL Q14.28 vs C Reference  │  "
+                f"TIM Solver — VHDL Q14.28 vs C Reference{title_suffix}  │  "
                 "<span style='color:#00d4a8'>teal/blue = C ref (solid)</span>  │  "
                 "<span style='color:#f07030'>orange/amber = VHDL (dashed)</span>"
             ),
             font=dict(size=12), x=0.5, xanchor="center",
         ),
         legend=dict(
-            orientation="h", yanchor="bottom", y=-0.08, xanchor="center", x=0.5,
-            font=dict(size=10), bgcolor="rgba(10,20,40,0.85)",
-            bordercolor="#2a3f55", borderwidth=1,
+            orientation="v",
+            yanchor="top", y=1.0,
+            xanchor="left", x=1.02,
+            font=dict(size=10),
+            bgcolor="rgba(10,20,40,0.85)",
+            bordercolor="#2a3f55",
+            borderwidth=1,
+            tracegroupgap=8,
+            groupclick="toggleitem",
         ),
         height=1050,
-        margin=dict(l=80, r=40, t=70, b=100),
+        margin=dict(l=80, r=200, t=70, b=40),
     )
 
     fig.write_html(str(out_path), include_plotlyjs="cdn")
@@ -614,7 +654,10 @@ Examples:
     if args.no_html:
         return
 
-    _build_report(ref_rows, vhdl_rows_preload, out_path, title_suffix=title_suffix)
+    if vhdl_rows_preload is not None:
+        _build_compare_only_report(vhdl_rows_preload, out_path, title_suffix=title_suffix)
+    else:
+        _build_report(ref_rows, None, out_path, title_suffix=title_suffix)
 
 
 if __name__ == "__main__":
