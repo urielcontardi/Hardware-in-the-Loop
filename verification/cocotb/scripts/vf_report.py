@@ -56,7 +56,7 @@ from models.sine_control import SineControl
 # ---------------------------------------------------------------------------
 F_NOMINAL_HZ    = 60.0
 V_PEAK_NOMINAL  = 620.0   # Phase peak at f_nominal [V]
-ACC_RAMP_HZ_S   = 30.0    # 30 Hz/s → reaches 60 Hz in 2 s
+ACC_RAMP_HZ_S   = 60.0    # 60 Hz/s → reaches 60 Hz in 1 s
 TLOAD_NM        = 0.0
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
@@ -78,6 +78,11 @@ def _clarke_beta(va: float, vb: float, vc: float) -> float:
 # ---------------------------------------------------------------------------
 # Downsampler
 # ---------------------------------------------------------------------------
+def _rpm(rad_s: float) -> float:
+    """Convert angular velocity from rad/s to RPM."""
+    return rad_s * 60.0 / (2.0 * math.pi)
+
+
 def _downsample(rows: list[dict], max_points: int) -> list[dict]:
     n = len(rows)
     if n <= max_points:
@@ -130,10 +135,10 @@ def _build_report(
             "① Applied Voltages  vα, vβ  [V]",
             "② Stator Currents  iα, iβ  [A]",
             "③ Rotor Flux  ψα, ψβ  [Wb]",
-            "④ Mechanical Speed  ωm  [rad/s]",
+            "④ Speed  ωm (mechanical) · ωr (electrical)  [RPM]",
             "⑤ Electromagnetic Torque  Te  [N·m]",
         ]
-        ylabels = ["Voltage [V]", "Current [A]", "Flux [Wb]", "Speed [rad/s]", "Torque [N·m]"]
+        ylabels = ["Voltage [V]", "Current [A]", "Flux [Wb]", "Speed [RPM]", "Torque [N·m]"]
 
         fig = make_subplots(rows=5, cols=1, shared_xaxes=True,
                             subplot_titles=titles, vertical_spacing=0.06)
@@ -146,8 +151,8 @@ def _build_report(
         _trace(fig, t, [r["i_beta"]     for r in ref_rows],     "iβ",    C_REF_B, "dash", row=2)
         _trace(fig, t, [r["flux_alpha"] for r in ref_rows],     "ψα",    C_REF_A, row=3)
         _trace(fig, t, [r["flux_beta"]  for r in ref_rows],     "ψβ",    C_REF_B, "dash", row=3)
-        _trace(fig, t, [r["speed_mech"] for r in ref_rows],     "ωm",    C_REF_A, row=4)
-        _trace(fig, t, [r["speed_elec"] for r in ref_rows],     "ωr",    C_REF_B, "dash", row=4)
+        _trace(fig, t, [_rpm(r["speed_mech"]) for r in ref_rows], "ωm",  C_REF_A,         row=4)
+        _trace(fig, t, [_rpm(r["speed_elec"]) for r in ref_rows], "ωr", C_REF_B, "dash", row=4)
         _trace(fig, t, [r["torque"]     for r in ref_rows],     "Te",    C_REF_A, row=5)
 
         fig.update_layout(
@@ -195,7 +200,7 @@ def _build_report(
         f"C Reference Model — full run{title_suffix}  [time: s]",
         f"VHDL Q14.28 vs C ref — {vhdl_t_max_us:.0f} µs zoom  [time: µs]",
     ]
-    row_titles = ["vα, vβ [V]", "iα [A]", "iβ [A]", "ψα, ψβ [Wb]", "ωm [rad/s] + error"]
+    row_titles = ["vα, vβ [V]", "iα [A]", "iβ [A]", "ψα, ψβ [Wb]", "ωm/ωr [RPM] + error"]
 
     fig = make_subplots(
         rows=ROWS, cols=2,
@@ -249,7 +254,8 @@ def _build_report(
     _t(fig, t_ref_s, [r["i_beta"]     for r in ref_rows],  "iβ",  C_REF_B, "dash", row=3, col=1, group="C Reference")
     _t(fig, t_ref_s, [r["flux_alpha"] for r in ref_rows],  "ψα",  C_REF_A,         row=4, col=1, group="C Reference")
     _t(fig, t_ref_s, [r["flux_beta"]  for r in ref_rows],  "ψβ",  C_REF_B, "dash", row=4, col=1, group="C Reference")
-    _t(fig, t_ref_s, [r["speed_mech"] for r in ref_rows],  "ωm",  C_REF_A,         row=5, col=1, group="C Reference")
+    _t(fig, t_ref_s, [_rpm(r["speed_mech"]) for r in ref_rows], "ωm", C_REF_A,         row=5, col=1, group="C Reference")
+    _t(fig, t_ref_s, [_rpm(r["speed_elec"]) for r in ref_rows], "ωr", C_REF_B, "dash", row=5, col=1, group="C Reference")
 
     # VHDL validation window shading on col 1
     vhdl_t_max_s = vhdl_t_max_us * 1e-6
@@ -283,9 +289,9 @@ def _build_report(
     _t(fig, t_ref_zoom_us, [r["flux_beta"]       for r in ref_zoom],  "ψβ", C_REF_B,        row=4, col=2, group="C Reference")
     _t(fig, t_vhd_us,      [r["vhdl_flux_beta"]  for r in vhdl_rows], "ψβ", C_VH_B, "dash", row=4, col=2, group="VHDL DUT")
 
-    # Row 5: speed + error (shared panel)
-    _t(fig, t_ref_zoom_us, [r["speed_mech"] for r in ref_zoom],   "ωm", C_REF_A,        row=5, col=2, group="C Reference")
-    _t(fig, t_vhd_us,      [r["vhdl_speed"] for r in vhdl_rows],  "ωm", C_VH_A, "dash", row=5, col=2, group="VHDL DUT")
+    # Row 5: speed + error (shared panel) — RPM
+    _t(fig, t_ref_zoom_us, [_rpm(r["speed_mech"]) for r in ref_zoom],   "ωm", C_REF_A,        row=5, col=2, group="C Reference")
+    _t(fig, t_vhd_us,      [_rpm(r["vhdl_speed"])  for r in vhdl_rows], "ωm", C_VH_A, "dash", row=5, col=2, group="VHDL DUT")
 
     err_alpha = [r["vhdl_i_alpha"] - r["ref_i_alpha"] for r in vhdl_rows]
     err_beta  = [r["vhdl_i_beta"]  - r["ref_i_beta"]  for r in vhdl_rows]
@@ -379,10 +385,10 @@ def _build_compare_only_report(
         "② Stator Current  iα  [A]  — C ref vs VHDL",
         "③ Stator Current  iβ  [A]  — C ref vs VHDL",
         "④ Rotor Flux  ψα, ψβ  [Wb]  — C ref vs VHDL",
-        "⑤ Mechanical Speed  ωm  [rad/s]  — C ref vs VHDL",
+        "⑤ Mechanical Speed  ωm  [RPM]  — C ref vs VHDL",
         "⑥ Error (VHDL − C ref):  iα, iβ  [A]",
     ]
-    ylabels = ["Voltage [V]", "iα [A]", "iβ [A]", "Flux [Wb]", "Speed [rad/s]", "Error [A]"]
+    ylabels = ["Voltage [V]", "iα [A]", "iβ [A]", "Flux [Wb]", "Speed [RPM]", "Error [A]"]
 
     fig = make_subplots(rows=6, cols=1, shared_xaxes=True,
                         subplot_titles=titles, vertical_spacing=0.05)
@@ -422,8 +428,8 @@ def _build_compare_only_report(
     _tr(t, [r["ref_flux_beta"]   for r in rows], "ψβ", C_REF_B,        row=4, group="C Reference")
     _tr(t, [r["vhdl_flux_beta"]  for r in rows], "ψβ", C_VH_B, "dash", row=4, group="VHDL DUT")
 
-    _tr(t, [r["ref_speed"]       for r in rows], "ωm", C_REF_A,        row=5, group="C Reference")
-    _tr(t, [r["vhdl_speed"]      for r in rows], "ωm", C_VH_A, "dash", row=5, group="VHDL DUT")
+    _tr(t, [_rpm(r["ref_speed"])  for r in rows], "ωm", C_REF_A,        row=5, group="C Reference")
+    _tr(t, [_rpm(r["vhdl_speed"]) for r in rows], "ωm", C_VH_A, "dash", row=5, group="VHDL DUT")
 
     err_alpha = [r["vhdl_i_alpha"] - r["ref_i_alpha"] for r in rows]
     err_beta  = [r["vhdl_i_beta"]  - r["ref_i_beta"]  for r in rows]
@@ -499,8 +505,8 @@ Examples:
     parser.add_argument("--compare-only", action="store_true",
                         help="Read combined CSV (vhdl_* + ref_* cols) and generate comparison "
                              "report without re-running the C model")
-    parser.add_argument("--duration",  type=float, default=2.0,
-                        help="C model simulation duration [s] (default: 2.0)")
+    parser.add_argument("--duration",  type=float, default=1.5,
+                        help="C model simulation duration [s] (default: 1.5)")
     parser.add_argument("--acc-ramp",  type=float, default=ACC_RAMP_HZ_S,
                         help=f"V/F frequency ramp rate [Hz/s] (default: {ACC_RAMP_HZ_S})")
     parser.add_argument("--tload",     type=float, default=TLOAD_NM,
