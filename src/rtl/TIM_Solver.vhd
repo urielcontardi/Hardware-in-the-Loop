@@ -61,12 +61,12 @@ Entity TIM_Solver is
         CLOCK_FREQUENCY     : natural := 200e6;        -- Clock frequency
         Ts                  : real    := 100.0e-9;     -- Discretization step
         -- Motor parameters (leakage inductances — total = leakage + mutual)
-        rs            : real    := 0.435;         -- Stator resistance
+        rs            : real    := 0.4396;        -- Stator resistance
         rr            : real    := 0.2826;        -- Rotor resistance
         ls            : real    := 3.1364e-3;     -- Stator leakage inductance
         lr            : real    := 6.3264e-3;     -- Rotor leakage inductance
         lm            : real    := 109.9442e-3;   -- Mutual inductance
-        j             : real    := 0.192;        -- Moment of inertia
+        j             : real    := 0.4;           -- Moment of inertia
         npp           : real    := 2.0           -- Number of pair poles
     );
     Port (
