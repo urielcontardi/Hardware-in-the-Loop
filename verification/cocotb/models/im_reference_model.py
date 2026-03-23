@@ -36,12 +36,12 @@ class IMPhysicalParams:
     @classmethod
     def defaults(cls) -> "IMPhysicalParams":
         return cls(
-            rs=0.435,
+            rs=0.4396,
             rr=0.2826,
             lm=109.9442e-3,
             ls=3.1364e-3,
             lr=6.3264e-3,
-            j=0.192,
+            j=0.4,
             npp=2.0,
             ts=100.0e-9,
         )
