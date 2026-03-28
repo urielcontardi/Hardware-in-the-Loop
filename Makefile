@@ -257,7 +257,7 @@ SIM        ?= ghdl
 GUI_DIR    := apps/hil-gui-tauri
 SHELL      := /bin/bash
 
-.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-tim-sine cocotb-report cocotb-report-overlay cocotb-report-sine cocotb-setup cocotb-setup-nvc cocotb-clean
+.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-tim-vf-bg cocotb-tim-sine cocotb-report cocotb-report-overlay cocotb-report-sine cocotb-setup cocotb-setup-nvc cocotb-clean
 
 cocotb:
 	@$(MAKE) -C $(COCOTB_DIR) test SIM=$(SIM) TOP=$(TOP) TESTCASE=$(TESTCASE)
@@ -270,6 +270,9 @@ cocotb-tim-ref:
 
 cocotb-tim-vf:
 	@$(MAKE) -C $(COCOTB_DIR) tim-vf SIM=$(SIM)
+
+cocotb-tim-vf-bg:
+	@$(MAKE) -C $(COCOTB_DIR) tim-vf-bg SIM=$(SIM)
 
 cocotb-tim-sine:
 	@$(MAKE) -C $(COCOTB_DIR) tim-sine SIM=$(SIM)
@@ -382,7 +385,8 @@ help:
 	@echo "║    make cocotb        Run all cocotb tests              ║"
 	@echo "║    make cocotb TOP=<top> TESTCASE=<name> Run one test   ║"
 	@echo "║    make cocotb-tim-ref  TIM_Solver vs C ref (DC)        ║"
-	@echo "║    make cocotb-tim-vf   TIM_Solver vs C ref (V/F ramp) ║"
+	@echo "║    make cocotb-tim-vf      TIM_Solver V/F ramp (foreground) ║"
+	@echo "║    make cocotb-tim-vf-bg   TIM_Solver V/F ramp (background) ║"
 	@echo "║    make cocotb-tim-sine TIM_Solver vs C ref (60 Hz AC) ║"
 	@echo "║    make cocotb-waves    Run cocotb + waveform dump      ║"
 	@echo "║    make cocotb-setup  Install Python dependencies       ║"
