@@ -22,6 +22,7 @@ Output CSV: reports/sine_vhdl_vs_ref.csv
 
 import csv
 import math
+import time
 from pathlib import Path
 
 import cocotb
@@ -29,6 +30,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
 from models.im_reference_model import IMPhysicalParams, InductionMotorReferenceModel
+from models.sim_benchmark import save_benchmark
 from models.sine_control import SineControl
 
 
@@ -39,6 +41,11 @@ FP_SCALE         = 1 << FP_FRACTION_BITS
 # Simulation parameters
 SIM_STEPS    = 3000   # × Ts = 300 µs total motor time
 WARMUP_STEPS = 50     # discard initial reset artefacts
+
+# 400 MHz × 100 ns = 40 clock cycles per motor step
+CLOCK_FREQUENCY = 400_000_000
+TS_S            = 100.0e-9
+TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)   # 40
 
 # Sine parameters — full-amplitude 60 Hz from t = 0
 FREQUENCY_HZ   = 60.0
@@ -128,6 +135,7 @@ async def test_tim_solver_sine_stimulus(dut):
     errors_i_beta:  list[float] = []
     rows: list[dict] = []
 
+    t_start = time.monotonic()
     for step in range(SIM_STEPS):
         va, vb, vc = sine.step()
         tload = sine.tload
@@ -138,7 +146,10 @@ async def test_tim_solver_sine_stimulus(dut):
         dut.vc_i.value        = signed_to_slv(real_to_fp(vc),    DATA_WIDTH)
         dut.torque_load_i.value = signed_to_slv(real_to_fp(tload), DATA_WIDTH)
 
-        await wait_data_valid(dut)
+        if step == 0:
+            await wait_data_valid(dut)
+        else:
+            await ClockCycles(dut.sysclk, TIMER_STEPS)
 
         vhdl_i_alpha    = signal_fp_to_real(dut.ialpha_o)
         vhdl_i_beta     = signal_fp_to_real(dut.ibeta_o)
@@ -202,3 +213,19 @@ async def test_tim_solver_sine_stimulus(dut):
     assert mae_flux_alpha < 1e-3, f"flux_alpha MAE={mae_flux_alpha:.2e}"
     assert mae_flux_beta  < 1e-3, f"flux_beta  MAE={mae_flux_beta:.2e}"
     assert mae_speed      < 2.0,  f"speed MAE={mae_speed:.6f} rad/s"
+
+    # ── Save benchmark ────────────────────────────────────────────────────────
+    save_benchmark(
+        test_name   = "tim_solver_sine",
+        sim_steps   = SIM_STEPS,
+        ts_s        = params.ts,
+        wall_time_s = time.monotonic() - t_start,
+        extra       = {
+            "nrmse_i_alpha":    round(nrmse_i_alpha,  6),
+            "nrmse_i_beta":     round(nrmse_i_beta,   6),
+            "mae_flux_alpha_wb":round(mae_flux_alpha, 6),
+            "mae_flux_beta_wb": round(mae_flux_beta,  6),
+            "mae_speed_rad_s":  round(mae_speed,      6),
+            "frequency_hz":     FREQUENCY_HZ,
+        },
+    )
