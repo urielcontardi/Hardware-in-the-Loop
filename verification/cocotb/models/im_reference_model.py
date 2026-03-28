@@ -144,7 +144,7 @@ class _CIMPrivateData(ctypes.Structure):
 class _CReferenceBackend:
     def __init__(self, params: IMPhysicalParams, model_type: int) -> None:
         project_root = Path(__file__).resolve().parents[3]
-        src_dir = project_root / "verification" / "reference_models" / "induction-motor-model" / "src"
+        src_dir = project_root / "extras" / "induction-motor-model" / "src"
         c_src = src_dir / "IM_Model.c"
         if not c_src.exists():
             raise FileNotFoundError(f"Reference C source not found: {c_src}")
