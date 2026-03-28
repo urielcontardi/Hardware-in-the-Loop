@@ -12,6 +12,7 @@ import csv
 import math
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import cocotb
@@ -19,6 +20,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
 from models.im_reference_model import IMPhysicalParams, InductionMotorReferenceModel
+from models.sim_benchmark import save_benchmark
 
 
 DATA_WIDTH       = 42
@@ -27,6 +29,10 @@ CLK_PERIOD_NS    = 10   # 100 MHz test clock (CLOCK_FREQUENCY generic = 400 MHz 
 
 SIM_STEPS    = 500
 WARMUP_STEPS = 100
+
+# CLOCK_FREQUENCY generic = 400 MHz, Ts = 100 ns → TIMER_STEPS = 40 clock cycles.
+# After step-0 sync, data_valid is periodic: skip polling and jump 40 cycles directly.
+TIMER_STEPS = 40   # = int(400e6 * 100e-9)
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 CSV_PATH    = REPORTS_DIR / "ref_vhdl_vs_ref.csv"
@@ -118,6 +124,7 @@ async def test_tim_solver_matches_reference_model(dut):
     dut.vc_i.value        = signed_to_slv(real_to_fp(vc),    DATA_WIDTH)
     dut.torque_load_i.value = signed_to_slv(real_to_fp(tload), DATA_WIDTH)
 
+    t_start = time.monotonic()
     for step in range(SIM_STEPS):
         if step == SIM_STEPS // 2:
             va, vb, vc, tload = stimuli[1]
@@ -126,7 +133,10 @@ async def test_tim_solver_matches_reference_model(dut):
             dut.vc_i.value        = signed_to_slv(real_to_fp(vc),    DATA_WIDTH)
             dut.torque_load_i.value = signed_to_slv(real_to_fp(tload), DATA_WIDTH)
 
-        await wait_data_valid(dut)
+        if step == 0:
+            await wait_data_valid(dut)   # initial sync
+        else:
+            await ClockCycles(dut.sysclk, TIMER_STEPS)
 
         vhdl_i_alpha    = signal_fp_to_real(dut.ialpha_o)
         vhdl_i_beta     = signal_fp_to_real(dut.ibeta_o)
@@ -177,6 +187,7 @@ async def test_tim_solver_matches_reference_model(dut):
                     ref_state.flux_alpha, ref_state.flux_beta,
                 )
 
+    wall_time = time.monotonic() - t_start
     assert rows, "No comparison samples collected"
 
     # ── Metrics ──────────────────────────────────────────────────────────────
@@ -198,6 +209,22 @@ async def test_tim_solver_matches_reference_model(dut):
     assert mae_flux_alpha < 1e-3,  f"flux_alpha MAE={mae_flux_alpha:.2e} Wb"
     assert mae_flux_beta  < 1e-3,  f"flux_beta  MAE={mae_flux_beta:.2e} Wb"
     assert mae_speed      < 2.0,   f"speed MAE={mae_speed:.6f} rad/s"
+
+    # ── Save benchmark ────────────────────────────────────────────────────────
+    params = IMPhysicalParams.defaults()
+    save_benchmark(
+        test_name   = "tim_solver_reference",
+        sim_steps   = SIM_STEPS,
+        ts_s        = params.ts,
+        wall_time_s = wall_time,
+        extra       = {
+            "nrmse_i_alpha":    round(nrmse_i_alpha,  6),
+            "nrmse_i_beta":     round(nrmse_i_beta,   6),
+            "mae_flux_alpha_wb":round(mae_flux_alpha, 6),
+            "mae_flux_beta_wb": round(mae_flux_beta,  6),
+            "mae_speed_rad_s":  round(mae_speed,      6),
+        },
+    )
 
     # ── Save CSV ─────────────────────────────────────────────────────────────
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
