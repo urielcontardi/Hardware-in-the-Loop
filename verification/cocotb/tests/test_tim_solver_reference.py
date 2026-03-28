@@ -1,7 +1,7 @@
 """Reference-model comparison test for TIM_Solver.
 
 Compares TIM_Solver fixed-point outputs against the induction-motor model from the
-submodule in verification/reference_models/induction-motor-model.
+submodule in extras/induction-motor-model.
 
 Generates at the end:
   reports/ref_vhdl_vs_ref.csv   — step-by-step VHDL vs C data
