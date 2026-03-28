@@ -1,0 +1,20 @@
+[
+  {
+    "date": "2026-03-23T03:00:40",
+    "test_name": "tim_solver_vf",
+    "sim_duration_s": 1.5,
+    "sim_steps": 15000000,
+    "ts_ns": 100.0,
+    "simulator": "nvc 1.19.3 (72fecb9) (Using LLVM 18.1.3)",
+    "host": "urielcontardi",
+    "cpu_count": 28,
+    "wall_time_s": 16663.25,
+    "msteps_per_s": 900.185,
+    "nrmse_i_alpha": 0.02854,
+    "nrmse_i_beta": 0.028897,
+    "mae_flux_alpha_wb": 0.005494,
+    "mae_flux_beta_wb": 0.005702,
+    "mae_speed_rad_s": 0.6968,
+    "batch_size": 400
+  }
+]
