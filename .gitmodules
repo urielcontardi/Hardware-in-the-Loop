@@ -4,3 +4,6 @@
 [submodule "verification/reference_models/induction-motor-model"]
 	path = verification/reference_models/induction-motor-model
 	url = https://github.com/urielcontardi/Induction-Motor-Model.git
+[submodule "extras/longovinicius-hil"]
+	path = extras/longovinicius-hil
+	url = https://github.com/longovinicius/HIL
