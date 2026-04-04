@@ -248,6 +248,64 @@ sim-all: sim-serial sim-tim sim-top
 	@echo ""
 
 # =============================================================================
+# Vivado / Synthesis targets
+# =============================================================================
+VIVADO     := vivado
+SYN_HIL    := syn/hil
+VIVADO_PROJ := $(SYN_HIL)/HIL_EBAZ4205/HIL_EBAZ4205.xpr
+NVC        := nvc
+NVC_FLAGS  := --std=2008
+
+.PHONY: vivado-project sim-dsp-compare
+
+## Create the Vivado project from TCL (syn/hil/create_project.tcl)
+vivado-project:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║      Creating Vivado HIL_EBAZ4205 project    ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source create_project.tcl \
+		-log vivado_create.log \
+		-journal vivado_create.jou
+	@echo "Project: $(VIVADO_PROJ)"
+
+## Stub vs IP direct comparison — both architectures side-by-side (requires vivado-project first)
+sim-dsp-compare:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  DSP Stub vs IP — Side-by-Side (xsim)        ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@$(VIVADO) -mode batch \
+		-source $(SYN_HIL)/run_sim_dsp_compare.tcl \
+		-log $(SYN_HIL)/vivado_sim_compare.log \
+		-journal $(SYN_HIL)/vivado_sim_compare.jou
+	@echo ""
+	@echo "Results → $(SYN_HIL)/vivado_sim_compare.log"
+	@grep -E "MATCH|MISMATCH|PASS|FAIL|ERROR|ALL VECTORS" $(SYN_HIL)/vivado_sim_compare.log || true
+
+## Synthesize + implement + generate bitstream (requires vivado-project first)
+synth:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  Synthesis + Implementation + Bitstream      ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@$(VIVADO) -mode batch \
+		-source $(SYN_HIL)/run_impl.tcl \
+		-log $(SYN_HIL)/vivado_impl.log \
+		-journal $(SYN_HIL)/vivado_impl.jou
+	@echo ""
+	@grep -E "Bitstream ready|ERROR|WARNING.*critical" $(SYN_HIL)/vivado_impl.log || true
+
+# =============================================================================
 # cocotb (Python) Testbenches
 # =============================================================================
 COCOTB_DIR := verification/cocotb
@@ -397,6 +455,11 @@ help:
 	@echo "║    make gui-dev       Run GUI dev mode                  ║"
 	@echo "║    make gui-build     Full tauri build                  ║"
 	@echo "║    make gui-build-linux Build deb/rpm bundles           ║"
+	@echo "║                                                         ║"
+	@echo "║  Vivado / Synthesis:                                    ║"
+	@echo "║    make vivado-project  Create HIL_EBAZ4205.xpr         ║"
+	@echo "║    make sim-dsp-compare DSP stub vs IP comparison (xsim) ║"
+	@echo "║    make synth           Synth + impl + bitstream        ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"
 	@echo "║    make compile       Analyze all VHDL sources          ║"
