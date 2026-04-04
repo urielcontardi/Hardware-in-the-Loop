@@ -288,6 +288,24 @@ sim-dsp-compare:
 	@echo "Results → $(SYN_HIL)/vivado_sim_compare.log"
 	@grep -E "MATCH|MISMATCH|PASS|FAIL|ERROR|ALL VECTORS" $(SYN_HIL)/vivado_sim_compare.log || true
 
+## BilinearSolverUnit stub vs IP full-solver comparison (requires vivado-project first)
+sim-bsu-compare:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  BSU Stub vs IP — Full Solver (xsim)         ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@$(VIVADO) -mode batch \
+		-source $(SYN_HIL)/run_sim_bsu_compare.tcl \
+		-log $(SYN_HIL)/vivado_bsu_compare.log \
+		-journal $(SYN_HIL)/vivado_bsu_compare.jou
+	@echo ""
+	@echo "Results → $(SYN_HIL)/vivado_bsu_compare.log"
+	@grep -E "PASS|FAIL|MISMATCH|ALL TESTS" $(SYN_HIL)/vivado_bsu_compare.log || true
+
 ## Synthesize + implement + generate bitstream (requires vivado-project first)
 synth:
 	@echo ""
@@ -459,6 +477,7 @@ help:
 	@echo "║  Vivado / Synthesis:                                    ║"
 	@echo "║    make vivado-project  Create HIL_EBAZ4205.xpr         ║"
 	@echo "║    make sim-dsp-compare DSP stub vs IP comparison (xsim) ║"
+	@echo "║    make sim-bsu-compare BSU full-solver stub vs IP      ║"
 	@echo "║    make synth           Synth + impl + bitstream        ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"

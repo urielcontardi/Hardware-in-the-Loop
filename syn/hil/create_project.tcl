@@ -135,6 +135,34 @@ update_compile_order -fileset sim_compare
 puts "  sim_compare top: tb_DSP_StubVsIP  (IP arch + behavior arch-only)"
 
 # -----------------------------------------------------------------------------
+# sim_bsu_compare — BilinearSolverUnit stub vs IP full-solver comparison
+#   Both instances share identical inputs; checkers verify timing + numeric match.
+#   rtl_stub arch uses BilienarSolverUnit_DSP(behavior)
+#   rtl_ip   arch uses BilienarSolverUnit_DSP(bilienarsolverunit_dsp_arch)
+#   Top     : tb_BSU_StubVsIP
+# -----------------------------------------------------------------------------
+puts "\nConfiguring sim_bsu_compare (BSU stub vs IP full-solver)..."
+create_fileset -simset sim_bsu_compare
+# Same RTL sources as sim_compare
+foreach f [get_files -of_objects [get_fileset sources_1]] {
+    if {![string match "*/BilienarSolverUnit_DSP/synth*" $f]} {
+        add_files -fileset sim_bsu_compare -norecurse $f
+    }
+}
+# arch-only behavior stub
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/src/tb/BilienarSolverUnit_DSP_behavior.vhd
+# Test architectures (rtl_stub / rtl_ip) and testbench
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/src/tb/BilinearSolverUnit_TestArch.vhd
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/src/tb/tb_BSU_StubVsIP.vhd
+set_property top     tb_BSU_StubVsIP [get_filesets sim_bsu_compare]
+set_property top_lib xil_defaultlib  [get_filesets sim_bsu_compare]
+update_compile_order -fileset sim_bsu_compare
+puts "  sim_bsu_compare top: tb_BSU_StubVsIP  (rtl_stub + rtl_ip architectures)"
+
+# -----------------------------------------------------------------------------
 # Constraints
 # -----------------------------------------------------------------------------
 puts "\nAdding constraints..."
