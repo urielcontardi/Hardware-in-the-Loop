@@ -1,0 +1,1 @@
+compile_simlib -simulator questa -simulator_exec_path /opt/intelFPGA_lite/23.1std/questa_fse/bin -family zynq -language vhdl -library all -dir /home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop/verification/cocotb/libs/questa
