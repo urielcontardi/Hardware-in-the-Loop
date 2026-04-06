@@ -25,14 +25,14 @@ from models.sim_benchmark import save_benchmark
 
 DATA_WIDTH       = 42
 FP_FRACTION_BITS = 28
-CLK_PERIOD_NS    = 10   # 100 MHz test clock (CLOCK_FREQUENCY generic = 400 MHz via run.py)
+CLK_PERIOD_PS    = 6667  # 150 MHz → period = 6.667 ns = 6667 ps
 
 SIM_STEPS    = 500
 WARMUP_STEPS = 100
 
-# CLOCK_FREQUENCY generic = 400 MHz, Ts = 100 ns → TIMER_STEPS = 40 clock cycles.
-# After step-0 sync, data_valid is periodic: skip polling and jump 40 cycles directly.
-TIMER_STEPS = 40   # = int(400e6 * 100e-9)
+# CLOCK_FREQUENCY generic = 150 MHz, Ts = 40/150MHz = 266.67 ns → TIMER_STEPS = 40.
+# 150 MHz closes timing on Zynq-7010 -1 (critical path ~6.3 ns < 6.67 ns period).
+TIMER_STEPS = 40   # = int(150e6 * 266.67e-9)
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 CSV_PATH    = REPORTS_DIR / "ref_vhdl_vs_ref.csv"
@@ -94,7 +94,7 @@ async def wait_data_valid(dut):
 async def test_tim_solver_matches_reference_model(dut):
     """Run TIM_Solver and compare key states against the reference model."""
 
-    clock = Clock(dut.sysclk, CLK_PERIOD_NS, unit="ns")
+    clock = Clock(dut.sysclk, CLK_PERIOD_PS, unit="ps")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 

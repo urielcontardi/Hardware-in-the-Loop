@@ -106,6 +106,23 @@ set_property -dict [list \
 generate_target all [get_ips BilienarSolverUnit_DSP]
 puts "  IP created: BilienarSolverUnit_DSP (42x42 signed, 7 pipeline stages)"
 
+# Override OOC clock to 5 ns (200 MHz) so the IP is synthesized and optimized
+# for the actual target frequency. Without this Vivado uses the IP default
+# (100 ns), which means ACOUT/PCOUT cascade paths are not pipelined correctly.
+# The OOC XDC is generated under .gen/ (not .srcs/)
+set ip_xci  [lindex [get_files BilienarSolverUnit_DSP.xci] 0]
+set gen_dir [file normalize "$proj_dir/${proj_name}.gen/sources_1/ip/BilienarSolverUnit_DSP"]
+set ooc_xdc "$gen_dir/BilienarSolverUnit_DSP_ooc.xdc"
+if {[file exists $ooc_xdc]} {
+    set fp [open $ooc_xdc w]
+    puts $fp "# OOC clock constraint: 5 ns = 200 MHz (matches Top_HIL_Zynq FCLK)"
+    puts $fp "create_clock -period 5.000 -name CLK \[get_ports CLK\]"
+    close $fp
+    puts "  OOC XDC overridden: 5 ns (200 MHz) → $ooc_xdc"
+} else {
+    puts "  WARNING: OOC XDC not found at $ooc_xdc"
+}
+
 # -----------------------------------------------------------------------------
 # sim_compare — stub vs IP direct comparison (both architectures instantiated)
 #   Purpose : prove stub == IP cycle-by-cycle on the same input vectors

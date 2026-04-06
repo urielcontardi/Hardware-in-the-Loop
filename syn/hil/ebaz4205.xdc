@@ -62,7 +62,7 @@ set_property IOSTANDARD LVCMOS33 [get_ports {pwm_c_o[*]}]
 
 # -----------------------------------------------------------------------------
 # Timing
-# FCLK_CLK0 is auto-constrained by PS7 primitive (100 MHz)
+# FCLK_CLK0 is auto-constrained by PS7 primitive (200 MHz)
 # Gate outputs and LEDs are asynchronous outputs — false path
 # -----------------------------------------------------------------------------
 set_false_path -to [get_ports {pwm_a_o[*] pwm_b_o[*] pwm_c_o[*]}]
