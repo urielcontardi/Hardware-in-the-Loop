@@ -32,16 +32,17 @@ FP_SCALE         = 1 << FP_FRACTION_BITS
 
 # ── Simulation extent ─────────────────────────────────────────────────────────
 SIM_DURATION_S  = 1.5          # motor time  [s]
-TS_S            = 100.0e-9     # discretisation step — must match VHDL generic
-SIM_STEPS       = int(SIM_DURATION_S / TS_S)   # 15 000 000 steps
+TS_S            = 40.0/150_000_000  # 266.67 ns — 40 cycles @ 150 MHz, must match VHDL generic
+SIM_STEPS       = int(SIM_DURATION_S / TS_S)   # ~5 625 000 steps
 
 WARMUP_STEPS    = 200          # steps discarded before recording / metrics
 
 # ── Clock / timer constants ───────────────────────────────────────────────────
-# CLOCK_FREQUENCY=400 MHz × Ts=100 ns → exactly 40 clock cycles per motor step.
+# CLOCK_FREQUENCY=150 MHz × Ts=266.67 ns → exactly 40 clock cycles per motor step.
+# 150 MHz closes timing on Zynq-7010 -1 (critical path ~6.3 ns < 6.67 ns period).
 # After the first wait_data_valid sync, data_valid fires every TIMER_STEPS cycles,
 # so we can skip polling and jump directly — ~40× faster.
-CLOCK_FREQUENCY = 400_000_000
+CLOCK_FREQUENCY = 150_000_000
 TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)   # 40
 
 # ── V/F control parameters (matching PSIM setup) ─────────────────────────────
@@ -155,7 +156,7 @@ def _print_progress(
 async def test_tim_solver_vf_stimulus(dut):
     """Drive TIM_Solver with a 1.5 s V/F ramp and compare against C reference."""
 
-    clock = Clock(dut.sysclk, 2500, unit="ps")   # 400 MHz — matches CLOCK_FREQUENCY generic
+    clock = Clock(dut.sysclk, 6667, unit="ps")   # 150 MHz (6.667 ns) — matches CLOCK_FREQUENCY generic
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 

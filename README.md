@@ -134,32 +134,65 @@ void vf_ramp_loop() {
 
 ```
 Hardware-in-the-Loop/
-├── src/rtl/
-│   ├── Top_HIL_Zynq.vhd       # Top-level for EBAZ4205 (PS7 + NPC + TIM + UART)
-│   ├── TIM_Solver.vhd          # 3-phase induction motor bilinear model (Q14.28)
-│   ├── SerialManager.vhd       # UART register interface (10 regs, 42-bit)
-│   └── vf_control/             # V/F open-loop controller (PL-side, optional)
+│
+├── apps/                       # Desktop applications
+│   └── hil-gui-tauri/         # Tauri GUI (Rust + TypeScript)
 │
 ├── common/                     # Shared VHDL modules (git submodule)
-│   └── modules/
-│       ├── bilinear_solver/    # Fixed-point bilinear integrator + DSP stub/IP
-│       ├── clarke_transform/   # Clarke (abc → αβ) transform
-│       ├── npc_modulator/      # NPC 3-level PWM modulator
-│       └── uart/               # UART TX/RX
+│   ├── modules/               # Reusable IP module library
+│   │   ├── bilinear_solver/   # Bilinear solver with DSP48E1
+│   │   ├── clarke_transform/  # Clarke transform (abc→αβ)
+│   │   ├── npc_modulator/     # 3-level NPC modulator
+│   │   └── uart/              # UART TX/RX
+│   └── doc/                   # Sphinx documentation
 │
-├── syn/
-│   ├── hil/                    # EBAZ4205 HIL system synthesis
-│   │   ├── create_project.tcl  # Recreates HIL_EBAZ4205.xpr from scratch
-│   │   ├── zynq_ps7.tcl        # Block design: PS7 + AXI GPIO
-│   │   └── ebaz4205.xdc        # Pin constraints
-│   └── dut/                    # (reserved) standalone DUT synthesis
+├── docs/                       # Project documentation
+│   ├── PETALINUX_GUIDE.md     # Complete Petalinux guide
+│   └── README_PETALINUX.md    # Embedded architecture summary
 │
-├── verification/cocotb/        # Python cocotb tests (GHDL/NVC)
-│   ├── tests/                  # test_tim_solver_vf.py (main V/F validation)
-│   ├── models/                 # C reference model wrapper
-│   └── reports/                # HTML reports + sim_benchmark.json
+├── extras/                     # Reference material
+│   ├── induction-motor-model/ # Reference C model
+│   └── longovinicius-hil/     # Reference HIL project
 │
-└── apps/hil-gui-tauri/         # Desktop GUI scaffold (Tauri + Rust + TypeScript)
+├── scripts/                    # Auxiliary scripts (run on PC)
+│   ├── setup/                 # Installation scripts
+│   │   └── install_petalinux_deps.sh
+│   ├── build/                 # Build scripts (future)
+│   └── test/                  # Test scripts
+│       └── udp_receiver.py    # Receives UDP data from EBAZ4205
+│
+├── src/                        # Source code
+│   ├── rtl/                   # Hardware (VHDL/Verilog)
+│   │   ├── TIM_Solver.vhd    # Induction motor solver
+│   │   ├── SerialManager.vhd  # UART interface
+│   │   ├── Top_HIL_Zynq.vhd  # Top-level for Zynq
+│   │   └── vf_control/        # V/F controller
+│   │
+│   ├── tb/                    # VHDL testbenches
+│   │
+│   └── embedded/              # Embedded software (ARM Linux)
+│       └── udp_sender.py      # UDP daemon that reads BRAM and transmits
+│
+├── syn/                        # Synthesis and implementation
+│   ├── hil/                   # Vivado FPGA project (PL)
+│   │   ├── HIL_EBAZ4205/     # Generated Vivado project
+│   │   ├── create_project.tcl # Recreates Vivado project from scratch
+│   │   ├── zynq_ps7.tcl       # PS7 block design
+│   │   └── ebaz4205.xdc       # Constraints (pinout)
+│   │
+│   ├── dut/                   # Standalone DUT (future)
+│   │
+│   └── embedded/              # Petalinux project (PS + Linux)
+│       ├── README.md
+│       └── project/           # Working directory
+│           └── hil-ebaz4205/  # Petalinux project (created by user)
+│
+└── verification/               # Verification and testing
+    └── cocotb/                # Python/Cocotb tests
+        ├── tests/             # Test cases
+        ├── models/            # Reference models (C wrapper)
+        ├── drivers/           # Custom cocotb drivers
+        └── reports/           # Generated HTML reports
 ```
 
 ---
@@ -207,6 +240,135 @@ Validation thresholds:
 Write:    'W' | ADDR(1B) | DATA(6B MSB-first)
 Read:     'R' | ADDR(1B)  →  0xAA | ADDR | DATA(6B)
 Read All: 'A'             →  0x55 | REG0..REG9 (60 bytes)
+```
+
+---
+
+## Workflow
+
+### 1. Hardware (FPGA - PL)
+```bash
+cd syn/hil/
+vivado -mode batch -source create_project.tcl   # Create project
+vivado HIL_EBAZ4205/HIL_EBAZ4205.xpr            # Open Vivado GUI
+# Synthesis → Implementation → Generate Bitstream
+# File → Export → Export Hardware (with bitstream)
+```
+
+### 2. Embedded Software (ARM - PS)
+```bash
+cd syn/embedded/project
+source ~/xilinx/petalinux/settings.sh
+petalinux-create -t project --name hil-ebaz4205 --template zynq
+cd hil-ebaz4205
+petalinux-config --get-hw-description=../../hil  # Import .xsa
+petalinux-build                                   # Full build
+cd images/linux
+petalinux-package --boot --fsbl zynq_fsbl.elf \
+    --fpga ../../project-spec/hw-description/*.bit \
+    --u-boot u-boot.elf --force
+```
+
+### 3. Prepare SD Card
+```bash
+# Partition, format, copy boot and rootfs
+# See docs/PETALINUX_GUIDE.md for details
+```
+
+### 4. Test System
+```bash
+# On PC
+cd scripts/test
+python3 udp_receiver.py
+
+# On EBAZ4205 (via UART)
+ifconfig eth0 192.168.1.10 up
+python3 /home/root/udp_sender.py
+```
+
+---
+
+## Build Artifacts
+
+### Vivado (syn/hil/HIL_EBAZ4205/)
+- `HIL_EBAZ4205.runs/impl_1/*.bit` - FPGA bitstream
+- `hil_ebaz4205.xsa` - Hardware export (with bitstream)
+
+### Petalinux (syn/embedded/project/hil-ebaz4205/images/linux/)
+- `BOOT.BIN` - Boot image (FSBL + bitstream + U-boot)
+- `image.ub` - FIT image (kernel + device tree)
+- `rootfs.tar.gz` - Root filesystem
+
+### Simulation (verification/cocotb/reports/)
+- `vf_report.html` - V/F test report
+- `sim_benchmark.json` - Performance metrics
+
+---
+
+## Conventions
+
+### Naming
+- **VHDL entities**: `PascalCase` (e.g., `TIM_Solver`)
+- **VHDL files**: `PascalCase.vhd` (e.g., `TIM_Solver.vhd`)
+- **Python scripts**: `snake_case.py` (e.g., `udp_sender.py`)
+- **Shell scripts**: `kebab-case.sh` (e.g., `install-deps.sh`)
+
+### Git
+- **Main branch**: `main`
+- **Development branch**: `develop`
+- **Commits**: Conventional Commits (`feat:`, `fix:`, `docs:`)
+
+### Documentation
+- Code: Inline comments for non-obvious sections
+- Modules: README.md in each main folder
+- Project: Markdown files in `docs/`
+
+---
+
+## Dependencies
+
+### Submodules
+- `common/` - Shared VHDL library
+
+### Software
+- Vivado 2024.1 (`/opt/Xilinx/Vivado/2024.1/`)
+- Petalinux 2024.1 (`~/xilinx/petalinux/`)
+- Python 3.10+ (cocotb, Tauri backend)
+- Node.js 20+ (Tauri frontend)
+
+### Hardware
+- EBAZ4205 (Zynq-7010, 256MB DDR3, Ethernet, SD Card)
+- USB-UART (CP2102 or similar, 3.3V TTL)
+- SD Card 4GB+ (boot FAT32 + rootfs ext4)
+
+---
+
+## Maintenance
+
+### Clean builds
+```bash
+# Vivado
+cd syn/hil/HIL_EBAZ4205
+vivado -mode batch -source "launch_runs synth_1 -reset"
+
+# Petalinux
+cd syn/embedded/project/hil-ebaz4205
+petalinux-build -x mrproper
+```
+
+### Update submodules
+```bash
+git submodule update --remote --merge
+```
+
+### Partial rebuild
+```bash
+# Kernel only
+cd syn/embedded/project/hil-ebaz4205
+petalinux-build -c kernel
+
+# Rootfs only
+petalinux-build -c rootfs
 ```
 
 ---

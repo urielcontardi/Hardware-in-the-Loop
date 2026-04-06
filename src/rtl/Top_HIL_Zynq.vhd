@@ -41,12 +41,12 @@ entity Top_HIL_Zynq is
         -- NPC Modulator
         PWM_FREQUENCY       : natural := 20_000;
         NPC_DATA_WIDTH      : natural := 32;
-        MIN_PULSE_WIDTH     : natural := 50;       -- scaled for 100 MHz
-        DEAD_TIME           : natural := 25;       -- scaled for 100 MHz
+        MIN_PULSE_WIDTH     : natural := 100;      -- scaled for 200 MHz (500 ns)
+        DEAD_TIME           : natural := 50;       -- scaled for 200 MHz (250 ns)
 
         -- TIM Solver
         TIM_DATA_WIDTH      : natural := 42;
-        DISCRETIZATION_STEP : real    := 100.0e-9;
+        DISCRETIZATION_STEP : real    := 266.667e-9;  -- 40/150MHz = 266.67 ns
 
         -- Motor parameters
         MOTOR_RS            : real    := 0.435;
@@ -102,7 +102,7 @@ end entity;
 architecture rtl of Top_HIL_Zynq is
 
     -- ── Constants ─────────────────────────────────────────────────────────────
-    constant CLK_FREQUENCY   : natural := 100_000_000;  -- PS FCLK0 = 100 MHz
+    constant CLK_FREQUENCY   : natural := 150_000_000;  -- PS FCLK0 = 150 MHz
 
     constant NPC_STATE_POS   : std_logic_vector(3 downto 0) := "0011";
     constant NPC_STATE_NEG   : std_logic_vector(3 downto 0) := "1100";

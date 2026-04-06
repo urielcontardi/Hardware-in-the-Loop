@@ -23,7 +23,7 @@ set ps7 [create_bd_cell -type ip \
     processing_system7_0]
 
 set_property -dict [list \
-    CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ  {100}  \
+    CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ  {150}  \
     CONFIG.PCW_EN_CLK0_PORT              {1}    \
     CONFIG.PCW_EN_RST0_PORT              {1}    \
     CONFIG.PCW_USE_FABRIC_INTERRUPT      {0}    \
@@ -149,7 +149,7 @@ set_property range 64K \
 # Expose FCLK_CLK0 and FCLK_RESET0_N as BD output ports
 # -----------------------------------------------------------------------------
 create_bd_port -dir O -type clk fclk_clk0
-set_property CONFIG.FREQ_HZ 100000000 [get_bd_ports fclk_clk0]
+set_property CONFIG.FREQ_HZ 200000000 [get_bd_ports fclk_clk0]
 connect_bd_net \
     [get_bd_pins processing_system7_0/FCLK_CLK0] \
     [get_bd_ports fclk_clk0]
@@ -182,4 +182,4 @@ validate_bd_design
 save_bd_design
 generate_target all [get_files zynq_ps7.bd]
 
-puts "Block design 'zynq_ps7' created (FCLK=100MHz, AXI GPIO: va/vb/vc_ref + pwm_ctrl)."
+puts "Block design 'zynq_ps7' created (FCLK=200MHz, AXI GPIO: va/vb/vc_ref + pwm_ctrl)."

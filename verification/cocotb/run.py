@@ -215,8 +215,11 @@ Examples:
             "vf":        "tests.test_tim_solver_vf",
             "sine":      "tests.test_tim_solver_sine",
         }[test_suite]
-        # 400 MHz × Ts=100ns → TIMER_STEPS=40 > solver pipeline latency (~29 cy)
-        sim_parameters = {"CLOCK_FREQUENCY": 400_000_000}
+        # 150 MHz × Ts=266.67ns (40 cycles) > solver pipeline latency (~30 cy).
+        # 150 MHz closes timing on Zynq-7010 -1 (critical path ~6.3 ns < 6.67 ns).
+        # Ts default in TIM_Solver.vhd = 40.0/150_000_000.0 (VHDL elaboration expr).
+        # Do NOT pass Ts here — GHDL-mcode can't override real generics with e-notation.
+        sim_parameters = {"CLOCK_FREQUENCY": 150_000_000}
 
     # ── Waveform setup ───────────────────────────────────────────────────
     # Wave flags are simulator runtime args → go in test_args, NOT plusargs.
