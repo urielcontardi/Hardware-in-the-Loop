@@ -59,7 +59,6 @@ Hardware-in-the-Loop/
 │       ├── flash_sd.sh                   # SD card programmer
 │       ├── sd_images/                    # Pre-built boot images (ready to flash)
 │       ├── ebaz4205_petalinux/           # PetaLinux project
-│       ├── legacy/                       # Old reference scripts
 │       └── README.md                     # Detailed FPGA/Linux workflow
 │
 └── verification/
