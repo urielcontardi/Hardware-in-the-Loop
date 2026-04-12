@@ -255,7 +255,7 @@ SYN_HIL     := syn/hil
 VIVADO_PROJ := $(SYN_HIL)/ebaz4205/ebaz4205.xpr
 NVC         := nvc
 NVC_FLAGS   := --std=2008
-SD_DEVICE   ?= /dev/sdX
+SD          ?= /dev/sdX
 
 .PHONY: vivado-project sim-dsp-compare sim-bsu-compare sim-clarke synth flash
 
@@ -344,11 +344,11 @@ synth:
 
 ## Flash SD card with pre-built images (usage: make flash SD=/dev/sdX)
 flash:
-	@if [ "$(SD_DEVICE)" = "/dev/sdX" ]; then \
+	@if [ "$(SD)" = "/dev/sdX" ]; then \
 		echo "ERROR: specify SD device — example: make flash SD=/dev/sda"; \
 		exit 1; \
 	fi
-	@sudo $(SYN_HIL)/flash_sd.sh $(SD_DEVICE)
+	@sudo $(SYN_HIL)/flash_sd.sh $(SD)
 
 # =============================================================================
 # cocotb (Python) Testbenches
