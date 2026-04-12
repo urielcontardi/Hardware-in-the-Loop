@@ -153,6 +153,7 @@ Vivado / EBAZ4205:
   make synth               Síntese + implementação + exportar XSA
   make sim-dsp-compare     DSP stub vs IP Xilinx (xsim)
   make sim-bsu-compare     BSU solver stub vs IP (xsim)
+  make sim-clarke          Clarke transform behavioural (xsim + VCD)
   make flash SD=/dev/sdX   Gravar SD card com imagens pré-compiladas
 
 GUI Tauri (apps/hil-gui-tauri/):

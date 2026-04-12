@@ -16,7 +16,7 @@
 
 set script_dir [file normalize [file dirname [info script]]]
 set root_dir   [file normalize "$script_dir/../.."]
-set proj_file  "$script_dir/HIL_EBAZ4205/HIL_EBAZ4205.xpr"
+set proj_file  "$script_dir/ebaz4205/ebaz4205.xpr"
 
 if {![file exists $proj_file]} {
     puts "ERROR: Project not found."
@@ -62,7 +62,7 @@ run all
 close_sim
 
 # ── Step 2: re-run snapshot → export VCD for GTKWave ────────────────────────
-set sim_dir  "$script_dir/HIL_EBAZ4205/HIL_EBAZ4205.sim/sim_clarke/behav/xsim"
+set sim_dir  "$script_dir/ebaz4205/ebaz4205.sim/sim_clarke/behav/xsim"
 set vcd_file [file normalize "$script_dir/tb_ClarkeTransform.vcd"]
 set tcl_file "$sim_dir/export_clarke_vcd.tcl"
 
