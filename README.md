@@ -130,21 +130,41 @@ Simulação VHDL (GHDL):
   make sim-tim             TIM_Solver testbench
   make sim-top             Top_HIL testbench
   make sim-all             Todos os testbenches VHDL
-  make wave-*              Simulação + GTKWave
+  make wave-serial         SerialManager + GTKWave
+  make wave-tim            TIM_Solver + GTKWave
+  make wave-top            Top_HIL + GTKWave
+  make compile             Analisa todos os fontes VHDL (sem simular)
 
 cocotb (Python):
   make cocotb              Todos os testes
-  make cocotb-tim-ref      TIM_Solver vs modelo C (DC)
-  make cocotb-tim-vf       V/F ramp (~4.6h)
+  make cocotb-tim-ref      TIM_Solver vs modelo C (entradas DC)
+  make cocotb-tim-vf       V/F ramp (foreground, ~4.6h)
+  make cocotb-tim-vf-bg    V/F ramp (background, monitor no terminal)
   make cocotb-tim-sine     60 Hz senoidal (rápido)
   make cocotb-waves        Testes + dump de formas de onda
+  make cocotb-report       Gerar relatório HTML (modelo C)
+  make cocotb-report-overlay  Relatório com overlay VHDL vs C
+  make cocotb-report-sine  Relatório do teste senoidal
+  make cocotb-setup        Instalar dependências Python (uv)
+  make cocotb-setup-nvc    Instalar simulador NVC (mais rápido que GHDL)
 
 Vivado / EBAZ4205:
-  make vivado-project      Criar projeto ebaz4205.xpr
-  make synth               Síntese + implementação + XSA
-  make sim-dsp-compare     DSP stub vs IP (xsim)
-  make sim-bsu-compare     BSU stub vs IP (xsim)
-  make flash SD=/dev/sdX   Gravar SD card
+  make vivado-project      Criar projeto ebaz4205.xpr do zero
+  make synth               Síntese + implementação + exportar XSA
+  make sim-dsp-compare     DSP stub vs IP Xilinx (xsim)
+  make sim-bsu-compare     BSU solver stub vs IP (xsim)
+  make flash SD=/dev/sdX   Gravar SD card com imagens pré-compiladas
+
+GUI Tauri (apps/hil-gui-tauri/):
+  make gui-setup           Instalar dependências npm
+  make gui-check           Build frontend + cargo check
+  make gui-dev             Rodar GUI em modo desenvolvimento
+  make gui-build           Build completo (Tauri)
+  make gui-build-linux     Gerar pacotes .deb/.rpm
+
+Geral:
+  make help                Exibir esta lista
+  make clean               Remover todos os artefatos gerados
 ```
 
 ---
