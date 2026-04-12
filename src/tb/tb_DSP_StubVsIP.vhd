@@ -49,8 +49,8 @@ begin
 
     clk <= not clk after CLK_PERIOD / 2;
 
-    -- ── DUT 1: behavioral stub (used in GHDL/NVC simulation) ─────────────────
-    DUT_STUB : entity work.BilienarSolverUnit_DSP(behavior)
+    -- ── DUT 1: behavioral stub (self-contained entity, always compiled by xsim) ─
+    DUT_STUB : entity work.BilienarSolverUnit_DSP_Sim
         port map (CLK => clk, A => A, B => B, P => P_stub);
 
     -- ── DUT 2: Xilinx mult_gen IP sim model (DSP48E1 behavioral) ─────────────

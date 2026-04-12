@@ -31,16 +31,18 @@ if {[get_filesets -quiet sim_bsu_compare] eq ""} {
     puts "Creating fileset sim_bsu_compare..."
     create_fileset -simset sim_bsu_compare
 
-    # Same RTL sources as sim_compare (all except IP synth stubs)
-    foreach f [get_files -of_objects [get_fileset sources_1]] {
-        if {![string match "*/BilienarSolverUnit_DSP/synth*" $f]} {
-            add_files -fileset sim_bsu_compare -norecurse $f
-        }
-    }
-
-    # arch-only behavior file (adds "behavior" arch to IP's entity declaration)
+    # RTL sources
+    # NOTE: BilienarSolverUnit_DSP.vhd (common/modules) is NOT added here.
+    # The IP sim file already declares the entity; adding the source would
+    # overwrite it with a LATENCY generic, causing a redeclaration conflict.
     add_files -fileset sim_bsu_compare -norecurse \
-        $root_dir/src/tb/BilienarSolverUnit_DSP_behavior.vhd
+        $root_dir/common/modules/bilinear_solver/src/BilinearSolverPkg.vhd
+    add_files -fileset sim_bsu_compare -norecurse \
+        $root_dir/common/modules/bilinear_solver/src/BilinearSolverUnit.vhd
+
+    # Self-contained stub entity (BilienarSolverUnit_DSP_Sim) — always compiled
+    add_files -fileset sim_bsu_compare -norecurse \
+        $root_dir/src/tb/BilienarSolverUnit_DSP_Sim.vhd
 
     # Test architectures and testbench
     add_files -fileset sim_bsu_compare -norecurse \
