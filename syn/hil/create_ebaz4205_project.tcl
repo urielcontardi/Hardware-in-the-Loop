@@ -359,3 +359,102 @@ puts " Projeto criado: $proj_dir"
 puts " BD: ebaz4205  |  Top: ebaz4205_wrapper"
 puts " FCLK0=50MHz, FCLK3=25MHz, ENET0 EMIO, LED via GPIO_O[1:0]"
 puts "============================================================"
+
+# =============================================================================
+# 5. mult_gen IP (BilienarSolverUnit_DSP) + filesets de simulação
+# =============================================================================
+set root_dir [file normalize "$script_dir/../.."]
+
+# ── 5a. Criar IP mult_gen 42×42 signed ───────────────────────────────────────
+puts ""
+puts "=== \[5/5\] Criando IP BilienarSolverUnit_DSP (mult_gen 42x42) ==="
+
+create_ip -name mult_gen -vendor xilinx.com -library ip -version 12.0 \
+    -module_name BilienarSolverUnit_DSP
+
+set_property -dict [list \
+    CONFIG.PortAWidth       {42}                  \
+    CONFIG.PortBWidth       {42}                  \
+    CONFIG.MultType         {Parallel_Multiplier}  \
+    CONFIG.PortAType        {Signed}              \
+    CONFIG.PortBType        {Signed}              \
+    CONFIG.OptGoal          {Speed}               \
+    CONFIG.PipeStages       {7}                   \
+    CONFIG.OutputWidthHigh  {83}                  \
+    CONFIG.OutputWidthLow   {0}                   \
+] [get_ips BilienarSolverUnit_DSP]
+
+generate_target {simulation instantiation_template} \
+    [get_files BilienarSolverUnit_DSP.xci]
+
+puts "  IP BilienarSolverUnit_DSP criado e targets de simulação gerados."
+
+# ── 5b. Fileset sim_compare (tb_DSP_StubVsIP) ────────────────────────────────
+puts ""
+puts "=== Criando fileset sim_compare ==="
+
+if {[get_filesets -quiet sim_compare] eq ""} {
+    create_fileset -simset sim_compare
+}
+
+# BilinearSolverPkg needed by testbench (FP_TOTAL_BITS, to_fp)
+add_files -fileset sim_compare -norecurse \
+    $root_dir/common/modules/bilinear_solver/src/BilinearSolverPkg.vhd
+
+# NOTE: BilienarSolverUnit_DSP.vhd (common/modules) NOT added.
+# The IP sim file already provides the entity; the source would overwrite it
+# adding a LATENCY generic, causing a redeclaration error.
+
+# Self-contained stub entity (BilienarSolverUnit_DSP_Sim) — always included by compile order
+add_files -fileset sim_compare -norecurse \
+    $root_dir/src/tb/BilienarSolverUnit_DSP_Sim.vhd
+
+# Testbench
+add_files -fileset sim_compare -norecurse \
+    $root_dir/src/tb/tb_DSP_StubVsIP.vhd
+
+set_property top     tb_DSP_StubVsIP [get_filesets sim_compare]
+set_property top_lib xil_defaultlib  [get_filesets sim_compare]
+update_compile_order -fileset sim_compare
+puts "  sim_compare criado."
+
+# ── 5c. Fileset sim_bsu_compare (tb_BSU_StubVsIP) ────────────────────────────
+puts ""
+puts "=== Criando fileset sim_bsu_compare ==="
+
+if {[get_filesets -quiet sim_bsu_compare] eq ""} {
+    create_fileset -simset sim_bsu_compare
+}
+
+# RTL sources
+# NOTE: BilienarSolverUnit_DSP.vhd (common/modules) NOT added — same reason as sim_compare.
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/common/modules/bilinear_solver/src/BilinearSolverPkg.vhd
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/common/modules/bilinear_solver/src/BilinearSolverUnit.vhd
+
+# Self-contained stub entity (BilienarSolverUnit_DSP_Sim) — always included by compile order
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/src/tb/BilienarSolverUnit_DSP_Sim.vhd
+
+# Test architecture wrapper + testbench
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/src/tb/BilinearSolverUnit_TestArch.vhd
+add_files -fileset sim_bsu_compare -norecurse \
+    $root_dir/src/tb/tb_BSU_StubVsIP.vhd
+
+set_property top     tb_BSU_StubVsIP [get_filesets sim_bsu_compare]
+set_property top_lib xil_defaultlib  [get_filesets sim_bsu_compare]
+update_compile_order -fileset sim_bsu_compare
+puts "  sim_bsu_compare criado."
+
+puts ""
+puts "============================================================"
+puts " IPs e filesets de simulação prontos:"
+puts "   IP:            BilienarSolverUnit_DSP (mult_gen 42x42)"
+puts "   sim_compare:   tb_DSP_StubVsIP"
+puts "   sim_bsu_compare: tb_BSU_StubVsIP"
+puts " Próximos passos:"
+puts "   make sim-dsp-compare"
+puts "   make sim-bsu-compare"
+puts "============================================================"

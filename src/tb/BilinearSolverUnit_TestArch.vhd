@@ -100,8 +100,8 @@ Begin
         end loop;
     end process;
 
-    -- ── Forced binding: behavioral stub ─────────────────────────────────────
-    Multiplier1 : entity work.BilienarSolverUnit_DSP(behavior)
+    -- ── Forced binding: behavioral stub (self-contained entity) ─────────────
+    Multiplier1 : entity work.BilienarSolverUnit_DSP_Sim
         port map (CLK => sysclk, A => operand1, B => operand2, P => product1_raw);
 
     operand1         <= operand1_vec(index1);
@@ -109,7 +109,7 @@ Begin
     product1_rounded <= std_logic_vector(signed(product1_raw) + ROUND_HALF_P1);
     product1         <= product1_rounded(FP_TOTAL_BITS + FP_FRACTION_BITS - 1 downto FP_FRACTION_BITS);
 
-    Multiplier2 : entity work.BilienarSolverUnit_DSP(behavior)
+    Multiplier2 : entity work.BilienarSolverUnit_DSP_Sim
         port map (CLK => sysclk, A => product1, B => operand3, P => product2_raw);
 
     operand3 <= operand3_vec(index2);

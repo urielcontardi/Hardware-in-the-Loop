@@ -10,6 +10,7 @@
 
 set script_dir [file normalize [file dirname [info script]]]
 set proj_file  "$script_dir/ebaz4205/ebaz4205.xpr"
+set root_dir   [file normalize "$script_dir/../.."]
 
 if {![file exists $proj_file]} {
     puts "ERROR: Project not found. Run 'make vivado-project' first."
@@ -22,6 +23,34 @@ puts "============================================"
 open_project $proj_file
 
 set_property target_simulator XSim [current_project]
+
+# ── Create / refresh sim_compare fileset ─────────────────────────────────────
+if {[get_filesets -quiet sim_compare] eq ""} {
+    puts "Creating fileset sim_compare..."
+    create_fileset -simset sim_compare
+
+    # BilinearSolverPkg needed by testbench (FP_TOTAL_BITS, to_fp)
+    add_files -fileset sim_compare -norecurse \
+        $root_dir/common/modules/bilinear_solver/src/BilinearSolverPkg.vhd
+
+    # NOTE: BilienarSolverUnit_DSP.vhd (common/modules) is NOT added here.
+    # The IP sim file already declares the entity; adding the source would
+    # overwrite it with a LATENCY generic, causing a redeclaration conflict
+    # in BilienarSolverUnit_DSP_behavior.vhd.
+
+    # Self-contained stub entity (BilienarSolverUnit_DSP_Sim) — always compiled
+    add_files -fileset sim_compare -norecurse \
+        $root_dir/src/tb/BilienarSolverUnit_DSP_Sim.vhd
+    add_files -fileset sim_compare -norecurse \
+        $root_dir/src/tb/tb_DSP_StubVsIP.vhd
+
+    set_property top     tb_DSP_StubVsIP [get_filesets sim_compare]
+    set_property top_lib xil_defaultlib  [get_filesets sim_compare]
+    update_compile_order -fileset sim_compare
+    puts "  sim_compare created."
+} else {
+    puts "Fileset sim_compare already exists — using as-is."
+}
 
 # Log all signals so the WDB is complete (needed for VCD export step below)
 set_property xsim.simulate.log_all_signals true [get_filesets sim_compare]
