@@ -9,6 +9,37 @@ syn/embedded/**/*.scr
 syn/embedded/**/build/
 syn/embedded/**/images/
 
+# PetaLinux project (syn/hil)
+syn/hil/ebaz4205_petalinux/build/
+syn/hil/ebaz4205_petalinux/components/
+syn/hil/ebaz4205_petalinux/images/
+syn/hil/ebaz4205_petalinux/pre-built/
+syn/hil/ebaz4205_petalinux/.petalinux/
+syn/hil/ebaz4205_petalinux/project-spec/hw-description/
+syn/hil/ebaz4205_petalinux/project-spec/configs/*.old
+syn/hil/ebaz4205_petalinux/project-spec/configs/gen-machineconf.log*
+syn/hil/ebaz4205_petalinux/project-spec/configs/plnx_syshw_data
+syn/hil/ebaz4205_petalinux/project-spec/configs/.statistics
+syn/hil/ebaz4205_petalinux/project-spec/configs/configs/
+syn/hil/ebaz4205_petalinux/project-spec/configs/rootfsconfigs/Kconfig
+syn/hil/ebaz4205_petalinux/project-spec/configs/rootfsconfigs/Kconfig.part
+syn/hil/ebaz4205_petalinux/project-spec/configs/busybox/
+syn/hil/ebaz4205_petalinux/project-spec/configs/flash_parts.txt
+syn/hil/ebaz4205_petalinux/project-spec/configs/init-ifupdown/
+syn/hil/ebaz4205_petalinux/project-spec/meta-user/recipes-bsp/device-tree/device-tree-sdt.inc
+syn/hil/ebaz4205_petalinux/project-spec/meta-user/recipes-bsp/u-boot/files/user_*.cfg
+syn/hil/ebaz4205_petalinux/project-spec/configs/rootfsconfigs/
+syn/hil/ebaz4205_petalinux/project-spec/meta-user/COPYING.MIT
+syn/hil/ebaz4205_petalinux/project-spec/meta-user/README
+syn/hil/ebaz4205_petalinux/.gitignore
+
+# SD card images — rastrear explicitamente (pré-compilado para flash direto)
+!syn/hil/sd_images/
+
+# Vivado project (gerado pelo TCL — não rastrear)
+syn/hil/ebaz4205/
+syn/hil/ebaz4205.xsa
+
 # CSV data files
 scripts/test/*.csv
 *.csv
