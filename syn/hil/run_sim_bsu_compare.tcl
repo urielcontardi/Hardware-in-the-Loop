@@ -11,7 +11,7 @@
 # =============================================================================
 
 set script_dir [file normalize [file dirname [info script]]]
-set proj_file  "$script_dir/HIL_EBAZ4205/HIL_EBAZ4205.xpr"
+set proj_file  "$script_dir/ebaz4205/ebaz4205.xpr"
 set root_dir   [file normalize "$script_dir/../.."]
 
 if {![file exists $proj_file]} {
@@ -65,7 +65,7 @@ run all
 close_sim
 
 # ── Step 2: re-run snapshot → export VCD for GTKWave ─────────────────────────
-set sim_dir  "$script_dir/HIL_EBAZ4205/HIL_EBAZ4205.sim/sim_bsu_compare/behav/xsim"
+set sim_dir  "$script_dir/ebaz4205/ebaz4205.sim/sim_bsu_compare/behav/xsim"
 set vcd_file [file normalize "$script_dir/tb_BSU_StubVsIP.vcd"]
 set tcl_file "$sim_dir/export_bsu_vcd.tcl"
 
