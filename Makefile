@@ -250,22 +250,23 @@ sim-all: sim-serial sim-tim sim-top
 # =============================================================================
 # Vivado / Synthesis targets
 # =============================================================================
-VIVADO     := vivado
-SYN_HIL    := syn/hil
-VIVADO_PROJ := $(SYN_HIL)/HIL_EBAZ4205/HIL_EBAZ4205.xpr
-NVC        := nvc
-NVC_FLAGS  := --std=2008
+VIVADO      := vivado
+SYN_HIL     := syn/hil
+VIVADO_PROJ := $(SYN_HIL)/ebaz4205/ebaz4205.xpr
+NVC         := nvc
+NVC_FLAGS   := --std=2008
+SD_DEVICE   ?= /dev/sdX
 
-.PHONY: vivado-project sim-dsp-compare
+.PHONY: vivado-project sim-dsp-compare sim-bsu-compare synth flash
 
-## Create the Vivado project from TCL (syn/hil/create_project.tcl)
+## Create the Vivado project from TCL (syn/hil/create_ebaz4205_project.tcl)
 vivado-project:
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
-	@echo "║      Creating Vivado HIL_EBAZ4205 project    ║"
+	@echo "║      Creating Vivado ebaz4205 project        ║"
 	@echo "╚══════════════════════════════════════════════╝"
 	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
-		-source create_project.tcl \
+		-source create_ebaz4205_project.tcl \
 		-log vivado_create.log \
 		-journal vivado_create.jou
 	@echo "Project: $(VIVADO_PROJ)"
@@ -306,22 +307,30 @@ sim-bsu-compare:
 	@echo "Results → $(SYN_HIL)/vivado_bsu_compare.log"
 	@grep -E "PASS|FAIL|MISMATCH|ALL TESTS" $(SYN_HIL)/vivado_bsu_compare.log || true
 
-## Synthesize + implement + generate bitstream (requires vivado-project first)
+## Synthesize + implement + export XSA (requires vivado-project first)
 synth:
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
-	@echo "║  Synthesis + Implementation + Bitstream      ║"
+	@echo "║  Synthesis + Implementation + XSA Export     ║"
 	@echo "╚══════════════════════════════════════════════╝"
 	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
 		echo "ERROR: project not found — run 'make vivado-project' first"; \
 		exit 1; \
 	fi
-	@$(VIVADO) -mode batch \
-		-source $(SYN_HIL)/run_impl.tcl \
-		-log $(SYN_HIL)/vivado_impl.log \
-		-journal $(SYN_HIL)/vivado_impl.jou
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source run_impl_export.tcl \
+		-log vivado_impl.log \
+		-journal vivado_impl.jou
 	@echo ""
-	@grep -E "Bitstream ready|ERROR|WARNING.*critical" $(SYN_HIL)/vivado_impl.log || true
+	@grep -E "XSA exportado|ERROR|WARNING.*critical" $(SYN_HIL)/vivado_impl.log || true
+
+## Flash SD card with pre-built images (usage: make flash SD=/dev/sdX)
+flash:
+	@if [ "$(SD_DEVICE)" = "/dev/sdX" ]; then \
+		echo "ERROR: specify SD device — example: make flash SD=/dev/sda"; \
+		exit 1; \
+	fi
+	@sudo $(SYN_HIL)/flash_sd.sh $(SD_DEVICE)
 
 # =============================================================================
 # cocotb (Python) Testbenches
@@ -474,11 +483,12 @@ help:
 	@echo "║    make gui-build     Full tauri build                  ║"
 	@echo "║    make gui-build-linux Build deb/rpm bundles           ║"
 	@echo "║                                                         ║"
-	@echo "║  Vivado / Synthesis:                                    ║"
-	@echo "║    make vivado-project  Create HIL_EBAZ4205.xpr         ║"
-	@echo "║    make sim-dsp-compare DSP stub vs IP comparison (xsim) ║"
+	@echo "║  Vivado / Synthesis (EBAZ4205):                         ║"
+	@echo "║    make vivado-project  Create ebaz4205.xpr             ║"
+	@echo "║    make synth           Synth + impl + export XSA       ║"
+	@echo "║    make sim-dsp-compare DSP stub vs IP (xsim)           ║"
 	@echo "║    make sim-bsu-compare BSU full-solver stub vs IP      ║"
-	@echo "║    make synth           Synth + impl + bitstream        ║"
+	@echo "║    make flash SD=/dev/sdX  Flash SD card                ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"
 	@echo "║    make compile       Analyze all VHDL sources          ║"
