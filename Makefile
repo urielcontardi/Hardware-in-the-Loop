@@ -257,7 +257,7 @@ NVC         := nvc
 NVC_FLAGS   := --std=2008
 SD_DEVICE   ?= /dev/sdX
 
-.PHONY: vivado-project sim-dsp-compare sim-bsu-compare synth flash
+.PHONY: vivado-project sim-dsp-compare sim-bsu-compare sim-clarke synth flash
 
 ## Create the Vivado project from TCL (syn/hil/create_ebaz4205_project.tcl)
 vivado-project:
@@ -306,6 +306,24 @@ sim-bsu-compare:
 	@echo ""
 	@echo "Results → $(SYN_HIL)/vivado_bsu_compare.log"
 	@grep -E "PASS|FAIL|MISMATCH|ALL TESTS" $(SYN_HIL)/vivado_bsu_compare.log || true
+
+## Clarke transform behavioral simulation — exports VCD for GTKWave
+sim-clarke:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  Clarke Transform — Behavioral (xsim)        ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source run_sim_clarke.tcl \
+		-log vivado_clarke.log \
+		-journal vivado_clarke.jou
+	@echo ""
+	@echo "Results → $(SYN_HIL)/vivado_clarke.log"
+	@grep -E "PASS|FAIL|ERROR|Waveform ready" $(SYN_HIL)/vivado_clarke.log || true
 
 ## Synthesize + implement + export XSA (requires vivado-project first)
 synth:
@@ -488,6 +506,7 @@ help:
 	@echo "║    make synth           Synth + impl + export XSA       ║"
 	@echo "║    make sim-dsp-compare DSP stub vs IP (xsim)           ║"
 	@echo "║    make sim-bsu-compare BSU full-solver stub vs IP      ║"
+	@echo "║    make sim-clarke      Clarke transform (xsim + VCD)   ║"
 	@echo "║    make flash SD=/dev/sdX  Flash SD card                ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"
