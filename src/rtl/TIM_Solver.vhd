@@ -58,15 +58,15 @@ Entity TIM_Solver is
     Generic (
         DATA_WIDTH          : natural := 42;  -- Data width for fixed-point representation
         -- Discretization parameters
-        CLOCK_FREQUENCY     : natural := 200e6;        -- Clock frequency
-        Ts                  : real    := 100.0e-9;     -- Discretization step
+        CLOCK_FREQUENCY     : natural := 150_000_000;   -- Clock frequency (150 MHz: closes timing on Zynq-7010 -1)
+        Ts                  : real    := 40.0 / 150_000_000.0;  -- Discretization step: 40 cycles/150 MHz = 266.67 ns
         -- Motor parameters (leakage inductances — total = leakage + mutual)
-        rs            : real    := 0.435;         -- Stator resistance
+        rs            : real    := 0.4396;        -- Stator resistance
         rr            : real    := 0.2826;        -- Rotor resistance
         ls            : real    := 3.1364e-3;     -- Stator leakage inductance
         lr            : real    := 6.3264e-3;     -- Rotor leakage inductance
         lm            : real    := 109.9442e-3;   -- Mutual inductance
-        j             : real    := 0.192;        -- Moment of inertia
+        j             : real    := 0.4;           -- Moment of inertia
         npp           : real    := 2.0           -- Number of pair poles
     );
     Port (

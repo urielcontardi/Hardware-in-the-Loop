@@ -12,7 +12,8 @@ T3 — zero_sequence
     Va=Vb=Vc=1  →  α=0, β=0, zero=1
 
 T4 — pipeline_latency
-    Assert data_valid_o arrives exactly 3 clock cycles after data_valid_i.
+    Assert data_valid_o arrives exactly PIPE_DEPTH cycles after data_valid_i
+    (6 in GHDL/cocotb VPI: 5-cycle RTL + 1 VPI-deposit offset).
 
 T5 — sweep_random
     Apply 20 random balanced 3-phase inputs and compare with Python golden.
@@ -31,7 +32,8 @@ from cocotb.triggers import ClockCycles, RisingEdge
 DATA_WIDTH  = 42
 FRAC_WIDTH  = 28
 FP_SCALE    = 1 << FRAC_WIDTH
-PIPE_DEPTH  = 3   # ClarkeTransform registered pipeline latency (cycles)
+PIPE_DEPTH  = 6   # ClarkeTransform pipeline latency as seen by GHDL/cocotb VPI
+                  # VHDL has 5-cycle RTL latency (v1.4 6-stage pipeline); VPI deposit adds 1 effective cycle
 TOL_ULP     = 6   # allowed error in LSBs:
                   # COEFF_2_3 = round(2/3 * 2^28) introduces ≤ 0.333 * alphaSum_real ULPs
                   # shift_right(b,1) and shift_right(c,1) add ≤ 1 ULP each

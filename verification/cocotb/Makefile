@@ -108,6 +108,29 @@ tim-vf:
 	@echo ""
 	$(UV) run python run.py --sim $(SIM) --top tim_solver --test vf -k test_tim_solver_vf_stimulus
 
+# ── TIM_Solver V/F — background run with live log monitoring ─────────────────
+VF_LOG ?= sim_build/vf_progress.log
+
+.PHONY: tim-vf-bg
+tim-vf-bg:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ cocotb: TIM_Solver V/F — background ($(SIM)) ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	@mkdir -p sim_build
+	@echo "Starting background simulation → $(VF_LOG)"
+	@nohup $(UV) run python run.py --sim $(SIM) --top tim_solver --test vf \
+	    -k test_tim_solver_vf_stimulus > $(VF_LOG) 2>&1 &
+	@echo "PID: $$!"
+	@echo ""
+	@echo "Monitor progress:"
+	@echo "  tail -f $(VF_LOG)"
+	@echo ""
+	@echo "Or filter only the [VF] lines:"
+	@echo "  tail -f $(VF_LOG) | grep '\\[VF'"
+	@echo ""
+
 .PHONY: report
 report:
 	@echo ""
@@ -125,6 +148,25 @@ report-overlay:
 	@echo "╚══════════════════════════════════════════════╝"
 	@echo ""
 	$(UV) run python scripts/vf_report.py --overlay
+
+.PHONY: tim-sine
+tim-sine:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ cocotb: TIM_Solver pure sine 60 Hz ($(SIM))  ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python run.py --sim $(SIM) --top tim_solver --test sine
+
+.PHONY: report-sine
+report-sine:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║ Generating pure-sine HTML report + overlay   ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo ""
+	$(UV) run python scripts/vf_report.py --sine --duration 0.2 --overlay \
+	    --vhdl-csv reports/sine_vhdl_vs_ref.csv --out reports/sine_report.html
 
 # ── Clean build artifacts ──────────────────────────────────────────────
 .PHONY: clean
@@ -153,7 +195,8 @@ help:
 	@echo "║    make test TOP=<top> TESTCASE=<name>                  ║"
 	@echo "║    make waves        Run tests + open GTKWave           ║"
 	@echo "║    make tim-ref        TIM_Solver vs C ref (static)     ║"
-	@echo "║    make tim-vf         TIM_Solver vs C ref (V/F ramp)  ║"
+	@echo "║    make tim-vf         TIM_Solver V/F ramp (foreground) ║"
+	@echo "║    make tim-vf-bg      TIM_Solver V/F ramp (background) ║"
 	@echo "║    make report         HTML report — C model only      ║"
 	@echo "║    make report-overlay HTML report — C + VHDL overlay  ║"
 	@echo "║                                                         ║"

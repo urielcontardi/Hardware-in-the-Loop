@@ -1,194 +1,222 @@
 # Hardware-in-the-Loop (HIL) — 3-Phase Induction Motor
 
-FPGA-based Hardware-in-the-Loop simulation of a Three-phase Induction Motor (TIM) using NPC modulation and UART-based monitoring.
+FPGA-based Hardware-in-the-Loop simulation of a Three-phase Induction Motor (TIM) using NPC modulation and UART-based monitoring, targeting the **EBAZ4205 (Zynq-7010)** board.
+
+---
+
+## Project Status
+
+| Phase | Status | Notes |
+|---|---|---|
+| VHDL TIM_Solver (simulation) | **Done** | NRMSE currents < 3%, speed MAE < 0.7 rad/s |
+| Flux error | **Pending fix** | MAE ~5.5 mWb, tolerance < 1 mWb |
+| BilinearSolverUnit_DSP validation | **Pending** | Confirm stub == Xilinx IP behavior |
+| Vivado project (EBAZ4205 base) | **Done** | PS7 + Ethernet EMIO + LEDs, Vivado 2025.1 |
+| Linux boot (PetaLinux 2025.1) | **Done** | Kernel 6.12.10, SD card, UART console |
+| HIL integration into BD | **Next** | Add NPCManager + TIM_Solver to Block Design |
+| Linux app (V/F ramp via AXI) | **Next** | ARM writes va/vb/vc_ref to PL via AXI GPIO |
+| Tauri GUI integration | **Backlog** | `apps/hil-gui-tauri/` scaffold ready |
+
+---
 
 ## Project Structure
 
 ```
 Hardware-in-the-Loop/
-├── Makefile                    # Unified build system (VHDL + cocotb)
-├── README.md
 │
-├── src/
-│   ├── rtl/                    # Synthesizable VHDL
-│   │   ├── Top_HIL.vhd        # Top-level: NPCManager + TIM_Solver + SerialManager
-│   │   ├── SerialManager.vhd  # UART register interface (10 regs, 42-bit)
-│   │   ├── TIM_Solver.vhd     # 3-phase induction motor bilinear model
-│   │   └── vf_control/        # V/F open-loop controller (optional)
-│   └── tb/                     # VHDL testbenches (GHDL)
-│       ├── tb_SerialManager.vhd
-│       ├── tb_TIMSolver.vhd
-│       └── tb_TopHIL.vhd
+├── apps/                        # Desktop applications
+│   └── hil-gui-tauri/          # Tauri GUI (Rust + TypeScript)
 │
-├── verification/
-│   └── cocotb/                 # Python-based testbenches (cocotb 2.x)
-│       ├── drivers/            # Reusable UART & protocol drivers
-│       │   ├── uart_driver.py
-│       │   └── serial_manager_driver.py
-│       ├── models/             # Reference model wrappers (C/Python backends)
-│       ├── tests/              # cocotb test modules
-│       │   └── test_top_hil.py
-│       ├── run.py              # Python runner (cocotb_tools.runner)
-│       ├── Makefile            # Convenience targets
-│       └── pyproject.toml      # Dependencies (managed by uv)
-│
-│   └── reference_models/       # External reference models (git submodules)
-│       └── induction-motor-model/
-│
-├── common/                     # Shared VHDL modules (git submodule)
+├── common/                      # Shared VHDL modules (git submodule)
 │   └── modules/
-│       ├── bilinear_solver/    # Fixed-point bilinear integrator
-│       ├── clarke_transform/   # Clarke (abc → αβ) transform
-│       ├── npc_modulator/      # NPC 3-level PWM modulator
-│       ├── uart/               # UART TX/RX/Full
-│       ├── fifo/               # Async/Sync FIFO
-│       └── edge_detector/      # Rising/falling edge detector
+│       ├── bilinear_solver/     # 42×42 signed multiplier (DSP48E1)
+│       ├── clarke_transform/    # abc → αβ transformation
+│       ├── npc_modulator/       # 3-level NPC PWM + gate driver
+│       ├── uart/                # UART TX/RX
+│       └── fifo/                # Async/sync FIFO
 │
-├── syn/                        # Synthesis project (Xilinx Vivado)
-│   └── HIL.xpr
+├── extras/                      # Reference material
+│   ├── induction-motor-model/   # C reference model + PSIM files
+│   └── longovinicius-hil/       # Legacy reference project
 │
-├── extras/                     # Notebooks & scripts
-│   └── TIM.ipynb
+├── scripts/                     # Host PC scripts
+│   └── setup/
+│       └── install_petalinux_deps.sh  # PetaLinux dependencies
 │
-├── apps/
-│   └── hil-gui-tauri/          # Desktop GUI (Tauri + Rust + TypeScript)
+├── src/                         # Source code
+│   ├── rtl/                     # Hardware (VHDL)
+│   │   ├── TIM_Solver.vhd       # Induction motor model
+│   │   ├── SerialManager.vhd    # UART protocol handler
+│   │   ├── Top_HIL.vhd          # Top-level (used in cocotb simulation)
+│   │   └── vf_control/          # V/F controller modules
+│   └── tb/                      # VHDL testbenches
 │
-└── build/                      # GHDL build artifacts (auto-generated)
+├── syn/                         # Synthesis and implementation
+│   └── hil/                     # EBAZ4205 Vivado + PetaLinux project
+│       ├── create_ebaz4205_project.tcl   # Recreates Vivado project from scratch
+│       ├── run_impl_export.tcl           # Synth + impl + export XSA
+│       ├── ebaz4205_board.xdc            # Pinout constraints
+│       ├── flash_sd.sh                   # SD card programmer
+│       ├── sd_images/                    # Pre-built boot images (ready to flash)
+│       ├── ebaz4205_petalinux/           # PetaLinux project
+│       └── README.md                     # Detailed FPGA/Linux workflow
+│
+└── verification/
+    └── cocotb/                   # Python testbench framework
+        ├── tests/                # Test modules
+        ├── models/               # C reference model wrapper
+        ├── drivers/              # cocotb drivers (UART, SerialManager)
+        └── reports/              # Generated HTML reports
 ```
+
+---
 
 ## Quick Start
 
-### Prerequisites
-
-| Tool    | Version  | Purpose                        |
-|---------|----------|--------------------------------|
-| GHDL    | ≥ 4.0    | VHDL simulator (VPI support)   |
-| GTKWave | any      | Waveform viewer (optional)     |
-| uv      | ≥ 0.10   | Python package manager         |
-
-**Install uv** (if not already installed):
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### First-time Setup (cocotb)
+### Simulation (GHDL + cocotb)
 
 ```bash
-make cocotb-setup       # Installs cocotb + dependencies in a venv
+# Ver todos os targets disponíveis
+make help
+
+# Simular TIM_Solver com estímulo V/F (longo — ~4.6h em 28 cores)
+make cocotb-tim-vf
+
+# Teste rápido (60 Hz senoidal)
+make cocotb-tim-sine
+
+# Abrir relatório
+xdg-open verification/cocotb/reports/vf_report.html
 ```
 
-### Running Simulations
-
-#### VHDL Testbenches (GHDL)
+### FPGA (Vivado 2025.1)
 
 ```bash
-make sim-serial         # SerialManager testbench
-make sim-tim            # TIM Solver testbench
-make sim-top            # Top_HIL testbench
-make sim-all            # All VHDL testbenches
+# Criar projeto Vivado do zero
+make vivado-project
 
-make wave-serial        # Run + open GTKWave
+# Sintetizar + implementar + exportar XSA
+make synth
 ```
 
-#### cocotb (Python) Tests
+### SD Card (boot Linux na EBAZ4205)
 
 ```bash
-make cocotb                                     # Run all cocotb tests
-make cocotb TESTCASE=test_write_read_vdc_bus    # Run a single test
-make cocotb-waves                               # Run + GHW waveform dump
+# Flash direto com imagens pré-compiladas
+make flash SD=/dev/sda
+
+# Ou manualmente
+sudo syn/hil/flash_sd.sh /dev/sda
 ```
 
-Or directly from the cocotb directory:
-```bash
-cd verification/cocotb
-uv run python run.py                            # All tests
-uv run python run.py -k test_pwm_enable         # Single test
-uv run python run.py --waves                    # With waveforms
-uv run python run.py --top tim_solver -k test_tim_solver_matches_reference_model
-```
+> Ver `syn/hil/README.md` para o workflow completo (build PetaLinux do zero, atualizar bitstream, etc.)
 
-Or from project root:
-```bash
-make cocotb-tim-ref
-```
-
-### All Targets
+### Console serial
 
 ```bash
-make help               # Show all available targets
+picocom -b 115200 /dev/ttyUSB0
+# Login: petalinux
+# Sair: Ctrl+A → Ctrl+X
 ```
 
-## cocotb Test Suite
+---
 
-| Test                            | Description                                |
-|---------------------------------|--------------------------------------------|
-| `test_write_read_vdc_bus`       | Write/read VDC_BUS register via UART       |
-| `test_write_read_torque_load`   | Write/read TORQUE_LOAD register via UART   |
-| `test_read_all_registers`       | Dump all 10 registers with Read All cmd    |
-| `test_pwm_enable`               | Enable PWM and verify gate output activity |
-| `test_full_chain_motor_outputs` | Full chain: config → PWM → TIM → readback  |
-| `test_tim_solver_matches_reference_model` | TIM_Solver vs C reference-model comparison |
-
-### Adding New Tests
-
-1. Create a new test function in [verification/cocotb/tests/test_top_hil.py](verification/cocotb/tests/test_top_hil.py) decorated with `@cocotb.test()`
-2. Use the existing `SerialManagerDriver` for UART communication
-3. Run with `make cocotb TESTCASE=your_new_test`
-
-### cocotb Drivers
-
-The reusable drivers in `verification/cocotb/drivers/` can be imported in any test:
-
-```python
-from drivers.serial_manager_driver import SerialManagerDriver, RegAddr
-from drivers.uart_driver import UartTxDriver, UartRxDriver
-```
-
-## Architecture
+## Makefile — Targets disponíveis
 
 ```
- UART RX ──► SerialManager ──► VDC_BUS / TORQUE_LOAD registers
-                  │
-                  ▼
- va/vb/vc_ref ──► NPCManager ──► PWM gates (3-level NPC)
-                      │
-                      ▼
-                  TIM_Solver ──► ia, ib, flux_α, flux_β, speed
-                      │
-                      ▼
-              SerialManager ──► UART TX (readback)
+Simulação VHDL (GHDL):
+  make sim-serial          SerialManager testbench
+  make sim-tim             TIM_Solver testbench
+  make sim-top             Top_HIL testbench
+  make sim-all             Todos os testbenches VHDL
+  make wave-serial         SerialManager + GTKWave
+  make wave-tim            TIM_Solver + GTKWave
+  make wave-top            Top_HIL + GTKWave
+  make compile             Analisa todos os fontes VHDL (sem simular)
+
+cocotb (Python):
+  make cocotb              Todos os testes
+  make cocotb-tim-ref      TIM_Solver vs modelo C (entradas DC)
+  make cocotb-tim-vf       V/F ramp (foreground, ~4.6h)
+  make cocotb-tim-vf-bg    V/F ramp (background, monitor no terminal)
+  make cocotb-tim-sine     60 Hz senoidal (rápido)
+  make cocotb-waves        Testes + dump de formas de onda
+  make cocotb-report       Gerar relatório HTML (modelo C)
+  make cocotb-report-overlay  Relatório com overlay VHDL vs C
+  make cocotb-report-sine  Relatório do teste senoidal
+  make cocotb-setup        Instalar dependências Python (uv)
+  make cocotb-setup-nvc    Instalar simulador NVC (mais rápido que GHDL)
+
+Vivado / EBAZ4205:
+  make vivado-project      Criar projeto ebaz4205.xpr do zero
+  make synth               Síntese + implementação + exportar XSA
+  make sim-dsp-compare     DSP stub vs IP Xilinx (xsim)
+  make sim-bsu-compare     BSU solver stub vs IP (xsim)
+  make sim-clarke          Clarke transform behavioural (xsim + VCD)
+  make flash SD=/dev/sdX   Gravar SD card com imagens pré-compiladas
+
+GUI Tauri (apps/hil-gui-tauri/):
+  make gui-setup           Instalar dependências npm
+  make gui-check           Build frontend + cargo check
+  make gui-dev             Rodar GUI em modo desenvolvimento
+  make gui-build           Build completo (Tauri)
+  make gui-build-linux     Gerar pacotes .deb/.rpm
+
+Geral:
+  make help                Exibir esta lista
+  make clean               Remover todos os artefatos gerados
 ```
 
-## Register Map (SerialManager)
+---
 
-| Addr | Name         | Access | Description                    |
-|------|------------- |--------|--------------------------------|
-| 0x00 | VDC_BUS      | R/W    | DC bus voltage                 |
-| 0x01 | TORQUE_LOAD  | R/W    | Motor load torque              |
-| 0x02 | VA_MOTOR     | R      | Phase A voltage (NPC output)   |
-| 0x03 | VB_MOTOR     | R      | Phase B voltage                |
-| 0x04 | VC_MOTOR     | R      | Phase C voltage                |
-| 0x05 | I_ALPHA      | R      | Stator current α               |
-| 0x06 | I_BETA       | R      | Stator current β               |
-| 0x07 | FLUX_ALPHA   | R      | Rotor flux α                   |
-| 0x08 | FLUX_BETA    | R      | Rotor flux β                   |
-| 0x09 | SPEED_MECH   | R      | Mechanical speed               |
+## Resultados de Validação (cocotb V/F ramp)
 
-**Protocol:**
-- Write: `'W'` (0x57) | ADDR | DATA (6 bytes, MSB first)
-- Read:  `'R'` (0x52) | ADDR → response: `0xAA` | ADDR | DATA
-- Read All: `'A'` (0x41) → response: `0x55` | REG0..REG9
+| Métrica | Resultado | Tolerância | Status |
+|---|---|---|---|
+| NRMSE I_alpha | 2.85% | < 10% | OK |
+| NRMSE I_beta | 2.89% | < 10% | OK |
+| MAE flux_alpha | 5.49 mWb | < 1 mWb | **Pendente** |
+| MAE flux_beta | 5.70 mWb | < 1 mWb | **Pendente** |
+| MAE speed | 0.70 rad/s | < 2.0 rad/s | OK |
 
-## License
+---
 
-See individual module headers for license information.
+## SerialManager Protocol
 
-## Desktop GUI (Tauri)
+| Addr | Registrador | Acesso | Formato |
+|---|---|---|---|
+| 0x00 | VDC_BUS | R/W | Q14.28, 42-bit |
+| 0x01 | TORQUE_LOAD | R/W | Q14.28, 42-bit |
+| 0x02–0x04 | VA/VB/VC_MOTOR | R | Q14.28, 42-bit |
+| 0x05–0x06 | I_ALPHA / I_BETA | R | Q14.28, 42-bit |
+| 0x07–0x08 | FLUX_ALPHA/BETA | R | Q14.28, 42-bit |
+| 0x09 | SPEED_MECH | R | Q14.28, 42-bit (rad/s) |
 
-The repository includes an initial high-performance desktop GUI scaffold for HIL telemetry and control:
+```
+Write:    'W' | ADDR(1B) | DATA(6B MSB-first)
+Read:     'R' | ADDR(1B)  →  0xAA | ADDR | DATA(6B)
+Read All: 'A'             →  0x55 | REG0..REG9 (60 bytes)
+```
 
-- Path: `apps/hil-gui-tauri`
-- Stack: Tauri + Rust backend + TypeScript frontend + uPlot
-- Strategy: buffered IPC (`telemetry-chunk`) + frontend min-max decimation for smooth plotting
+---
 
-See `apps/hil-gui-tauri/README.md` and `apps/hil-gui-tauri/docs/setup_linux.md`.
+## Dependências
+
+| Ferramenta | Versão | Uso |
+|---|---|---|
+| Vivado | 2025.1 | Síntese FPGA |
+| PetaLinux | 2025.1 | Build Linux embarcado |
+| GHDL | ≥ 4.0 | Simulação VHDL |
+| NVC | ≥ 1.19.3 | Simulação VHDL (mais rápido) |
+| Python | ≥ 3.10 | cocotb, modelos de referência |
+| uv | latest | Gerenciador de pacotes Python |
+
+---
+
+## Convenções
+
+- **VHDL entities**: `PascalCase` (ex: `TIM_Solver`)
+- **VHDL files**: `PascalCase.vhd`
+- **Python**: `snake_case.py`
+- **Commits**: Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`)
+- **Branch principal**: `lcapyIntroduction` / desenvolvimento: `develop`
