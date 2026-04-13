@@ -36,14 +36,14 @@ class IMPhysicalParams:
     @classmethod
     def defaults(cls) -> "IMPhysicalParams":
         return cls(
-            rs=0.435,
+            rs=0.4396,
             rr=0.2826,
             lm=109.9442e-3,
             ls=3.1364e-3,
             lr=6.3264e-3,
-            j=0.192,
+            j=0.4,
             npp=2.0,
-            ts=100.0e-9,
+            ts=40.0/150_000_000,  # 266.67 ns — matches TIMER_STEPS=40 @ 150 MHz
         )
 
 
@@ -144,7 +144,7 @@ class _CIMPrivateData(ctypes.Structure):
 class _CReferenceBackend:
     def __init__(self, params: IMPhysicalParams, model_type: int) -> None:
         project_root = Path(__file__).resolve().parents[3]
-        src_dir = project_root / "verification" / "reference_models" / "induction-motor-model" / "src"
+        src_dir = project_root / "extras" / "induction-motor-model" / "src"
         c_src = src_dir / "IM_Model.c"
         if not c_src.exists():
             raise FileNotFoundError(f"Reference C source not found: {c_src}")

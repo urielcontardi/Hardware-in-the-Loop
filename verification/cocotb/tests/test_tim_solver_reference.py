@@ -1,41 +1,54 @@
 """Reference-model comparison test for TIM_Solver.
 
 Compares TIM_Solver fixed-point outputs against the induction-motor model from the
-submodule in verification/reference_models/induction-motor-model.
+submodule in extras/induction-motor-model.
+
+Generates at the end:
+  reports/ref_vhdl_vs_ref.csv   — step-by-step VHDL vs C data
+  reports/ref_report.html       — interactive comparison report
 """
 
+import csv
 import math
+import subprocess
+import sys
+import time
+from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
 from models.im_reference_model import IMPhysicalParams, InductionMotorReferenceModel
+from models.sim_benchmark import save_benchmark
 
 
-DATA_WIDTH = 42
+DATA_WIDTH       = 42
 FP_FRACTION_BITS = 28
-CLK_FREQ = 100_000_000
-CLK_PERIOD_NS = int(1e9 / CLK_FREQ)
+CLK_PERIOD_PS    = 6667  # 150 MHz → period = 6.667 ns = 6667 ps
 
-SIM_STEPS = 500
+SIM_STEPS    = 500
 WARMUP_STEPS = 100
 
+# CLOCK_FREQUENCY generic = 150 MHz, Ts = 40/150MHz = 266.67 ns → TIMER_STEPS = 40.
+# 150 MHz closes timing on Zynq-7010 -1 (critical path ~6.3 ns < 6.67 ns period).
+TIMER_STEPS = 40   # = int(150e6 * 266.67e-9)
 
+REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
+CSV_PATH    = REPORTS_DIR / "ref_vhdl_vs_ref.csv"
+HTML_PATH   = REPORTS_DIR / "ref_report.html"
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+
+
+# ---------------------------------------------------------------------------
+# Fixed-point helpers
+# ---------------------------------------------------------------------------
 def signed_to_slv(value: int, width: int) -> int:
-    if value < 0:
-        return value + (1 << width)
-    return value
+    return value + (1 << width) if value < 0 else value
 
 
 def real_to_fp(value: float) -> int:
     return int(round(value * (1 << FP_FRACTION_BITS)))
-
-
-def fp_to_real(raw: int, width: int = DATA_WIDTH) -> float:
-    if raw & (1 << (width - 1)):
-        raw -= 1 << width
-    return raw / float(1 << FP_FRACTION_BITS)
 
 
 def signal_fp_to_real(signal) -> float:
@@ -53,6 +66,9 @@ def rms(values: list[float]) -> float:
     return math.sqrt(sum(v * v for v in values) / len(values))
 
 
+# ---------------------------------------------------------------------------
+# DUT helpers
+# ---------------------------------------------------------------------------
 async def reset_dut(dut, cycles: int = 20):
     dut.reset_n.value = 0
     dut.va_i.value = 0
@@ -71,137 +87,167 @@ async def wait_data_valid(dut):
             return
 
 
+# ---------------------------------------------------------------------------
+# Test
+# ---------------------------------------------------------------------------
 @cocotb.test()
 async def test_tim_solver_matches_reference_model(dut):
     """Run TIM_Solver and compare key states against the reference model."""
 
-    clock = Clock(dut.sysclk, CLK_PERIOD_NS, unit="ns")
+    clock = Clock(dut.sysclk, CLK_PERIOD_PS, unit="ps")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
     params = IMPhysicalParams.defaults()
-    ref = InductionMotorReferenceModel(params=params, backend="auto")
+    ref    = InductionMotorReferenceModel(params=params, backend="auto")
 
     dut._log.info(f"Reference backend selected: {ref.backend_name}")
-    if getattr(ref, "fallback_reason", ""):
-        dut._log.warning(f"C backend unavailable, using fallback: {ref.fallback_reason}")
 
-    # Piecewise-constant phase voltages with zero-sequence = 0.
-    # This gives deterministic excitation and aligns with existing VHDL TB style.
+    # Piecewise-constant phase voltages — gives deterministic, DC-like excitation
     stimuli = [
-        (100.0, 300.0, -400.0, 0.0),
-        (-150.0, 250.0, -100.0, 0.0),
+        (100.0,  300.0, -400.0, 0.0),   # steps 0..249
+        (-150.0, 250.0, -100.0, 0.0),   # steps 250..499
     ]
 
-    errors_i_alpha: list[float] = []
-    errors_i_beta: list[float] = []
+    rows: list[dict] = []
+    errors_i_alpha:    list[float] = []
+    errors_i_beta:     list[float] = []
     errors_flux_alpha: list[float] = []
-    errors_flux_beta: list[float] = []
-    errors_speed: list[float] = []
-
-    refs_i_alpha: list[float] = []
-    refs_i_beta: list[float] = []
-    refs_flux_alpha: list[float] = []
-    refs_flux_beta: list[float] = []
-    vhdl_i_alpha_samples: list[float] = []
-    vhdl_i_beta_samples: list[float] = []
-    vhdl_flux_alpha_samples: list[float] = []
-    vhdl_flux_beta_samples: list[float] = []
+    errors_flux_beta:  list[float] = []
+    errors_speed:      list[float] = []
+    refs_i_alpha:      list[float] = []
+    refs_i_beta:       list[float] = []
 
     va, vb, vc, tload = stimuli[0]
-    dut.va_i.value = signed_to_slv(real_to_fp(va), DATA_WIDTH)
-    dut.vb_i.value = signed_to_slv(real_to_fp(vb), DATA_WIDTH)
-    dut.vc_i.value = signed_to_slv(real_to_fp(vc), DATA_WIDTH)
+    dut.va_i.value        = signed_to_slv(real_to_fp(va),    DATA_WIDTH)
+    dut.vb_i.value        = signed_to_slv(real_to_fp(vb),    DATA_WIDTH)
+    dut.vc_i.value        = signed_to_slv(real_to_fp(vc),    DATA_WIDTH)
     dut.torque_load_i.value = signed_to_slv(real_to_fp(tload), DATA_WIDTH)
 
+    t_start = time.monotonic()
     for step in range(SIM_STEPS):
         if step == SIM_STEPS // 2:
             va, vb, vc, tload = stimuli[1]
-            dut.va_i.value = signed_to_slv(real_to_fp(va), DATA_WIDTH)
-            dut.vb_i.value = signed_to_slv(real_to_fp(vb), DATA_WIDTH)
-            dut.vc_i.value = signed_to_slv(real_to_fp(vc), DATA_WIDTH)
+            dut.va_i.value        = signed_to_slv(real_to_fp(va),    DATA_WIDTH)
+            dut.vb_i.value        = signed_to_slv(real_to_fp(vb),    DATA_WIDTH)
+            dut.vc_i.value        = signed_to_slv(real_to_fp(vc),    DATA_WIDTH)
             dut.torque_load_i.value = signed_to_slv(real_to_fp(tload), DATA_WIDTH)
 
-        await wait_data_valid(dut)
+        if step == 0:
+            await wait_data_valid(dut)   # initial sync
+        else:
+            await ClockCycles(dut.sysclk, TIMER_STEPS)
 
-        vhdl_i_alpha = signal_fp_to_real(dut.ialpha_o)
-        vhdl_i_beta = signal_fp_to_real(dut.ibeta_o)
+        vhdl_i_alpha    = signal_fp_to_real(dut.ialpha_o)
+        vhdl_i_beta     = signal_fp_to_real(dut.ibeta_o)
         vhdl_flux_alpha = signal_fp_to_real(dut.flux_rotor_alpha_o)
-        vhdl_flux_beta = signal_fp_to_real(dut.flux_rotor_beta_o)
-        vhdl_speed = signal_fp_to_real(dut.speed_mech_o)
+        vhdl_flux_beta  = signal_fp_to_real(dut.flux_rotor_beta_o)
+        vhdl_speed      = signal_fp_to_real(dut.speed_mech_o)
 
         ref_state = ref.step(va, vb, vc, tload)
+        t_us = step * params.ts * 1e6
 
         if step >= WARMUP_STEPS:
-            vhdl_i_alpha_samples.append(vhdl_i_alpha)
-            vhdl_i_beta_samples.append(vhdl_i_beta)
-            vhdl_flux_alpha_samples.append(vhdl_flux_alpha)
-            vhdl_flux_beta_samples.append(vhdl_flux_beta)
-
+            errors_i_alpha.append(vhdl_i_alpha    - ref_state.i_alpha)
+            errors_i_beta.append(vhdl_i_beta      - ref_state.i_beta)
+            errors_flux_alpha.append(vhdl_flux_alpha - ref_state.flux_alpha)
+            errors_flux_beta.append(vhdl_flux_beta  - ref_state.flux_beta)
+            errors_speed.append(vhdl_speed         - ref_state.speed_mech)
             refs_i_alpha.append(ref_state.i_alpha)
             refs_i_beta.append(ref_state.i_beta)
-            refs_flux_alpha.append(ref_state.flux_alpha)
-            refs_flux_beta.append(ref_state.flux_beta)
 
-            errors_i_alpha.append(vhdl_i_alpha - ref_state.i_alpha)
-            errors_i_beta.append(vhdl_i_beta - ref_state.i_beta)
-            errors_flux_alpha.append(vhdl_flux_alpha - ref_state.flux_alpha)
-            errors_flux_beta.append(vhdl_flux_beta - ref_state.flux_beta)
-            errors_speed.append(vhdl_speed - ref_state.speed_mech)
+            rows.append({
+                "step":             step,
+                "t_us":             round(t_us, 4),
+                "va":               round(va, 6),
+                "vb":               round(vb, 6),
+                "vc":               round(vc, 6),
+                "f_ref_hz":         0.0,
+                # VHDL DUT
+                "vhdl_i_alpha":     vhdl_i_alpha,
+                "vhdl_i_beta":      vhdl_i_beta,
+                "vhdl_flux_alpha":  vhdl_flux_alpha,
+                "vhdl_flux_beta":   vhdl_flux_beta,
+                "vhdl_speed":       vhdl_speed,
+                # C reference
+                "ref_i_alpha":      ref_state.i_alpha,
+                "ref_i_beta":       ref_state.i_beta,
+                "ref_flux_alpha":   ref_state.flux_alpha,
+                "ref_flux_beta":    ref_state.flux_beta,
+                "ref_speed":        ref_state.speed_mech,
+            })
 
             if step in (WARMUP_STEPS, WARMUP_STEPS + 1, WARMUP_STEPS + 10):
                 dut._log.info(
-                    "sample step=%d | vhdl(ia,ib,fa,fb)=(%.6f, %.6f, %.6f, %.6f) "
+                    "step=%d | vhdl(iα,iβ,ψα,ψβ)=(%.6f, %.6f, %.6f, %.6f) "
                     "ref=(%.6f, %.6f, %.6f, %.6f)",
                     step,
-                    vhdl_i_alpha,
-                    vhdl_i_beta,
-                    vhdl_flux_alpha,
-                    vhdl_flux_beta,
-                    ref_state.i_alpha,
-                    ref_state.i_beta,
-                    ref_state.flux_alpha,
-                    ref_state.flux_beta,
-                )
-                dut._log.info(
-                    "internals step=%d | timer_tick=%s clarke_valid=%s solver_busy=%s valpha=%s vbeta=%s",
-                    step,
-                    dut.timer_tick.value,
-                    dut.clarke_valid.value,
-                    dut.solver_busy.value,
-                    dut.valpha.value,
-                    dut.vbeta.value,
+                    vhdl_i_alpha, vhdl_i_beta, vhdl_flux_alpha, vhdl_flux_beta,
+                    ref_state.i_alpha, ref_state.i_beta,
+                    ref_state.flux_alpha, ref_state.flux_beta,
                 )
 
-    assert errors_i_alpha, "No comparison samples were collected"
+    wall_time = time.monotonic() - t_start
+    assert rows, "No comparison samples collected"
 
-    nrmse_i_alpha = rms(errors_i_alpha) / max(rms(refs_i_alpha), 1e-9)
-    nrmse_i_beta = rms(errors_i_beta) / max(rms(refs_i_beta), 1e-9)
+    # ── Metrics ──────────────────────────────────────────────────────────────
+    nrmse_i_alpha  = rms(errors_i_alpha) / max(rms(refs_i_alpha), 1e-9)
+    nrmse_i_beta   = rms(errors_i_beta)  / max(rms(refs_i_beta),  1e-9)
     mae_flux_alpha = sum(abs(v) for v in errors_flux_alpha) / len(errors_flux_alpha)
-    mae_flux_beta = sum(abs(v) for v in errors_flux_beta) / len(errors_flux_beta)
-    mae_speed = sum(abs(v) for v in errors_speed) / len(errors_speed)
+    mae_flux_beta  = sum(abs(v) for v in errors_flux_beta)  / len(errors_flux_beta)
+    mae_speed      = sum(abs(v) for v in errors_speed)      / len(errors_speed)
 
     dut._log.info("Reference comparison metrics:")
-    dut._log.info(f"  RMS vhdl i_alpha  = {rms(vhdl_i_alpha_samples):.6f}")
-    dut._log.info(f"  RMS ref  i_alpha  = {rms(refs_i_alpha):.6f}")
-    dut._log.info(f"  RMS vhdl i_beta   = {rms(vhdl_i_beta_samples):.6f}")
-    dut._log.info(f"  RMS ref  i_beta   = {rms(refs_i_beta):.6f}")
-    dut._log.info(f"  RMS vhdl flux_a   = {rms(vhdl_flux_alpha_samples):.2e}")
-    dut._log.info(f"  RMS ref  flux_a   = {rms(refs_flux_alpha):.2e}")
-    dut._log.info(f"  NRMSE i_alpha     = {nrmse_i_alpha:.6f}")
-    dut._log.info(f"  NRMSE i_beta      = {nrmse_i_beta:.6f}")
-    dut._log.info(f"  MAE flux_alpha    = {mae_flux_alpha:.2e} Wb")
-    dut._log.info(f"  MAE flux_beta     = {mae_flux_beta:.2e} Wb")
-    dut._log.info(f"  MAE speed_mech    = {mae_speed:.6f} rad/s")
+    dut._log.info(f"  NRMSE i_alpha  = {nrmse_i_alpha:.6f}")
+    dut._log.info(f"  NRMSE i_beta   = {nrmse_i_beta:.6f}")
+    dut._log.info(f"  MAE flux_alpha = {mae_flux_alpha:.2e} Wb")
+    dut._log.info(f"  MAE flux_beta  = {mae_flux_beta:.2e} Wb")
+    dut._log.info(f"  MAE speed_mech = {mae_speed:.6f} rad/s")
 
-    # Stator currents: NRMSE < 10% accounts for Q14.28 quantization.
-    assert nrmse_i_alpha < 0.10, f"i_alpha mismatch too high: {nrmse_i_alpha:.6f}"
-    assert nrmse_i_beta < 0.10, f"i_beta mismatch too high: {nrmse_i_beta:.6f}"
+    assert nrmse_i_alpha  < 0.10,  f"i_alpha NRMSE={nrmse_i_alpha:.6f}"
+    assert nrmse_i_beta   < 0.10,  f"i_beta  NRMSE={nrmse_i_beta:.6f}"
+    assert mae_flux_alpha < 1e-3,  f"flux_alpha MAE={mae_flux_alpha:.2e} Wb"
+    assert mae_flux_beta  < 1e-3,  f"flux_beta  MAE={mae_flux_beta:.2e} Wb"
+    assert mae_speed      < 2.0,   f"speed MAE={mae_speed:.6f} rad/s"
 
-    # Rotor fluxes: at Ts=100ns the motor time constant is ~0.4s, so fluxes remain
-    # near-zero in the 50µs simulation window — NRMSE is ill-conditioned.
-    # Use absolute MAE instead; Q14.28 LSB = ~3.7e-9 Wb, so 1e-3 Wb is very generous.
-    assert mae_flux_alpha < 1e-3, f"flux_alpha MAE too high: {mae_flux_alpha:.2e} Wb"
-    assert mae_flux_beta < 1e-3, f"flux_beta MAE too high: {mae_flux_beta:.2e} Wb"
+    # ── Save benchmark ────────────────────────────────────────────────────────
+    params = IMPhysicalParams.defaults()
+    save_benchmark(
+        test_name   = "tim_solver_reference",
+        sim_steps   = SIM_STEPS,
+        ts_s        = params.ts,
+        wall_time_s = wall_time,
+        extra       = {
+            "nrmse_i_alpha":    round(nrmse_i_alpha,  6),
+            "nrmse_i_beta":     round(nrmse_i_beta,   6),
+            "mae_flux_alpha_wb":round(mae_flux_alpha, 6),
+            "mae_flux_beta_wb": round(mae_flux_beta,  6),
+            "mae_speed_rad_s":  round(mae_speed,      6),
+        },
+    )
 
-    assert mae_speed < 2.0, f"speed mismatch too high: {mae_speed:.6f} rad/s"
+    # ── Save CSV ─────────────────────────────────────────────────────────────
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    with CSV_PATH.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    dut._log.info(f"CSV saved: {CSV_PATH} ({len(rows)} rows)")
+
+    # ── Generate HTML report ─────────────────────────────────────────────────
+    dut._log.info("Generating HTML report...")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "vf_report.py"),
+            "--compare-only",
+            "--vhdl-csv", str(CSV_PATH),
+            "--out",      str(HTML_PATH),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        dut._log.info(f"Report saved: {HTML_PATH}")
+    else:
+        dut._log.warning(f"Report generation failed:\n{result.stderr}")

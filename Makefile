@@ -248,6 +248,109 @@ sim-all: sim-serial sim-tim sim-top
 	@echo ""
 
 # =============================================================================
+# Vivado / Synthesis targets
+# =============================================================================
+VIVADO      := vivado
+SYN_HIL     := syn/hil
+VIVADO_PROJ := $(SYN_HIL)/ebaz4205/ebaz4205.xpr
+NVC         := nvc
+NVC_FLAGS   := --std=2008
+SD          ?= /dev/sdX
+
+.PHONY: vivado-project sim-dsp-compare sim-bsu-compare sim-clarke synth flash
+
+## Create the Vivado project from TCL (syn/hil/create_ebaz4205_project.tcl)
+vivado-project:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║      Creating Vivado ebaz4205 project        ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source create_ebaz4205_project.tcl \
+		-log vivado_create.log \
+		-journal vivado_create.jou
+	@echo "Project: $(VIVADO_PROJ)"
+
+## Stub vs IP direct comparison — both architectures side-by-side (requires vivado-project first)
+sim-dsp-compare:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  DSP Stub vs IP — Side-by-Side (xsim)        ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@$(VIVADO) -mode batch \
+		-source $(SYN_HIL)/run_sim_dsp_compare.tcl \
+		-log $(SYN_HIL)/vivado_sim_compare.log \
+		-journal $(SYN_HIL)/vivado_sim_compare.jou
+	@echo ""
+	@echo "Results → $(SYN_HIL)/vivado_sim_compare.log"
+	@grep -E "MATCH|MISMATCH|PASS|FAIL|ERROR|ALL VECTORS" $(SYN_HIL)/vivado_sim_compare.log || true
+
+## BilinearSolverUnit stub vs IP full-solver comparison (requires vivado-project first)
+sim-bsu-compare:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  BSU Stub vs IP — Full Solver (xsim)         ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@$(VIVADO) -mode batch \
+		-source $(SYN_HIL)/run_sim_bsu_compare.tcl \
+		-log $(SYN_HIL)/vivado_bsu_compare.log \
+		-journal $(SYN_HIL)/vivado_bsu_compare.jou
+	@echo ""
+	@echo "Results → $(SYN_HIL)/vivado_bsu_compare.log"
+	@grep -E "PASS|FAIL|MISMATCH|ALL TESTS" $(SYN_HIL)/vivado_bsu_compare.log || true
+
+## Clarke transform behavioral simulation — exports VCD for GTKWave
+sim-clarke:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  Clarke Transform — Behavioral (xsim)        ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source run_sim_clarke.tcl \
+		-log vivado_clarke.log \
+		-journal vivado_clarke.jou
+	@echo ""
+	@echo "Results → $(SYN_HIL)/vivado_clarke.log"
+	@grep -E "PASS|FAIL|ERROR|Waveform ready" $(SYN_HIL)/vivado_clarke.log || true
+
+## Synthesize + implement + export XSA (requires vivado-project first)
+synth:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║  Synthesis + Implementation + XSA Export     ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_PROJ)" ]; then \
+		echo "ERROR: project not found — run 'make vivado-project' first"; \
+		exit 1; \
+	fi
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source run_impl_export.tcl \
+		-log vivado_impl.log \
+		-journal vivado_impl.jou
+	@echo ""
+	@grep -E "XSA exportado|ERROR|WARNING.*critical" $(SYN_HIL)/vivado_impl.log || true
+
+## Flash SD card with pre-built images (usage: make flash SD=/dev/sdX)
+flash:
+	@if [ "$(SD)" = "/dev/sdX" ]; then \
+		echo "ERROR: specify SD device — example: make flash SD=/dev/sda"; \
+		exit 1; \
+	fi
+	@sudo $(SYN_HIL)/flash_sd.sh $(SD)
+
+# =============================================================================
 # cocotb (Python) Testbenches
 # =============================================================================
 COCOTB_DIR := verification/cocotb
@@ -257,7 +360,7 @@ SIM        ?= ghdl
 GUI_DIR    := apps/hil-gui-tauri
 SHELL      := /bin/bash
 
-.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-report cocotb-report-overlay cocotb-setup cocotb-setup-nvc cocotb-clean
+.PHONY: cocotb cocotb-waves cocotb-tim-ref cocotb-tim-vf cocotb-tim-vf-bg cocotb-tim-sine cocotb-report cocotb-report-overlay cocotb-report-sine cocotb-setup cocotb-setup-nvc cocotb-clean
 
 cocotb:
 	@$(MAKE) -C $(COCOTB_DIR) test SIM=$(SIM) TOP=$(TOP) TESTCASE=$(TESTCASE)
@@ -271,11 +374,20 @@ cocotb-tim-ref:
 cocotb-tim-vf:
 	@$(MAKE) -C $(COCOTB_DIR) tim-vf SIM=$(SIM)
 
+cocotb-tim-vf-bg:
+	@$(MAKE) -C $(COCOTB_DIR) tim-vf-bg SIM=$(SIM)
+
+cocotb-tim-sine:
+	@$(MAKE) -C $(COCOTB_DIR) tim-sine SIM=$(SIM)
+
 cocotb-report:
 	@$(MAKE) -C $(COCOTB_DIR) report
 
 cocotb-report-overlay:
 	@$(MAKE) -C $(COCOTB_DIR) report-overlay
+
+cocotb-report-sine:
+	@$(MAKE) -C $(COCOTB_DIR) report-sine
 
 cocotb-setup:
 	@$(MAKE) -C $(COCOTB_DIR) setup
@@ -375,8 +487,11 @@ help:
 	@echo "║  cocotb (Python) Tests:                                 ║"
 	@echo "║    make cocotb        Run all cocotb tests              ║"
 	@echo "║    make cocotb TOP=<top> TESTCASE=<name> Run one test   ║"
-	@echo "║    make cocotb-tim-ref  TIM_Solver vs C reference       ║"
-	@echo "║    make cocotb-waves  Run cocotb + waveform dump        ║"
+	@echo "║    make cocotb-tim-ref  TIM_Solver vs C ref (DC)        ║"
+	@echo "║    make cocotb-tim-vf      TIM_Solver V/F ramp (foreground) ║"
+	@echo "║    make cocotb-tim-vf-bg   TIM_Solver V/F ramp (background) ║"
+	@echo "║    make cocotb-tim-sine TIM_Solver vs C ref (60 Hz AC) ║"
+	@echo "║    make cocotb-waves    Run cocotb + waveform dump      ║"
 	@echo "║    make cocotb-setup  Install Python dependencies       ║"
 	@echo "║                                                         ║"
 	@echo "║  Desktop GUI (Tauri):                                   ║"
@@ -385,6 +500,14 @@ help:
 	@echo "║    make gui-dev       Run GUI dev mode                  ║"
 	@echo "║    make gui-build     Full tauri build                  ║"
 	@echo "║    make gui-build-linux Build deb/rpm bundles           ║"
+	@echo "║                                                         ║"
+	@echo "║  Vivado / Synthesis (EBAZ4205):                         ║"
+	@echo "║    make vivado-project  Create ebaz4205.xpr             ║"
+	@echo "║    make synth           Synth + impl + export XSA       ║"
+	@echo "║    make sim-dsp-compare DSP stub vs IP (xsim)           ║"
+	@echo "║    make sim-bsu-compare BSU full-solver stub vs IP      ║"
+	@echo "║    make sim-clarke      Clarke transform (xsim + VCD)   ║"
+	@echo "║    make flash SD=/dev/sdX  Flash SD card                ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"
 	@echo "║    make compile       Analyze all VHDL sources          ║"

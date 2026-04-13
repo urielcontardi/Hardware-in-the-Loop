@@ -1,6 +1,9 @@
 [submodule "common"]
 	path = common
 	url = https://github.com/urielcontardi/vhdl-common.git
-[submodule "verification/reference_models/induction-motor-model"]
-	path = verification/reference_models/induction-motor-model
+[submodule "extras/longovinicius-hil"]
+	path = extras/longovinicius-hil
+	url = https://github.com/longovinicius/HIL
+[submodule "extras/induction-motor-model"]
+	path = extras/induction-motor-model
 	url = https://github.com/urielcontardi/Induction-Motor-Model.git
