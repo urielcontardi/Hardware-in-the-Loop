@@ -17,6 +17,10 @@
 #   make cocotb-waves       - Run cocotb tests + waveform dump
 #   make cocotb-setup       - Install cocotb Python dependencies
 #   make clean              - Remove all generated files
+#   make linux-config       - Update PetaLinux hardware description from XSA
+#   make linux-build        - Build PetaLinux kernel + rootfs
+#   make linux-package      - Package BOOT.bin + image.ub
+#   make linux-all          - Full PetaLinux flow (config → build → package)
 #
 # Dependencies:
 #   - GHDL   (VHDL simulator, with VPI support for cocotb)
@@ -250,7 +254,7 @@ sim-all: sim-serial sim-tim sim-top
 # =============================================================================
 # Vivado / Synthesis targets
 # =============================================================================
-VIVADO      := vivado
+VIVADO      := /opt/Xilinx/2025.1/Vivado/bin/vivado
 SYN_HIL     := syn/hil
 VIVADO_PROJ := $(SYN_HIL)/ebaz4205/ebaz4205.xpr
 NVC         := nvc
@@ -349,6 +353,154 @@ flash:
 		exit 1; \
 	fi
 	@sudo $(SYN_HIL)/flash_sd.sh $(SD)
+
+# =============================================================================
+# PetaLinux targets
+# =============================================================================
+PETALINUX_DIR    := $(SYN_HIL)/ebaz4205_petalinux
+PETALINUX_ENV    := $(HOME)/xilinx/petalinux/settings.sh
+XSA_FILE         := $(SYN_HIL)/ebaz4205.xsa
+PETALINUX_IMAGES := $(PETALINUX_DIR)/images/linux
+
+.PHONY: linux-config linux-build linux-package linux-all linux-flash linux-clean ps-build ps-deploy ps-clean ps-sdk
+
+_petalinux_check_env:
+	@if [ ! -f "$(PETALINUX_ENV)" ]; then \
+		echo "ERROR: PetaLinux environment not found at $(PETALINUX_ENV)"; \
+		exit 1; \
+	fi
+
+_petalinux_check_xsa:
+	@if [ ! -f "$(XSA_FILE)" ]; then \
+		echo "ERROR: $(XSA_FILE) not found — run 'make synth' first"; \
+		exit 1; \
+	fi
+
+## Update hardware description from XSA (run after make synth)
+linux-config: _petalinux_check_env _petalinux_check_xsa
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║   PetaLinux — Update HW description (XSA)   ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@bash -c "source $(PETALINUX_ENV) && \
+		cd $(PETALINUX_DIR) && \
+		petalinux-config --get-hw-description ../ebaz4205.xsa --silentconfig"
+	@# Remove ps7_nand_0 block — not present in EBAZ4205 XSA, causes dtc error
+	@DTSI=$(PETALINUX_DIR)/components/plnx_workspace/device-tree/device-tree/system-conf.dtsi; \
+	if grep -q 'ps7_nand_0' "$$DTSI"; then \
+		python3 -c "\
+import re, sys; \
+txt = open('$$DTSI').read(); \
+txt = re.sub(r'&ps7_nand_0 \{[^}]*\{[^}]*\}[^}]*\{[^}]*\}[^}]*\{[^}]*\}[^}]*\};', \
+            '/* ps7_nand_0 removed — label not present in current XSA; boot via SD */', txt, flags=re.DOTALL); \
+open('$$DTSI','w').write(txt)"; \
+		echo "  Removed ps7_nand_0 block from system-conf.dtsi"; \
+	fi
+	@echo "  HW description updated."
+
+## Build kernel + rootfs
+linux-build: _petalinux_check_env
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║        PetaLinux — Build (kernel+rootfs)     ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@bash -c "source $(PETALINUX_ENV) && \
+		cd $(PETALINUX_DIR) && \
+		petalinux-build"
+
+## Package BOOT.bin + image.ub
+linux-package: _petalinux_check_env
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║        PetaLinux — Package BOOT.bin          ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@bash -c "source $(PETALINUX_ENV) && \
+		cd $(PETALINUX_DIR) && \
+		petalinux-package boot --force \
+			--fsbl images/linux/zynq_fsbl.elf \
+			--fpga images/linux/system.bit \
+			--u-boot"
+	@echo ""
+	@echo "  Boot files em: $(PETALINUX_IMAGES)/"
+	@echo "  Copiar para SD (partição boot): BOOT.bin boot.scr image.ub system.dtb"
+
+## Full flow: config → build → package
+linux-all: linux-config linux-build linux-package
+
+## Copy boot files to SD card boot partition (usage: make linux-flash SD=/dev/sdX)
+linux-flash:
+	@if [ "$(SD)" = "/dev/sdX" ]; then \
+		echo "ERROR: specify SD device — example: make linux-flash SD=/dev/sda"; \
+		exit 1; \
+	fi
+	@BOOT_PART=$$(lsblk -lno NAME,TYPE $(SD) | awk '$$2=="part"{print "/dev/"$$1}' | head -1); \
+	ROOTFS_PART=$$(lsblk -lno NAME,TYPE $(SD) | awk '$$2=="part"{print "/dev/"$$1}' | sed -n '2p'); \
+	MOUNT_BOOT=$$(mktemp -d); \
+	MOUNT_ROOTFS=$$(mktemp -d); \
+	echo "Boot partition:  $$BOOT_PART → $$MOUNT_BOOT"; \
+	echo "Rootfs partition: $$ROOTFS_PART → $$MOUNT_ROOTFS"; \
+	sudo mount $$BOOT_PART $$MOUNT_BOOT && \
+	sudo cp $(PETALINUX_IMAGES)/BOOT.BIN \
+	        $(PETALINUX_IMAGES)/image.ub \
+	        $(PETALINUX_IMAGES)/boot.scr \
+	        $(PETALINUX_IMAGES)/system.dtb \
+	        $$MOUNT_BOOT/ && \
+	echo "  Boot files copied." && \
+	sudo umount $$MOUNT_BOOT && \
+	sudo mount $$ROOTFS_PART $$MOUNT_ROOTFS && \
+	sudo tar xf $(PETALINUX_IMAGES)/rootfs.tar.gz -C $$MOUNT_ROOTFS/ && \
+	echo "  Rootfs extracted." && \
+	sudo umount $$MOUNT_ROOTFS && \
+	rmdir $$MOUNT_BOOT $$MOUNT_ROOTFS && \
+	echo "" && \
+	echo "SD card ready. Insert into EBAZ4205 and power on."
+
+# =============================================================================
+# PS Application (src/ps_app)
+# =============================================================================
+PS_APP_DIR   := src/ps_app
+PS_SDK_ENV   := $(PETALINUX_DIR)/images/linux/sdk/environment-setup-cortexa9t2hf-neon-xilinx-linux-gnueabi
+IP           ?= 192.168.1.100
+
+.PHONY: ps-build ps-deploy ps-clean ps-sdk
+
+## Generate PetaLinux SDK (run once after linux-build)
+ps-sdk: _petalinux_check_env
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       PetaLinux — Generate SDK               ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@bash -c "source $(PETALINUX_ENV) && \
+		cd $(PETALINUX_DIR) && \
+		petalinux-build --sdk && \
+		petalinux-package sysroot"
+	@echo "  SDK ready at: $(PS_SDK_ENV)"
+
+## Cross-compile PS application
+ps-build:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       PS App — Cross-compile (ARM)           ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(PS_SDK_ENV)" ]; then \
+		echo "ERROR: SDK not found. Run 'make ps-sdk' first."; \
+		exit 1; \
+	fi
+	@bash -c "source $(PS_SDK_ENV) && \
+		$(MAKE) -C $(PS_APP_DIR)"
+	@echo "  Binary: $(PS_APP_DIR)/hil_controller"
+
+## Deploy PS application to board via SCP
+ps-deploy: ps-build
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       PS App — Deploy to board               ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@$(MAKE) -C $(PS_APP_DIR) deploy IP=$(IP)
+
+## Clean PS application build
+ps-clean:
+	@$(MAKE) -C $(PS_APP_DIR) clean
 
 # =============================================================================
 # cocotb (Python) Testbenches
@@ -508,6 +660,19 @@ help:
 	@echo "║    make sim-bsu-compare BSU full-solver stub vs IP      ║"
 	@echo "║    make sim-clarke      Clarke transform (xsim + VCD)   ║"
 	@echo "║    make flash SD=/dev/sdX  Flash SD card                ║"
+	@echo "║                                                         ║"
+	@echo "║  PetaLinux (EBAZ4205):                                  ║"
+	@echo "║    make linux-config    Import XSA into PetaLinux       ║"
+	@echo "║    make linux-build     Build kernel + rootfs           ║"
+	@echo "║    make linux-package   Package BOOT.bin + image.ub     ║"
+	@echo "║    make linux-all       Full flow: config→build→package ║"
+	@echo "║    make linux-flash SD=/dev/sdX  Flash SD card          ║"
+	@echo "║                                                         ║"
+	@echo "║  PS Application (src/ps_app):                           ║"
+	@echo "║    make ps-sdk          Generate PetaLinux SDK          ║"
+	@echo "║    make ps-build        Cross-compile for ARM           ║"
+	@echo "║    make ps-deploy IP=x  Build + SCP to board            ║"
+	@echo "║    make ps-clean        Remove PS app binary            ║"
 	@echo "║                                                         ║"
 	@echo "║  Build:                                                 ║"
 	@echo "║    make compile       Analyze all VHDL sources          ║"
