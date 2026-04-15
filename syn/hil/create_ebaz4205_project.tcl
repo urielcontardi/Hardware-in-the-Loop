@@ -21,6 +21,11 @@ set part       "xc7z010clg400-1"
 set xdc_file   "$script_dir/ebaz4205_board.xdc"
 
 # =============================================================================
+# Limite de threads — evita saturar o servidor compartilhado
+# =============================================================================
+set_param general.maxThreads 4
+
+# =============================================================================
 # 1. Criar projeto
 # =============================================================================
 create_project $proj_name $proj_dir -part $part -force
@@ -65,7 +70,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_ACT_DCI_PERIPHERAL_FREQMHZ    {10.158730} \
         CONFIG.PCW_ACT_ENET0_PERIPHERAL_FREQMHZ  {25.000000} \
         CONFIG.PCW_ACT_ENET1_PERIPHERAL_FREQMHZ  {10.000000} \
-        CONFIG.PCW_ACT_FPGA0_PERIPHERAL_FREQMHZ  {50.000000} \
+        CONFIG.PCW_ACT_FPGA0_PERIPHERAL_FREQMHZ  {150.000000} \
         CONFIG.PCW_ACT_FPGA1_PERIPHERAL_FREQMHZ  {10.000000} \
         CONFIG.PCW_ACT_FPGA2_PERIPHERAL_FREQMHZ  {10.000000} \
         CONFIG.PCW_ACT_FPGA3_PERIPHERAL_FREQMHZ  {25.000000} \
@@ -86,7 +91,8 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_ARMPLL_CTRL_FBDIV             {40} \
         CONFIG.PCW_CAN_PERIPHERAL_DIVISOR0       {1} \
         CONFIG.PCW_CAN_PERIPHERAL_DIVISOR1       {1} \
-        CONFIG.PCW_CLK0_FREQ   {50000000} \
+        CONFIG.PCW_CLK0_FREQ   {150000000} \
+        CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ      {150} \
         CONFIG.PCW_CLK1_FREQ   {10000000} \
         CONFIG.PCW_CLK2_FREQ   {10000000} \
         CONFIG.PCW_CLK3_FREQ   {25000000} \
@@ -121,8 +127,8 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_EN_SDIO0                      {1} \
         CONFIG.PCW_EN_SMC                        {1} \
         CONFIG.PCW_EN_UART1                      {1} \
-        CONFIG.PCW_FCLK0_PERIPHERAL_DIVISOR0     {7} \
-        CONFIG.PCW_FCLK0_PERIPHERAL_DIVISOR1     {4} \
+        CONFIG.PCW_FCLK0_PERIPHERAL_DIVISOR0     {2} \
+        CONFIG.PCW_FCLK0_PERIPHERAL_DIVISOR1     {5} \
         CONFIG.PCW_FCLK1_PERIPHERAL_DIVISOR0     {1} \
         CONFIG.PCW_FCLK1_PERIPHERAL_DIVISOR1     {1} \
         CONFIG.PCW_FCLK2_PERIPHERAL_DIVISOR0     {1} \
@@ -269,7 +275,10 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_USB0_RESET_ENABLE        {0} \
         CONFIG.PCW_USB1_RESET_ENABLE        {0} \
         CONFIG.PCW_USB_RESET_ENABLE         {1} \
-        CONFIG.PCW_USE_M_AXI_GP0            {0} \
+        CONFIG.PCW_USE_M_AXI_GP0            {1} \
+        CONFIG.PCW_USE_S_AXI_HP0            {1} \
+        CONFIG.PCW_USE_FABRIC_INTERRUPT     {1} \
+        CONFIG.PCW_IRQ_F2P_INTR             {1} \
     ] $ps7
 
     # ── xlconcat_0 : agrega RXD nibble baixo + nibble alto → 8 bits ───────────
@@ -321,11 +330,311 @@ proc cr_bd_ebaz4205 {} {
     connect_bd_net [get_bd_pins processing_system7_0/GPIO_O] [get_bd_pins xlslice_1/Din]
     connect_bd_net [get_bd_pins xlslice_1/Dout]              [get_bd_ports LED]
 
+    # ==========================================================================
+    # ── HIL AXI Infrastructure ─────────────────────────────────────────────
+    # Arquitetura:
+    #   carrier_tick (NPCModulator) → IRQ_F2P[0] → PS calcula va/vb/vc
+    #   PS escreve refs via AXI GPIO → NPCManager → NPC→V → TIM_Solver
+    #   TIM_Solver → AXI4-Stream → AXI DMA → DDR (HP0) → PS lê resultados
+    # ==========================================================================
+
+    # ── HIL_AXI_Top (module reference — requer fontes em sources_1) ───────────
+    set hil_top [create_bd_cell -type module \
+                     -reference HIL_AXI_Top hil_axi_top_0]
+
+    # ── AXI SmartConnect 0 : GP0 → 7 slaves (refs + ctrl + vdc + monitor + dma)
+    set sc0 [create_bd_cell -type ip \
+                 -vlnv xilinx.com:ip:smartconnect:1.0 axi_smartconnect_0]
+    set_property -dict [list \
+        CONFIG.NUM_SI {1} \
+        CONFIG.NUM_MI {7} \
+    ] $sc0
+
+    # ── AXI SmartConnect 1 : DMA M_AXI_S2MM → HP0 (AXI4 → AXI3) ─────────────
+    set sc1 [create_bd_cell -type ip \
+                 -vlnv xilinx.com:ip:smartconnect:1.0 axi_smartconnect_1]
+    set_property -dict [list \
+        CONFIG.NUM_SI {1} \
+        CONFIG.NUM_MI {1} \
+    ] $sc1
+
+    # ── AXI GPIO : referências va + vb (escritas pelo PS na ISR) ─────────────
+    #   Canal 1 (offset 0x00): va_ref[31:0]  — signed, ±CARRIER_MAX
+    #   Canal 2 (offset 0x08): vb_ref[31:0]
+    set gpio_vref_ab [create_bd_cell -type ip \
+                          -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_vref_ab]
+    set_property -dict [list \
+        CONFIG.C_GPIO_WIDTH    {32} \
+        CONFIG.C_GPIO2_WIDTH   {32} \
+        CONFIG.C_IS_DUAL       {1}  \
+        CONFIG.C_ALL_OUTPUTS   {1}  \
+        CONFIG.C_ALL_OUTPUTS_2 {1}  \
+    ] $gpio_vref_ab
+
+    # ── AXI GPIO : referência vc + controle PWM ───────────────────────────────
+    #   Canal 1 (offset 0x00): vc_ref[31:0]
+    #   Canal 2 (offset 0x08): {30'b0, clear_fault[1], enable[0]}
+    set gpio_vref_c [create_bd_cell -type ip \
+                         -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_vref_c]
+    set_property -dict [list \
+        CONFIG.C_GPIO_WIDTH    {32} \
+        CONFIG.C_GPIO2_WIDTH   {32} \
+        CONFIG.C_IS_DUAL       {1}  \
+        CONFIG.C_ALL_OUTPUTS   {1}  \
+        CONFIG.C_ALL_OUTPUTS_2 {1}  \
+    ] $gpio_vref_c
+
+    # ── AXI GPIO : VDC + torque (escrita do PS → PL) ─────────────────────────
+    #   Canal 1 (offset 0x00): vdc_word[31:0]   (Q31 signed, →42b internamente)
+    #   Canal 2 (offset 0x08): torque_word[31:0]
+    set gpio_vdc [create_bd_cell -type ip \
+                      -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_vdc_torque]
+    set_property -dict [list \
+        CONFIG.C_GPIO_WIDTH    {32} \
+        CONFIG.C_GPIO2_WIDTH   {32} \
+        CONFIG.C_IS_DUAL       {1}  \
+        CONFIG.C_ALL_OUTPUTS   {1}  \
+        CONFIG.C_ALL_OUTPUTS_2 {1}  \
+    ] $gpio_vdc
+
+    # ── AXI GPIO : monitor 1 — correntes (leitura PS ← PL) ───────────────────
+    #   Canal 1: ialpha_mon  Canal 2: ibeta_mon
+    set gpio_mon1 [create_bd_cell -type ip \
+                       -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_monitor_1]
+    set_property -dict [list \
+        CONFIG.C_GPIO_WIDTH   {32} \
+        CONFIG.C_GPIO2_WIDTH  {32} \
+        CONFIG.C_IS_DUAL      {1}  \
+        CONFIG.C_ALL_INPUTS   {1}  \
+        CONFIG.C_ALL_INPUTS_2 {1}  \
+    ] $gpio_mon1
+
+    # ── AXI GPIO : monitor 2 — fluxos (leitura PS ← PL) ─────────────────────
+    #   Canal 1: flux_alpha_mon  Canal 2: flux_beta_mon
+    set gpio_mon2 [create_bd_cell -type ip \
+                       -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_monitor_2]
+    set_property -dict [list \
+        CONFIG.C_GPIO_WIDTH   {32} \
+        CONFIG.C_GPIO2_WIDTH  {32} \
+        CONFIG.C_IS_DUAL      {1}  \
+        CONFIG.C_ALL_INPUTS   {1}  \
+        CONFIG.C_ALL_INPUTS_2 {1}  \
+    ] $gpio_mon2
+
+    # ── AXI GPIO : monitor 3 — velocidade + data_valid (leitura PS ← PL) ─────
+    #   Canal 1: speed_mon[31:0]  Canal 2: {31'b0, data_valid}
+    set gpio_mon3 [create_bd_cell -type ip \
+                       -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_monitor_3]
+    set_property -dict [list \
+        CONFIG.C_GPIO_WIDTH   {32} \
+        CONFIG.C_GPIO2_WIDTH  {1}  \
+        CONFIG.C_IS_DUAL      {1}  \
+        CONFIG.C_ALL_INPUTS   {1}  \
+        CONFIG.C_ALL_INPUTS_2 {1}  \
+    ] $gpio_mon3
+
+    # ── AXI DMA : TIM_Solver → DDR via HP0 (somente S2MM) ────────────────────
+    #   Stream de 256 bits: {46'b0, speed, flux_b, flux_a, ibeta, ialpha}
+    set axi_dma [create_bd_cell -type ip \
+                     -vlnv xilinx.com:ip:axi_dma:7.1 axi_dma_0]
+    set_property -dict [list \
+        CONFIG.c_include_sg              {0}   \
+        CONFIG.c_include_mm2s            {0}   \
+        CONFIG.c_include_s2mm            {1}   \
+        CONFIG.c_s2mm_burst_size         {16}  \
+        CONFIG.c_m_axi_s2mm_data_width   {256} \
+        CONFIG.c_s_axis_s2mm_tdata_width {256} \
+        CONFIG.c_sg_length_width         {26}  \
+    ] $axi_dma
+
+    # ── proc_sys_reset : gera reset síncrono ao FCLK0 ────────────────────────
+    set psr [create_bd_cell -type ip \
+                 -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_0]
+    connect_bd_net \
+        [get_bd_pins processing_system7_0/FCLK_CLK0] \
+        [get_bd_pins proc_sys_reset_0/slowest_sync_clk]
+    connect_bd_net \
+        [get_bd_pins processing_system7_0/FCLK_RESET0_N] \
+        [get_bd_pins proc_sys_reset_0/ext_reset_in]
+
+    # ── Clocks : FCLK0 (150 MHz) para todo o path HIL ────────────────────────
+    connect_bd_net \
+        [get_bd_pins processing_system7_0/FCLK_CLK0] \
+        [get_bd_pins axi_smartconnect_0/aclk] \
+        [get_bd_pins axi_smartconnect_1/aclk] \
+        [get_bd_pins axi_gpio_vref_ab/s_axi_aclk] \
+        [get_bd_pins axi_gpio_vref_c/s_axi_aclk] \
+        [get_bd_pins axi_gpio_vdc_torque/s_axi_aclk] \
+        [get_bd_pins axi_gpio_monitor_1/s_axi_aclk] \
+        [get_bd_pins axi_gpio_monitor_2/s_axi_aclk] \
+        [get_bd_pins axi_gpio_monitor_3/s_axi_aclk] \
+        [get_bd_pins axi_dma_0/s_axi_lite_aclk] \
+        [get_bd_pins axi_dma_0/m_axi_s2mm_aclk] \
+        [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] \
+        [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] \
+        [get_bd_pins hil_axi_top_0/clk]
+
+    # ── Resets : via proc_sys_reset (síncronos ao FCLK0) ─────────────────────
+    connect_bd_net \
+        [get_bd_pins proc_sys_reset_0/interconnect_aresetn] \
+        [get_bd_pins axi_smartconnect_0/aresetn] \
+        [get_bd_pins axi_smartconnect_1/aresetn]
+    connect_bd_net \
+        [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
+        [get_bd_pins axi_gpio_vref_ab/s_axi_aresetn] \
+        [get_bd_pins axi_gpio_vref_c/s_axi_aresetn] \
+        [get_bd_pins axi_gpio_vdc_torque/s_axi_aresetn] \
+        [get_bd_pins axi_gpio_monitor_1/s_axi_aresetn] \
+        [get_bd_pins axi_gpio_monitor_2/s_axi_aresetn] \
+        [get_bd_pins axi_gpio_monitor_3/s_axi_aresetn] \
+        [get_bd_pins axi_dma_0/axi_resetn] \
+        [get_bd_pins hil_axi_top_0/rst_n]
+
+    # ── PS7 GP0 → SmartConnect 0 ──────────────────────────────────────────────
+    connect_bd_intf_net \
+        [get_bd_intf_pins processing_system7_0/M_AXI_GP0] \
+        [get_bd_intf_pins axi_smartconnect_0/S00_AXI]
+
+    # ── SmartConnect 0 → 7 slaves ─────────────────────────────────────────────
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M00_AXI] \
+        [get_bd_intf_pins axi_gpio_vref_ab/S_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M01_AXI] \
+        [get_bd_intf_pins axi_gpio_vref_c/S_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M02_AXI] \
+        [get_bd_intf_pins axi_gpio_vdc_torque/S_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M03_AXI] \
+        [get_bd_intf_pins axi_gpio_monitor_1/S_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M04_AXI] \
+        [get_bd_intf_pins axi_gpio_monitor_2/S_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M05_AXI] \
+        [get_bd_intf_pins axi_gpio_monitor_3/S_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_0/M06_AXI] \
+        [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
+
+    # ── DMA M_AXI_S2MM → SmartConnect 1 → PS7 HP0 ────────────────────────────
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] \
+        [get_bd_intf_pins axi_smartconnect_1/S00_AXI]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axi_smartconnect_1/M00_AXI] \
+        [get_bd_intf_pins processing_system7_0/S_AXI_HP0]
+
+    # ── AXI GPIO → HIL module : referências e controle ────────────────────────
+    connect_bd_net \
+        [get_bd_pins axi_gpio_vref_ab/gpio_io_o] \
+        [get_bd_pins hil_axi_top_0/va_ref_i]
+    connect_bd_net \
+        [get_bd_pins axi_gpio_vref_ab/gpio2_io_o] \
+        [get_bd_pins hil_axi_top_0/vb_ref_i]
+    connect_bd_net \
+        [get_bd_pins axi_gpio_vref_c/gpio_io_o] \
+        [get_bd_pins hil_axi_top_0/vc_ref_i]
+    connect_bd_net \
+        [get_bd_pins axi_gpio_vref_c/gpio2_io_o] \
+        [get_bd_pins hil_axi_top_0/pwm_ctrl_i]
+    connect_bd_net \
+        [get_bd_pins axi_gpio_vdc_torque/gpio_io_o] \
+        [get_bd_pins hil_axi_top_0/vdc_word_i]
+    connect_bd_net \
+        [get_bd_pins axi_gpio_vdc_torque/gpio2_io_o] \
+        [get_bd_pins hil_axi_top_0/torque_word_i]
+
+    # ── HIL module → PS7 : interrupção de portadora (1 kHz) ──────────────────
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/carrier_tick_o] \
+        [get_bd_pins processing_system7_0/IRQ_F2P]
+
+    # ── HIL module → AXI GPIO monitoramento ───────────────────────────────────
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/ialpha_mon_o] \
+        [get_bd_pins axi_gpio_monitor_1/gpio_io_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/ibeta_mon_o] \
+        [get_bd_pins axi_gpio_monitor_1/gpio2_io_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/flux_alpha_mon_o] \
+        [get_bd_pins axi_gpio_monitor_2/gpio_io_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/flux_beta_mon_o] \
+        [get_bd_pins axi_gpio_monitor_2/gpio2_io_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/speed_mon_o] \
+        [get_bd_pins axi_gpio_monitor_3/gpio_io_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/data_valid_mon_o] \
+        [get_bd_pins axi_gpio_monitor_3/gpio2_io_i]
+
+    # ── HIL module AXI4-Stream → DMA (interface connection) ──────────────────
+    connect_bd_intf_net \
+        [get_bd_intf_pins hil_axi_top_0/m_axis] \
+        [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM]
+
+    # ── Atribuição automática de endereços ────────────────────────────────────
+    assign_bd_address
+
     # ── Validar e salvar ───────────────────────────────────────────────────────
     validate_bd_design
     save_bd_design
     close_bd_design "ebaz4205"
 }
+
+# =============================================================================
+# 2.5. Adicionar fontes RTL (obrigatório antes do cr_bd_ebaz4205 para que
+#      o module reference HIL_AXI_Top seja reconhecido pelo compilador)
+# =============================================================================
+set root_dir [file normalize "$script_dir/../.."]
+
+puts ""
+puts "=== \[2.5\] Adicionando fontes RTL ao projeto ==="
+
+# Pacotes
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/bilinear_solver/src/BilinearSolverPkg.vhd
+# VFControlPkg removido — VFController não está mais no PL
+
+# Bilinear Solver (RTL — usado na síntese)
+# NOTA: BilienarSolverUnit_DSP.vhd é stub de simulação — NÃO adicionar aqui.
+#       Para síntese o Vivado usa o IP mult_gen criado por create_ip (seção [5/5]).
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/bilinear_solver/src/BilinearSolverUnit.vhd
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/bilinear_solver/src/BilinearSolverHandler.vhd
+
+# VFController removido do PL — cálculo V/F agora feito no PS (Linux/C)
+
+# Clarke Transform
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/clarke_transform/src/ClarkeTransform.vhd
+
+# Edge Detector
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/edge_detector/src/EdgeDetector.vhd
+
+# NPC Modulator chain
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/npc_modulator/src/NPCModulator.vhd
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/npc_modulator/src/NPCGateDriver.vhd
+add_files -fileset sources_1 -norecurse \
+    $root_dir/common/modules/npc_modulator/src/NPCManager.vhd
+
+# TIM Solver
+add_files -fileset sources_1 -norecurse \
+    $root_dir/src/rtl/TIM_Solver.vhd
+
+# HIL AXI Top (wrapper com interface PS↔PL)
+add_files -fileset sources_1 -norecurse \
+    $root_dir/src/rtl/HIL_AXI_Top.vhd
+
+update_compile_order -fileset sources_1
+puts "  Fontes RTL adicionadas e ordem de compilação atualizada."
 
 cr_bd_ebaz4205
 
@@ -362,8 +671,8 @@ puts "============================================================"
 
 # =============================================================================
 # 5. mult_gen IP (BilienarSolverUnit_DSP) + filesets de simulação
+#    (root_dir já definido na seção 2.5)
 # =============================================================================
-set root_dir [file normalize "$script_dir/../.."]
 
 # ── 5a. Criar IP mult_gen 42×42 signed ───────────────────────────────────────
 puts ""
@@ -451,10 +760,21 @@ puts "  sim_bsu_compare criado."
 puts ""
 puts "============================================================"
 puts " IPs e filesets de simulação prontos:"
-puts "   IP:            BilienarSolverUnit_DSP (mult_gen 42x42)"
-puts "   sim_compare:   tb_DSP_StubVsIP"
+puts "   IP:              BilienarSolverUnit_DSP (mult_gen 42x42)"
+puts "   sim_compare:     tb_DSP_StubVsIP"
 puts "   sim_bsu_compare: tb_BSU_StubVsIP"
-puts " Próximos passos:"
+puts ""
+puts " Infraestrutura HIL PS<->PL:"
+puts "   HIL_AXI_Top    : NPCManager + NPC->Voltage + TIM_Solver"
+puts "   AXI GPIO escrita: axi_gpio_vref_ab   (va,vb)"
+puts "                     axi_gpio_vref_c    (vc, pwm_ctrl)"
+puts "                     axi_gpio_vdc_torque (vdc, torque)"
+puts "   AXI GPIO leitura: axi_gpio_monitor_{1,2,3} (ialpha,ibeta,flux,speed)"
+puts "   IRQ_F2P\[0\]    : carrier_tick_o (1 kHz, 1 pulso/periodo)"
+puts "   AXI DMA S2MM   : axi_dma_0 (256b stream -> HP0 -> DDR)"
+puts ""
+puts " Enderecos (confirmar apos sintese no Address Editor)"
+puts " Proximos passos:"
 puts "   make sim-dsp-compare"
 puts "   make sim-bsu-compare"
 puts "============================================================"
