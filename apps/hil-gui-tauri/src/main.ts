@@ -113,6 +113,66 @@ app.innerHTML = `
         </div>
       </section>
 
+      <section class="panel panel-ps">
+        <div class="panel-title">
+          PS CONTROL
+          <span id="ps-badge" class="ps-badge ps-badge-off">OFF</span>
+        </div>
+
+        <div class="field-inline">
+          <label>Board IP</label>
+          <input id="ps-ip" type="text" value="192.168.15.13" class="write-input" placeholder="192.168.x.x" />
+        </div>
+
+        <div class="field-inline">
+          <label>Freq (Hz)</label>
+          <input id="ps-freq" type="number" value="60" min="1" max="200" step="1" class="write-input" />
+        </div>
+
+        <div class="field-inline">
+          <label>Vdc (V)</label>
+          <input id="ps-vdc" type="number" value="311" min="0" max="600" step="1" class="write-input" />
+        </div>
+
+        <div class="field-inline">
+          <label>Torque (N·m)</label>
+          <input id="ps-torque" type="number" value="0" min="-50" max="50" step="0.1" class="write-input" />
+        </div>
+
+        <div class="field-inline">
+          <label>Enable</label>
+          <label class="toggle">
+            <input id="ps-enable" type="checkbox" checked />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="btn-row">
+          <button id="ps-set"  class="btn btn-primary">▶ Set</button>
+          <button id="ps-get"  class="btn btn-write">↓ Get</button>
+          <button id="ps-stop" class="btn btn-danger">■ Stop</button>
+        </div>
+
+        <div class="field-inline">
+          <label>Monitor</label>
+          <label class="toggle">
+            <input id="ps-monitor" type="checkbox" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div id="ps-telemetry" class="ps-telemetry hidden">
+          <div class="ps-telem-row"><span class="ps-telem-label">Speed</span>    <span id="pt-speed">—</span> <span class="ps-telem-unit">rad/s</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Iα</span>       <span id="pt-ia">—</span>    <span class="ps-telem-unit">A</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Iβ</span>       <span id="pt-ib">—</span>    <span class="ps-telem-unit">A</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Φα</span>       <span id="pt-fa">—</span>    <span class="ps-telem-unit">Wb</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Φβ</span>       <span id="pt-fb">—</span>    <span class="ps-telem-unit">Wb</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Freq</span>     <span id="pt-freq">—</span>  <span class="ps-telem-unit">Hz</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Vdc</span>      <span id="pt-vdc">—</span>   <span class="ps-telem-unit">V</span></div>
+          <div class="ps-telem-row"><span class="ps-telem-label">Enable</span>   <span id="pt-en">—</span></div>
+        </div>
+      </section>
+
       <div id="status" class="status-bar">● Idle</div>
     </aside>
 
@@ -471,6 +531,115 @@ elCancelSettings.addEventListener("click", closeSettings);
 elApplySettings.addEventListener("click", applySettings);
 elSettingsModal.addEventListener("click", (e) => {
   if (e.target === elSettingsModal) closeSettings();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PS Control (UDP → hil_controller)
+// ─────────────────────────────────────────────────────────────────────────────
+type HilStatus = {
+  speed_rad_s:   number;
+  ialpha_a:      number;
+  ibeta_a:       number;
+  flux_alpha_wb: number;
+  flux_beta_wb:  number;
+  freq_hz:       number;
+  vdc_v:         number;
+  enable:        number;
+};
+
+const elPsIp       = document.querySelector<HTMLInputElement>("#ps-ip")!;
+const elPsFreq     = document.querySelector<HTMLInputElement>("#ps-freq")!;
+const elPsVdc      = document.querySelector<HTMLInputElement>("#ps-vdc")!;
+const elPsTorque   = document.querySelector<HTMLInputElement>("#ps-torque")!;
+const elPsEnable   = document.querySelector<HTMLInputElement>("#ps-enable")!;
+const elPsSet      = document.querySelector<HTMLButtonElement>("#ps-set")!;
+const elPsGet      = document.querySelector<HTMLButtonElement>("#ps-get")!;
+const elPsStop     = document.querySelector<HTMLButtonElement>("#ps-stop")!;
+const elPsMonitor  = document.querySelector<HTMLInputElement>("#ps-monitor")!;
+const elPsBadge    = document.querySelector<HTMLSpanElement>("#ps-badge")!;
+const elPsTelemetry= document.querySelector<HTMLDivElement>("#ps-telemetry")!;
+
+const ptSpeed = document.querySelector<HTMLSpanElement>("#pt-speed")!;
+const ptIa    = document.querySelector<HTMLSpanElement>("#pt-ia")!;
+const ptIb    = document.querySelector<HTMLSpanElement>("#pt-ib")!;
+const ptFa    = document.querySelector<HTMLSpanElement>("#pt-fa")!;
+const ptFb    = document.querySelector<HTMLSpanElement>("#pt-fb")!;
+const ptFreq  = document.querySelector<HTMLSpanElement>("#pt-freq")!;
+const ptVdc   = document.querySelector<HTMLSpanElement>("#pt-vdc")!;
+const ptEn    = document.querySelector<HTMLSpanElement>("#pt-en")!;
+
+let psMonitorTimer: ReturnType<typeof setInterval> | null = null;
+
+function psIp(): string { return elPsIp.value.trim(); }
+
+function updatePsTelemetry(s: HilStatus): void {
+  ptSpeed.textContent = s.speed_rad_s.toFixed(3);
+  ptIa.textContent    = s.ialpha_a.toFixed(4);
+  ptIb.textContent    = s.ibeta_a.toFixed(4);
+  ptFa.textContent    = s.flux_alpha_wb.toFixed(4);
+  ptFb.textContent    = s.flux_beta_wb.toFixed(4);
+  ptFreq.textContent  = s.freq_hz.toFixed(2);
+  ptVdc.textContent   = s.vdc_v.toFixed(2);
+  ptEn.textContent    = s.enable ? "ON" : "OFF";
+  elPsBadge.textContent = s.enable ? "ON" : "OFF";
+  elPsBadge.className = `ps-badge ${s.enable ? "ps-badge-on" : "ps-badge-off"}`;
+  elPsTelemetry.classList.remove("hidden");
+}
+
+elPsSet.addEventListener("click", async () => {
+  try {
+    await invoke("hil_set", {
+      params: {
+        ip:       psIp(),
+        freqHz:   Number(elPsFreq.value),
+        vdcV:     Number(elPsVdc.value),
+        torqueNm: Number(elPsTorque.value),
+        enable:   elPsEnable.checked,
+      },
+    });
+    setStatus("PS: params applied", "ok");
+  } catch (e) {
+    setStatus(`PS set failed: ${String(e)}`, "error");
+  }
+});
+
+elPsGet.addEventListener("click", async () => {
+  try {
+    const s = await invoke<HilStatus>("hil_get", { ip: psIp() });
+    updatePsTelemetry(s);
+    setStatus("PS: status updated", "ok");
+  } catch (e) {
+    setStatus(`PS get failed: ${String(e)}`, "error");
+  }
+});
+
+elPsStop.addEventListener("click", async () => {
+  try {
+    await invoke("hil_stop", { ip: psIp() });
+    elPsBadge.textContent = "OFF";
+    elPsBadge.className = "ps-badge ps-badge-off";
+    setStatus("PS: controller stopped", "ok");
+    // stop monitor too
+    elPsMonitor.checked = false;
+    if (psMonitorTimer !== null) { clearInterval(psMonitorTimer); psMonitorTimer = null; }
+  } catch (e) {
+    setStatus(`PS stop failed: ${String(e)}`, "error");
+  }
+});
+
+elPsMonitor.addEventListener("change", () => {
+  if (elPsMonitor.checked) {
+    psMonitorTimer = setInterval(async () => {
+      try {
+        const s = await invoke<HilStatus>("hil_get", { ip: psIp() });
+        updatePsTelemetry(s);
+      } catch {
+        // silently skip missed polls
+      }
+    }, 1000);
+  } else {
+    if (psMonitorTimer !== null) { clearInterval(psMonitorTimer); psMonitorTimer = null; }
+  }
 });
 
 // Responsive plot resize via ResizeObserver
