@@ -1,5 +1,6 @@
 #include "gpio.h"
 #include "vf_ctrl.h"
+#include "telemetry.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,23 +8,20 @@
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <math.h>
 
-/* UDP server port */
+/* UDP command port */
 #define UDP_PORT  5005
 
 /* Monitor scale: 32 MSBs of Q14.28 → divide by 2^18 to get float */
 #define MON_SCALE  (1.0f / (float)(1 << 18))
 
-/* Vdc scale: Q31 → V (same VDC_MAX_V as vf_ctrl.c) */
-#define VDC_MAX_V     600.0f
-#define TORQUE_MAX_NM  50.0f
-
 static volatile int running = 1;
 
-/* ---------- 1 kHz timer via POSIX timer ---------- */
+/* ── 1 kHz POSIX timer (vf_tick) ─────────────────────────────────────────── */
 
 static void timer_handler(int sig, siginfo_t *si, void *uc)
 {
@@ -38,10 +36,7 @@ static int setup_1khz_timer(void)
         .sa_flags     = SA_SIGINFO,
     };
     sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGRTMIN, &sa, NULL) < 0) {
-        perror("sigaction");
-        return -1;
-    }
+    if (sigaction(SIGRTMIN, &sa, NULL) < 0) { perror("sigaction"); return -1; }
 
     struct sigevent sev = {
         .sigev_notify = SIGEV_SIGNAL,
@@ -49,49 +44,88 @@ static int setup_1khz_timer(void)
     };
     timer_t timerid;
     if (timer_create(CLOCK_MONOTONIC, &sev, &timerid) < 0) {
-        perror("timer_create");
-        return -1;
+        perror("timer_create"); return -1;
     }
 
     struct itimerspec its = {
-        .it_value    = { .tv_sec = 0, .tv_nsec = 1000000 }, /* 1 ms */
+        .it_value    = { .tv_sec = 0, .tv_nsec = 1000000 },
         .it_interval = { .tv_sec = 0, .tv_nsec = 1000000 },
     };
     if (timer_settime(timerid, 0, &its, NULL) < 0) {
-        perror("timer_settime");
-        return -1;
+        perror("timer_settime"); return -1;
     }
     return 0;
 }
 
-/* ---------- UDP helpers ---------- */
+/* ── Telemetry thread — reads gpio at 1 kHz, pushes bursts ──────────────── */
+
+static pthread_t telem_tid;
+static volatile int telem_active = 0;
+
+static void *telem_thread_fn(void *arg)
+{
+    (void)arg;
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1 ms */
+
+    while (running && telem_active) {
+        nanosleep(&ts, NULL);
+
+        vf_params_t p;
+        vf_get_params(&p);
+        uint8_t flags = (uint8_t)(p.enable & 0x01);
+
+        telem_push(
+            (float)gpio_get_ialpha()     * MON_SCALE,
+            (float)gpio_get_ibeta()      * MON_SCALE,
+            (float)gpio_get_flux_alpha() * MON_SCALE,
+            (float)gpio_get_flux_beta()  * MON_SCALE,
+            (float)gpio_get_speed()      * MON_SCALE,
+            flags
+        );
+    }
+    return NULL;
+}
+
+static void start_telem_thread(void)
+{
+    if (telem_active) return;
+    telem_active = 1;
+    pthread_create(&telem_tid, NULL, telem_thread_fn, NULL);
+}
+
+static void stop_telem_thread(void)
+{
+    if (!telem_active) return;
+    telem_active = 0;
+    pthread_join(telem_tid, NULL);
+    telem_deinit();
+}
+
+/* ── UDP command helpers ─────────────────────────────────────────────────── */
 
 /*
  * Protocol (JSON text):
  *
- *   POST:  {"cmd":"set","freq_hz":30.0,"vdc_v":300.0,"torque_nm":0.0,"enable":1,"decim":0}
- *   GET:   {"cmd":"get"}
- *   STOP:  {"cmd":"stop"}
+ *   SET:  {"cmd":"set","freq_hz":60.0,"vdc_v":311.0,"torque_nm":0.0,
+ *           "enable":1,"decim":0,"telem_dst":"192.168.15.x"}
+ *   GET:  {"cmd":"get"}
+ *   STOP: {"cmd":"stop"}
  *
  *   Response to GET:
  *   {"speed_rad_s":..., "ialpha_A":..., "ibeta_A":...,
  *    "flux_alpha_Wb":..., "flux_beta_Wb":...,
- *    "freq_hz":..., "enable":...}
+ *    "freq_hz":..., "vdc_v":..., "enable":...}
  */
 
-static float mon_to_float(int32_t raw) { return (float)raw * MON_SCALE; }
-
-static void handle_packet(int sock, const char *buf, ssize_t len,
+static void handle_packet(int sock, const char *buf,
                            struct sockaddr_in *cli, socklen_t cli_len)
 {
     char resp[512];
 
-    /* Very simple JSON parser — looks for key:value pairs */
     if (strstr(buf, "\"cmd\":\"set\"")) {
         vf_params_t p;
         vf_get_params(&p);
 
-        /* Parse each field if present */
         char *ptr;
         if ((ptr = strstr(buf, "\"freq_hz\":")))   sscanf(ptr + 9,  "%f", &p.freq_hz);
         if ((ptr = strstr(buf, "\"vdc_v\":")))      sscanf(ptr + 8,  "%f", &p.vdc_v);
@@ -100,15 +134,30 @@ static void handle_packet(int sock, const char *buf, ssize_t len,
         if ((ptr = strstr(buf, "\"decim\":")))      { int d; sscanf(ptr + 8, "%d", &d); p.decim  = d; }
 
         vf_set_params(&p);
+
+        /* optional: start telemetry push to requester */
+        if ((ptr = strstr(buf, "\"telem_dst\":"))) {
+            char ip[INET_ADDRSTRLEN] = {0};
+            /* parse quoted string after key */
+            char *q = strchr(ptr + 12, '"');
+            if (q) {
+                char *end = strchr(q + 1, '"');
+                if (end) {
+                    size_t len = (size_t)(end - q - 1);
+                    if (len < sizeof(ip)) {
+                        memcpy(ip, q + 1, len);
+                        ip[len] = '\0';
+                        stop_telem_thread();
+                        if (telem_init(ip) == 0)
+                            start_telem_thread();
+                    }
+                }
+            }
+        }
+
         snprintf(resp, sizeof(resp), "{\"status\":\"ok\"}");
 
     } else if (strstr(buf, "\"cmd\":\"get\"")) {
-        float speed      = mon_to_float(gpio_get_speed());
-        float ialpha     = mon_to_float(gpio_get_ialpha());
-        float ibeta      = mon_to_float(gpio_get_ibeta());
-        float flux_alpha = mon_to_float(gpio_get_flux_alpha());
-        float flux_beta  = mon_to_float(gpio_get_flux_beta());
-
         vf_params_t p;
         vf_get_params(&p);
 
@@ -121,7 +170,11 @@ static void handle_packet(int sock, const char *buf, ssize_t len,
             "\"freq_hz\":%.2f,"
             "\"vdc_v\":%.2f,"
             "\"enable\":%d}",
-            speed, ialpha, ibeta, flux_alpha, flux_beta,
+            (float)gpio_get_speed()      * MON_SCALE,
+            (float)gpio_get_ialpha()     * MON_SCALE,
+            (float)gpio_get_ibeta()      * MON_SCALE,
+            (float)gpio_get_flux_alpha() * MON_SCALE,
+            (float)gpio_get_flux_beta()  * MON_SCALE,
             p.freq_hz, p.vdc_v, p.enable);
 
     } else if (strstr(buf, "\"cmd\":\"stop\"")) {
@@ -136,7 +189,7 @@ static void handle_packet(int sock, const char *buf, ssize_t len,
            (struct sockaddr *)cli, cli_len);
 }
 
-/* ---------- main ---------- */
+/* ── main ─────────────────────────────────────────────────────────────────── */
 
 static void sigint_handler(int s) { (void)s; running = 0; }
 
@@ -149,10 +202,8 @@ int main(void)
 
     if (gpio_init() < 0)  return 1;
     if (vf_init()   < 0)  return 1;
-
     if (setup_1khz_timer() < 0) return 1;
 
-    /* UDP socket */
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return 1; }
 
@@ -165,14 +216,16 @@ int main(void)
         perror("bind"); return 1;
     }
 
-    /* non-blocking with 100 ms timeout */
     struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     printf("Listening on UDP port %d\n", UDP_PORT);
-    printf("Commands: {\"cmd\":\"set\",\"freq_hz\":30,\"vdc_v\":300,\"enable\":1}\n");
-    printf("          {\"cmd\":\"get\"}\n");
-    printf("          {\"cmd\":\"stop\"}\n\n");
+    printf("Telemetry push port: %d  (burst=%d samples)\n", TELEM_PORT, TELEM_BURST);
+    printf("Commands:\n");
+    printf("  {\"cmd\":\"set\",\"freq_hz\":60,\"vdc_v\":311,\"enable\":1,"
+           "\"telem_dst\":\"<PC_IP>\"}\n");
+    printf("  {\"cmd\":\"get\"}\n");
+    printf("  {\"cmd\":\"stop\"}\n\n");
 
     char buf[512];
     while (running) {
@@ -182,11 +235,12 @@ int main(void)
                              (struct sockaddr *)&cli, &cli_len);
         if (n > 0) {
             buf[n] = '\0';
-            handle_packet(sock, buf, n, &cli, cli_len);
+            handle_packet(sock, buf, &cli, cli_len);
         }
     }
 
     printf("Shutting down...\n");
+    stop_telem_thread();
     vf_deinit();
     gpio_deinit();
     close(sock);

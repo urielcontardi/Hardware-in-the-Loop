@@ -14,7 +14,7 @@
 # =============================================================================
 
 TARGET  := hil_controller
-SRCS    := main.c gpio.c vf_ctrl.c
+SRCS    := main.c gpio.c vf_ctrl.c telemetry.c
 CFLAGS  := -O2 -Wall -Wextra
 LDFLAGS := -lm -lpthread -lrt
 
