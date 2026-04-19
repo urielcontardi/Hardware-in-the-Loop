@@ -459,7 +459,7 @@ linux-flash:
 # PS Application (src/ps_app)
 # =============================================================================
 PS_APP_DIR   := src/ps_app
-PS_SDK_ENV   := $(PETALINUX_DIR)/images/linux/sdk/environment-setup-cortexa9t2hf-neon-xilinx-linux-gnueabi
+PS_SDK_ENV   := $(PETALINUX_DIR)/images/linux/sdk/environment-setup-cortexa9t2hf-neon-amd-linux-gnueabi
 IP           ?= 192.168.1.100
 
 .PHONY: ps-build ps-deploy ps-clean ps-sdk
@@ -549,6 +549,65 @@ cocotb-setup-nvc:
 
 cocotb-clean:
 	@$(MAKE) -C $(COCOTB_DIR) clean
+
+# =============================================================================
+# HIL Monitor (Wails/Go) Targets
+# =============================================================================
+HIL_GO_DIR := apps/hil-go
+HIL_GO_OUT := $(BUILD_DIR)/hil-monitor
+
+# Resolve wails and go binaries
+WAILS := $(shell command -v wails 2>/dev/null || echo $(HOME)/go/bin/wails)
+GO    := $(shell command -v go 2>/dev/null \
+	|| ls /usr/local/go/bin/go 2>/dev/null \
+	|| ls $(HOME)/go/bin/go   2>/dev/null)
+ifeq ($(GO),)
+GO := go
+endif
+
+.PHONY: hil-go-linux hil-go-darwin hil-go-dev hil-go-all hil-go-clean
+
+## Build native app for Linux x86-64
+hil-go-linux:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       HIL Monitor — Linux x86-64 (Wails)    ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@mkdir -p $(HIL_GO_OUT)
+	@cd $(HIL_GO_DIR) && PATH="$$PATH:/usr/local/go/bin:$(HOME)/go/bin" \
+		$(WAILS) build -platform linux/amd64 -tags webkit2_41
+	@mkdir -p $(HIL_GO_OUT)
+	@cp $(HIL_GO_DIR)/build/bin/hil-monitor $(HIL_GO_OUT)/hil-monitor-linux-amd64
+	@echo "  Binary → $(HIL_GO_OUT)/hil-monitor-linux-amd64"
+
+## Build native app for macOS ARM64 — must run on macOS
+hil-go-darwin:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       HIL Monitor — macOS ARM64 (Wails)     ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@echo "  NOTE: cross-compile macOS→Linux not supported by Wails."
+	@echo "        Run this target on a Mac with Wails installed."
+	@mkdir -p $(HIL_GO_OUT)
+	@cd $(HIL_GO_DIR) && PATH="$$PATH:/usr/local/go/bin:$(HOME)/go/bin" \
+		$(WAILS) build -platform darwin/arm64
+	@mkdir -p $(HIL_GO_OUT)
+	@cp $(HIL_GO_DIR)/build/bin/hil-monitor $(HIL_GO_OUT)/hil-monitor-darwin-arm64
+	@echo "  Binary → $(HIL_GO_OUT)/hil-monitor-darwin-arm64"
+
+## Build for both platforms (macOS target requires macOS host)
+hil-go-all: hil-go-linux hil-go-darwin
+
+## Start dev mode (hot-reload window)
+hil-go-dev:
+	@echo "Starting Wails dev mode..."
+	@cd $(HIL_GO_DIR) && PATH="$$PATH:/usr/local/go/bin:$(HOME)/go/bin" \
+		$(WAILS) dev
+
+## Remove Wails build artifacts
+hil-go-clean:
+	@rm -rf $(HIL_GO_OUT) $(HIL_GO_DIR)/frontend/dist $(HIL_GO_DIR)/frontend/wailsjs
+	@echo "  Cleaned $(HIL_GO_OUT)"
 
 # =============================================================================
 # GUI (Tauri) Targets
@@ -645,6 +704,13 @@ help:
 	@echo "║    make cocotb-tim-sine TIM_Solver vs C ref (60 Hz AC) ║"
 	@echo "║    make cocotb-waves    Run cocotb + waveform dump      ║"
 	@echo "║    make cocotb-setup  Install Python dependencies       ║"
+	@echo "║                                                         ║"
+	@echo "║  HIL Monitor (Wails/Go):                                ║"
+	@echo "║    make hil-go-linux   Build native app Linux x86-64   ║"
+	@echo "║    make hil-go-darwin  Build native app macOS ARM64    ║"
+	@echo "║    make hil-go-dev     Start Wails dev mode            ║"
+	@echo "║    make hil-go-all     Build for all targets           ║"
+	@echo "║    make hil-go-clean   Remove build artifacts          ║"
 	@echo "║                                                         ║"
 	@echo "║  Desktop GUI (Tauri):                                   ║"
 	@echo "║    make gui-setup     Install GUI npm dependencies      ║"
