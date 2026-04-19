@@ -86,3 +86,13 @@ Thumbs.db
 
 # Claude session files
 .claude/
+
+# Build output (binaries)
+build/
+src/ps_app/hil_controller
+
+# HIL Monitor (Wails/Go)
+apps/hil-go/frontend/node_modules/
+apps/hil-go/frontend/dist/
+apps/hil-go/frontend/wailsjs/
+apps/hil-go/build/
