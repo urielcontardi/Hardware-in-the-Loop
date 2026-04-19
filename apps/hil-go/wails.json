@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "hil-monitor",
+  "outputfilename": "hil-monitor",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "frontend:dir": "frontend",
+  "wailsjsdir": "frontend",
+  "version": "2",
+  "info": {
+    "companyName": "HIL Project",
+    "productName": "HIL Monitor",
+    "productVersion": "0.1.0",
+    "copyright": "Hardware-in-the-Loop",
+    "comments": "HIL telemetry and control monitor"
+  }
+}
