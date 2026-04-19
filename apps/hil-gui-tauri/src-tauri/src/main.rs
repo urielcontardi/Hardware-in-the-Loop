@@ -1,9 +1,11 @@
 mod protocol;
 mod state;
+mod udp;
 
 use protocol::{RegAddr, SerialManagerClient};
 use serde::{Deserialize, Serialize};
 use state::{AppState, RunningStream};
+use udp::HilStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -146,6 +148,33 @@ fn stop_stream(state: State<AppState>) -> Result<(), String> {
     state.stop_stream()
 }
 
+// ── UDP / PS-app commands ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HilSetParams {
+    ip:        String,
+    freq_hz:   f32,
+    vdc_v:     f32,
+    torque_nm: f32,
+    enable:    bool,
+}
+
+#[tauri::command]
+fn hil_set(params: HilSetParams) -> Result<(), String> {
+    udp::hil_set(&params.ip, params.freq_hz, params.vdc_v, params.torque_nm, params.enable)
+}
+
+#[tauri::command]
+fn hil_get(ip: String) -> Result<HilStatus, String> {
+    udp::hil_get(&ip)
+}
+
+#[tauri::command]
+fn hil_stop(ip: String) -> Result<(), String> {
+    udp::hil_stop(&ip)
+}
+
 fn with_client<T, F>(port_name: &str, baud_rate: u32, data_width: u8, f: F) -> Result<T, String>
 where
     F: FnOnce(&mut SerialManagerClient) -> Result<T, protocol::ProtocolError>,
@@ -165,7 +194,10 @@ fn main() {
             read_all_once,
             stream_status,
             start_stream,
-            stop_stream
+            stop_stream,
+            hil_set,
+            hil_get,
+            hil_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
