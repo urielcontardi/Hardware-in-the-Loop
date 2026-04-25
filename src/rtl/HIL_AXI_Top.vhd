@@ -21,13 +21,13 @@
 --!               AXI4-Stream → AXI DMA → DDR
 --!
 --! MAPA DE REGISTRADORES AXI GPIO (escritas do PS):
---!   axi_gpio_vref_ab  ch1 = va_ref[31:0]   (signed, ±CARRIER_MAX = ±25000)
+--!   axi_gpio_vref_ab  ch1 = va_ref[31:0]   (signed, ±CARRIER_MAX = ±75000)
 --!                     ch2 = vb_ref[31:0]
 --!   axi_gpio_vref_c   ch1 = vc_ref[31:0]
 --!                     ch2 = {decim_ratio[31:2], clear[1], enable[0]}
 --!                           decim_ratio=0 → default 375 (10 kHz @ 3.75 MHz solver)
---!   axi_gpio_vdc_torque ch1 = vdc_word[31:0]   (Q31 signed, sign-ext p/ 42b)
---!                       ch2 = torque_word[31:0]
+--!   axi_gpio_vdc_torque ch1 = vdc_word[31:0]    (Q18.14 V, shift_left 14 → Q14.28)
+--!                       ch2 = torque_word[31:0] (Q18.14 N·m, idem)
 --!
 --! SAÍDA AXI4-STREAM (256 bits, 1 beat por amostra):
 --!   bits[ 41: 0]  = ialpha
@@ -67,8 +67,6 @@ Entity HIL_AXI_Top is
         -- TIM Solver
         TIM_DW           : natural := 42;
         -- Ts = 40 ciclos a 150 MHz = 266.67 ns
-        -- Solver roda livre (free-running), desacoplado do carrier tick do PS
-        -- Taxa de saída efetiva = 150 MHz / 40 = 3.75 MHz (antes do decimador)
         DISC_STEP        : real    := 40.0 / 150_000_000.0;
 
         -- Parâmetros do motor (indução 4-polos, 0.75 kW ref)
@@ -85,9 +83,8 @@ Entity HIL_AXI_Top is
         rst_n            : in  std_logic;
 
         -- ── Referências de tensão (escritas pelo PS na ISR) ──────────────────
-        -- Unidade: ±CARRIER_MAX = ±(CLK_FREQ/PWM_FREQ/2)
-        -- Ex: CLK=50MHz, PWM=1kHz → CARRIER_MAX=25000
-        -- 100% modulação = ±25000; 85% = ±21250
+        -- Unidade: integer signed em ±CARRIER_MAX = ±(CLK_FREQ/PWM_FREQ/2)
+        -- Ex: CLK=150MHz, PWM=1kHz → CARRIER_MAX=75000 (100% modulação)
         va_ref_i         : in  std_logic_vector(NPC_DW-1 downto 0);
         vb_ref_i         : in  std_logic_vector(NPC_DW-1 downto 0);
         vc_ref_i         : in  std_logic_vector(NPC_DW-1 downto 0);
@@ -95,7 +92,7 @@ Entity HIL_AXI_Top is
         -- ── Controle PWM (bit[0]=enable, bit[1]=clear_fault) ─────────────────
         pwm_ctrl_i       : in  std_logic_vector(31 downto 0);
 
-        -- ── Barramento DC e torque de carga (Q31 signed → 42b) ───────────────
+        -- ── Barramento DC e torque de carga (Q18.14 signed → Q14.28) ─────────
         vdc_word_i       : in  std_logic_vector(31 downto 0);
         torque_word_i    : in  std_logic_vector(31 downto 0);
 
@@ -124,6 +121,7 @@ End entity HIL_AXI_Top;
 -- Architecture
 -- =============================================================================
 Architecture rtl of HIL_AXI_Top is
+
 
     --------------------------------------------------------------------------
     -- Encoding dos estados NPC → 4 bits (S4 S3 S2 S1)
@@ -186,10 +184,11 @@ Begin
     pwm_clear_s  <= pwm_ctrl_i(1);
 
     --------------------------------------------------------------------------
-    -- Extensão de sinal: 32 → 42 bits (Q31 → Q42, mantém escala)
+    -- Conversão Q18.14 (32 bits do PS) → Q14.28 (42 bits interno do solver)
+    --   Shift_left 14 equivale a multiplicar por 2^14, mantendo unidade física
     --------------------------------------------------------------------------
-    vdc_bus_42 <= resize(signed(vdc_word_i),   TIM_DW);
-    torque_42  <= std_logic_vector(resize(signed(torque_word_i), TIM_DW));
+    vdc_bus_42 <= shift_left(resize(signed(vdc_word_i),    TIM_DW), 14);
+    torque_42  <= std_logic_vector(shift_left(resize(signed(torque_word_i), TIM_DW), 14));
 
     --------------------------------------------------------------------------
     -- Barramento DC: +Vdc/2 e −Vdc/2 (tensões de fase do inversor NPC)
