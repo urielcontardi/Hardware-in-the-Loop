@@ -11,12 +11,14 @@
 #define TS            0.001f  /* s   — período do tick (1 kHz) */
 
 /*
- * Escala Q31 para Vdc e Torque:
- *   INT32_MAX  (0x7FFFFFFF) = VDC_MAX_V (ex: 600 V)
- *   INT32_MAX               = TORQUE_MAX_NM (ex: 50 N·m)
+ * Vdc e torque: Q18.14 signed em int32 (14 bits fracionários).
+ *   Resolução: ~61 µV / µN·m
+ *   FPGA converte para Q14.28 via shift_left(14).
+ *   Máx. físico: ±8192 (limite Q14.28 no solver).
  */
-#define VDC_MAX_V      600.0f
-#define TORQUE_MAX_NM   50.0f
+#define PS_FRAC_BITS   14
+#define PS_FRAC_SCALE  ((float)(1 << PS_FRAC_BITS))   /* 16384.0f */
+#define PS_MAX_PHYS    8000.0f                        /* margem de segurança */
 
 static pthread_mutex_t  params_mutex = PTHREAD_MUTEX_INITIALIZER;
 static vf_params_t      params = {
@@ -29,12 +31,12 @@ static vf_params_t      params = {
 
 static float theta = 0.0f;   /* ângulo elétrico acumulado [rad] */
 
-static inline int32_t float_to_q31(float x, float x_max)
+/* Converte um valor físico (V ou N·m) em Q18.14 signed, saturado */
+static inline int32_t float_to_q18_14(float x)
 {
-    float scaled = x / x_max;
-    if (scaled >  1.0f) scaled =  1.0f;
-    if (scaled < -1.0f) scaled = -1.0f;
-    return (int32_t)(scaled * (float)INT32_MAX);
+    if (x >  PS_MAX_PHYS) x =  PS_MAX_PHYS;
+    if (x < -PS_MAX_PHYS) x = -PS_MAX_PHYS;
+    return (int32_t)(x * PS_FRAC_SCALE);
 }
 
 int vf_init(void)
@@ -96,11 +98,11 @@ void vf_tick(void)
     int32_t vb = (int32_t)(scale * sinf(theta - 2.0f * (float)M_PI / 3.0f));
     int32_t vc = (int32_t)(scale * sinf(theta + 2.0f * (float)M_PI / 3.0f));
 
-    /* Vdc e torque em Q31 */
-    int32_t vdc_q31    = float_to_q31(p.vdc_v,     VDC_MAX_V);
-    int32_t torque_q31 = float_to_q31(p.torque_nm, TORQUE_MAX_NM);
+    /* Vdc e torque em Q18.14 (FPGA converte para Q14.28 via shift_left 14) */
+    int32_t vdc_q18_14    = float_to_q18_14(p.vdc_v);
+    int32_t torque_q18_14 = float_to_q18_14(p.torque_nm);
 
-    gpio_set_vdc_torque(vdc_q31, torque_q31);
+    gpio_set_vdc_torque(vdc_q18_14, torque_q18_14);
     gpio_set_vref(va, vb, vc);
     gpio_set_pwm_ctrl(1, 0, (uint32_t)p.decim);
 }
