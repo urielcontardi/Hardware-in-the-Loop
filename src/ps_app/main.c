@@ -29,6 +29,8 @@ static void timer_handler(int sig, siginfo_t *si, void *uc)
     vf_tick();
 }
 
+static timer_t g_timerid;
+
 static int setup_1khz_timer(void)
 {
     struct sigaction sa = {
@@ -42,8 +44,7 @@ static int setup_1khz_timer(void)
         .sigev_notify = SIGEV_SIGNAL,
         .sigev_signo  = SIGRTMIN,
     };
-    timer_t timerid;
-    if (timer_create(CLOCK_MONOTONIC, &sev, &timerid) < 0) {
+    if (timer_create(CLOCK_MONOTONIC, &sev, &g_timerid) < 0) {
         perror("timer_create"); return -1;
     }
 
@@ -51,10 +52,17 @@ static int setup_1khz_timer(void)
         .it_value    = { .tv_sec = 0, .tv_nsec = 1000000 },
         .it_interval = { .tv_sec = 0, .tv_nsec = 1000000 },
     };
-    if (timer_settime(timerid, 0, &its, NULL) < 0) {
+    if (timer_settime(g_timerid, 0, &its, NULL) < 0) {
         perror("timer_settime"); return -1;
     }
     return 0;
+}
+
+static void cancel_timer(void)
+{
+    struct itimerspec zero = {0};
+    timer_settime(g_timerid, 0, &zero, NULL);
+    timer_delete(g_timerid);
 }
 
 /* ── Telemetry thread — reads gpio at 1 kHz, pushes bursts ──────────────── */
@@ -127,18 +135,19 @@ static void handle_packet(int sock, const char *buf,
         vf_get_params(&p);
 
         char *ptr;
-        if ((ptr = strstr(buf, "\"freq_hz\":")))   sscanf(ptr + 9,  "%f", &p.freq_hz);
+        if ((ptr = strstr(buf, "\"freq_hz\":")))   sscanf(ptr + 10, "%f", &p.freq_hz);
         if ((ptr = strstr(buf, "\"vdc_v\":")))      sscanf(ptr + 8,  "%f", &p.vdc_v);
         if ((ptr = strstr(buf, "\"torque_nm\":")))  sscanf(ptr + 12, "%f", &p.torque_nm);
         if ((ptr = strstr(buf, "\"enable\":")))     { int e; sscanf(ptr + 9, "%d", &e); p.enable = e; }
         if ((ptr = strstr(buf, "\"decim\":")))      { int d; sscanf(ptr + 8, "%d", &d); p.decim  = d; }
 
         vf_set_params(&p);
+        printf("[SET] freq=%.2fHz vdc=%.2fV torque=%.4fNm enable=%d decim=%d\n",
+               p.freq_hz, p.vdc_v, p.torque_nm, p.enable, p.decim);
 
         /* optional: start telemetry push to requester */
         if ((ptr = strstr(buf, "\"telem_dst\":"))) {
             char ip[INET_ADDRSTRLEN] = {0};
-            /* parse quoted string after key */
             char *q = strchr(ptr + 12, '"');
             if (q) {
                 char *end = strchr(q + 1, '"');
@@ -240,6 +249,7 @@ int main(void)
     }
 
     printf("Shutting down...\n");
+    cancel_timer();          /* para o timer antes de desmapar GPIO */
     stop_telem_thread();
     vf_deinit();
     gpio_deinit();
