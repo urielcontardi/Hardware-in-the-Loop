@@ -342,12 +342,19 @@ proc cr_bd_ebaz4205 {} {
     set hil_top [create_bd_cell -type module \
                      -reference HIL_AXI_Top hil_axi_top_0]
 
-    # ── AXI SmartConnect 0 : GP0 → 7 slaves (refs + ctrl + vdc + monitor + dma)
+    # ── HIL_Regs_AXI — custom AXI4-Lite slave (substitui 3 AXI GPIO de output)
+    #   Mapa de registradores (offsets em bytes):
+    #     0x00 va_ref  0x04 vb_ref  0x08 vc_ref
+    #     0x0C pwm_ctrl  0x10 vdc_word  0x14 torque_word
+    set hil_regs [create_bd_cell -type module \
+                      -reference HIL_Regs_AXI hil_regs_0]
+
+    # ── AXI SmartConnect 0 : GP0 → 5 slaves (HIL_Regs + 3 monitor + DMA)
     set sc0 [create_bd_cell -type ip \
                  -vlnv xilinx.com:ip:smartconnect:1.0 axi_smartconnect_0]
     set_property -dict [list \
         CONFIG.NUM_SI {1} \
-        CONFIG.NUM_MI {7} \
+        CONFIG.NUM_MI {5} \
     ] $sc0
 
     # ── AXI SmartConnect 1 : DMA M_AXI_S2MM → HP0 (AXI4 → AXI3) ─────────────
@@ -357,45 +364,6 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.NUM_SI {1} \
         CONFIG.NUM_MI {1} \
     ] $sc1
-
-    # ── AXI GPIO : referências va + vb (escritas pelo PS na ISR) ─────────────
-    #   Canal 1 (offset 0x00): va_ref[31:0]  — signed, ±CARRIER_MAX
-    #   Canal 2 (offset 0x08): vb_ref[31:0]
-    set gpio_vref_ab [create_bd_cell -type ip \
-                          -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_vref_ab]
-    set_property -dict [list \
-        CONFIG.C_GPIO_WIDTH    {32} \
-        CONFIG.C_GPIO2_WIDTH   {32} \
-        CONFIG.C_IS_DUAL       {1}  \
-        CONFIG.C_ALL_OUTPUTS   {1}  \
-        CONFIG.C_ALL_OUTPUTS_2 {1}  \
-    ] $gpio_vref_ab
-
-    # ── AXI GPIO : referência vc + controle PWM ───────────────────────────────
-    #   Canal 1 (offset 0x00): vc_ref[31:0]
-    #   Canal 2 (offset 0x08): {30'b0, clear_fault[1], enable[0]}
-    set gpio_vref_c [create_bd_cell -type ip \
-                         -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_vref_c]
-    set_property -dict [list \
-        CONFIG.C_GPIO_WIDTH    {32} \
-        CONFIG.C_GPIO2_WIDTH   {32} \
-        CONFIG.C_IS_DUAL       {1}  \
-        CONFIG.C_ALL_OUTPUTS   {1}  \
-        CONFIG.C_ALL_OUTPUTS_2 {1}  \
-    ] $gpio_vref_c
-
-    # ── AXI GPIO : VDC + torque (escrita do PS → PL) ─────────────────────────
-    #   Canal 1 (offset 0x00): vdc_word[31:0]   (Q31 signed, →42b internamente)
-    #   Canal 2 (offset 0x08): torque_word[31:0]
-    set gpio_vdc [create_bd_cell -type ip \
-                      -vlnv xilinx.com:ip:axi_gpio:2.0 axi_gpio_vdc_torque]
-    set_property -dict [list \
-        CONFIG.C_GPIO_WIDTH    {32} \
-        CONFIG.C_GPIO2_WIDTH   {32} \
-        CONFIG.C_IS_DUAL       {1}  \
-        CONFIG.C_ALL_OUTPUTS   {1}  \
-        CONFIG.C_ALL_OUTPUTS_2 {1}  \
-    ] $gpio_vdc
 
     # ── AXI GPIO : monitor 1 — correntes (leitura PS ← PL) ───────────────────
     #   Canal 1: ialpha_mon  Canal 2: ibeta_mon
@@ -462,9 +430,7 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins processing_system7_0/FCLK_CLK0] \
         [get_bd_pins axi_smartconnect_0/aclk] \
         [get_bd_pins axi_smartconnect_1/aclk] \
-        [get_bd_pins axi_gpio_vref_ab/s_axi_aclk] \
-        [get_bd_pins axi_gpio_vref_c/s_axi_aclk] \
-        [get_bd_pins axi_gpio_vdc_torque/s_axi_aclk] \
+        [get_bd_pins hil_regs_0/S_AXI_ACLK] \
         [get_bd_pins axi_gpio_monitor_1/s_axi_aclk] \
         [get_bd_pins axi_gpio_monitor_2/s_axi_aclk] \
         [get_bd_pins axi_gpio_monitor_3/s_axi_aclk] \
@@ -481,9 +447,7 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins axi_smartconnect_1/aresetn]
     connect_bd_net \
         [get_bd_pins proc_sys_reset_0/peripheral_aresetn] \
-        [get_bd_pins axi_gpio_vref_ab/s_axi_aresetn] \
-        [get_bd_pins axi_gpio_vref_c/s_axi_aresetn] \
-        [get_bd_pins axi_gpio_vdc_torque/s_axi_aresetn] \
+        [get_bd_pins hil_regs_0/S_AXI_ARESETN] \
         [get_bd_pins axi_gpio_monitor_1/s_axi_aresetn] \
         [get_bd_pins axi_gpio_monitor_2/s_axi_aresetn] \
         [get_bd_pins axi_gpio_monitor_3/s_axi_aresetn] \
@@ -495,27 +459,21 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_intf_pins processing_system7_0/M_AXI_GP0] \
         [get_bd_intf_pins axi_smartconnect_0/S00_AXI]
 
-    # ── SmartConnect 0 → 7 slaves ─────────────────────────────────────────────
+    # ── SmartConnect 0 → 5 slaves ─────────────────────────────────────────────
     connect_bd_intf_net \
         [get_bd_intf_pins axi_smartconnect_0/M00_AXI] \
-        [get_bd_intf_pins axi_gpio_vref_ab/S_AXI]
+        [get_bd_intf_pins hil_regs_0/S_AXI]
     connect_bd_intf_net \
         [get_bd_intf_pins axi_smartconnect_0/M01_AXI] \
-        [get_bd_intf_pins axi_gpio_vref_c/S_AXI]
-    connect_bd_intf_net \
-        [get_bd_intf_pins axi_smartconnect_0/M02_AXI] \
-        [get_bd_intf_pins axi_gpio_vdc_torque/S_AXI]
-    connect_bd_intf_net \
-        [get_bd_intf_pins axi_smartconnect_0/M03_AXI] \
         [get_bd_intf_pins axi_gpio_monitor_1/S_AXI]
     connect_bd_intf_net \
-        [get_bd_intf_pins axi_smartconnect_0/M04_AXI] \
+        [get_bd_intf_pins axi_smartconnect_0/M02_AXI] \
         [get_bd_intf_pins axi_gpio_monitor_2/S_AXI]
     connect_bd_intf_net \
-        [get_bd_intf_pins axi_smartconnect_0/M05_AXI] \
+        [get_bd_intf_pins axi_smartconnect_0/M03_AXI] \
         [get_bd_intf_pins axi_gpio_monitor_3/S_AXI]
     connect_bd_intf_net \
-        [get_bd_intf_pins axi_smartconnect_0/M06_AXI] \
+        [get_bd_intf_pins axi_smartconnect_0/M04_AXI] \
         [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
 
     # ── DMA M_AXI_S2MM → SmartConnect 1 → PS7 HP0 ────────────────────────────
@@ -526,24 +484,24 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_intf_pins axi_smartconnect_1/M00_AXI] \
         [get_bd_intf_pins processing_system7_0/S_AXI_HP0]
 
-    # ── AXI GPIO → HIL module : referências e controle ────────────────────────
+    # ── HIL_Regs_AXI → HIL_AXI_Top : referências e controle ─────────────────
     connect_bd_net \
-        [get_bd_pins axi_gpio_vref_ab/gpio_io_o] \
+        [get_bd_pins hil_regs_0/va_ref_o] \
         [get_bd_pins hil_axi_top_0/va_ref_i]
     connect_bd_net \
-        [get_bd_pins axi_gpio_vref_ab/gpio2_io_o] \
+        [get_bd_pins hil_regs_0/vb_ref_o] \
         [get_bd_pins hil_axi_top_0/vb_ref_i]
     connect_bd_net \
-        [get_bd_pins axi_gpio_vref_c/gpio_io_o] \
+        [get_bd_pins hil_regs_0/vc_ref_o] \
         [get_bd_pins hil_axi_top_0/vc_ref_i]
     connect_bd_net \
-        [get_bd_pins axi_gpio_vref_c/gpio2_io_o] \
+        [get_bd_pins hil_regs_0/pwm_ctrl_o] \
         [get_bd_pins hil_axi_top_0/pwm_ctrl_i]
     connect_bd_net \
-        [get_bd_pins axi_gpio_vdc_torque/gpio_io_o] \
+        [get_bd_pins hil_regs_0/vdc_word_o] \
         [get_bd_pins hil_axi_top_0/vdc_word_i]
     connect_bd_net \
-        [get_bd_pins axi_gpio_vdc_torque/gpio2_io_o] \
+        [get_bd_pins hil_regs_0/torque_word_o] \
         [get_bd_pins hil_axi_top_0/torque_word_i]
 
     # ── HIL module → PS7 : interrupção de portadora (1 kHz) ──────────────────
