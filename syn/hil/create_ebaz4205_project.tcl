@@ -537,6 +537,18 @@ proc cr_bd_ebaz4205 {} {
     # ── Atribuição automática de endereços ────────────────────────────────────
     assign_bd_address
 
+    # ── Forçar endereços fixos (devem bater com gpio.h no PS app) ─────────────
+    # HIL_Regs_AXI  → 0x43C00000  (PS app: ADDR_HIL_REGS)
+    # GPIO monitor 1 → 0x41200000  (já correto pelo auto-assign)
+    # GPIO monitor 2 → 0x41210000
+    # GPIO monitor 3 → 0x41220000
+    set seg_hil [get_bd_addr_segs hil_regs_0/S_AXI/reg0]
+    if {[llength $seg_hil] > 0} {
+        set_property offset 0x43C00000 [get_bd_addr_segs \
+            {processing_system7_0/Data/SEG_hil_regs_0_reg0}]
+        puts "  HIL_Regs_AXI → 0x43C00000"
+    }
+
     # ── Validar e salvar ───────────────────────────────────────────────────────
     validate_bd_design
     save_bd_design
@@ -545,7 +557,7 @@ proc cr_bd_ebaz4205 {} {
 
 # =============================================================================
 # 2.5. Adicionar fontes RTL (obrigatório antes do cr_bd_ebaz4205 para que
-#      o module reference HIL_AXI_Top seja reconhecido pelo compilador)
+#      os module references HIL_AXI_Top e HIL_Regs_AXI sejam reconhecidos)
 # =============================================================================
 set root_dir [file normalize "$script_dir/../.."]
 
@@ -555,6 +567,12 @@ puts "=== \[2.5\] Adicionando fontes RTL ao projeto ==="
 # Pacotes
 add_files -fileset sources_1 -norecurse \
     $root_dir/common/modules/bilinear_solver/src/BilinearSolverPkg.vhd
+
+# ── HIL Core Modules (custom AXI4-Lite registers) ──────────────────────
+#   Estes arquivos devem ser adicionados ANTES do BD para que os references
+#   funcionem na criação do block design.
+add_files -fileset sources_1 -norecurse \
+    $root_dir/src/rtl/HIL_Regs_AXI.vhd
 # VFControlPkg removido — VFController não está mais no PL
 
 # Bilinear Solver (RTL — usado na síntese)
@@ -640,21 +658,42 @@ create_ip -name mult_gen -vendor xilinx.com -library ip -version 12.0 \
     -module_name BilienarSolverUnit_DSP
 
 set_property -dict [list \
-    CONFIG.PortAWidth       {42}                  \
-    CONFIG.PortBWidth       {42}                  \
-    CONFIG.MultType         {Parallel_Multiplier}  \
-    CONFIG.PortAType        {Signed}              \
-    CONFIG.PortBType        {Signed}              \
-    CONFIG.OptGoal          {Speed}               \
-    CONFIG.PipeStages       {7}                   \
-    CONFIG.OutputWidthHigh  {83}                  \
-    CONFIG.OutputWidthLow   {0}                   \
+    CONFIG.PortAWidth              {42}                   \
+    CONFIG.PortBWidth              {42}                   \
+    CONFIG.MultType                {Parallel_Multiplier}   \
+    CONFIG.PortAType               {Signed}               \
+    CONFIG.PortBType               {Signed}               \
+    CONFIG.Multiplier_Construction {Use_Mults}            \
+    CONFIG.OptGoal                 {Speed}                \
+    CONFIG.PipeStages              {7}                    \
 ] [get_ips BilienarSolverUnit_DSP]
 
+# Em Vivado 2025.1 o parâmetro "Use_Mults" gera internamente C_MULT_TYPE=0
+# (MULT_AND / LUT2-based), em vez de C_MULT_TYPE=1 (DSP48E1).
+# Forçamos C_MULT_TYPE=1 editando o XCI diretamente — comportamento idêntico
+# ao Vivado 2021.2 onde "Use_Mults" já gerava C_MULT_TYPE=1.
+set xci_path [lindex [get_files BilienarSolverUnit_DSP.xci] 0]
+# Write Python patch script to a temp file to avoid TCL/Python escaping conflicts
+set pyscript "/tmp/patch_mult_type.py"
+set pyfd [open $pyscript w]
+puts $pyfd "path = r'$xci_path'"
+puts $pyfd {with open(path) as f:}
+puts $pyfd {    txt = f.read()}
+puts $pyfd "old = '\"C_MULT_TYPE\": \[ { \"value\": \"0\"'"
+puts $pyfd "new = '\"C_MULT_TYPE\": \[ { \"value\": \"1\"'"
+puts $pyfd {txt = txt.replace(old, new)}
+puts $pyfd {with open(path, 'w') as f:}
+puts $pyfd {    f.write(txt)}
+puts $pyfd {print('C_MULT_TYPE patched to 1 (DSP48E1)')}
+close $pyfd
+exec python3 $pyscript
+puts "  → C_MULT_TYPE forçado para 1 (DSP48E1) no XCI."
+
+upgrade_ip [get_ips BilienarSolverUnit_DSP] -quiet
 generate_target {simulation instantiation_template} \
     [get_files BilienarSolverUnit_DSP.xci]
 
-puts "  IP BilienarSolverUnit_DSP criado e targets de simulação gerados."
+puts "  IP BilienarSolverUnit_DSP criado com DSP48E1 (5 DSPs por instância)."
 
 # ── 5b. Fileset sim_compare (tb_DSP_StubVsIP) ────────────────────────────────
 puts ""

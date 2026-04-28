@@ -14,7 +14,10 @@
 
 set -euo pipefail
 
-IMAGES_DIR="$(dirname "$0")/ebaz4205_petalinux/images/linux"
+# ── Configuração de diretórios ───────────────────────────────────────────────
+# sd_images/ contém imagens FUNCIONAIS (April 12) — USE POR PADRÃO
+# petalinux/images/linux/ contém imagens GERADAS APÓS build — use apenas se quiser rebuild completo
+IMAGES_DIR="${SD_IMAGES_DIR:-$(dirname "$0")/sd_images}"
 
 # ── Argumentos ────────────────────────────────────────────────────────────────
 if [[ $# -ne 1 ]]; then

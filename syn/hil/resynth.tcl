@@ -8,67 +8,71 @@
 set project_file [file normalize [file join [file dirname [info script]] \
     ebaz4205/ebaz4205.xpr]]
 
-puts "\n=== Atualizando Block Design (HIL_Regs_AXI) ===\n"
-set bd_update [file normalize [file join [file dirname [info script]] bd_update.tcl]]
-exec /opt/Xilinx/2025.1/Vivado/bin/vivado -mode batch \
-    -source $bd_update \
-    -log    [file join [file dirname [info script]] bd_update.log] \
-    -journal [file join [file dirname [info script]] bd_update.jou] >@stdout 2>@stderr
-puts "✓ Block Design atualizado\n"
-
+# NOTA: resynth.tcl NÃO recria o Block Design.
+# O BD completo (com EMIO Ethernet, GMII, MDIO, xlconcat/xlslice, etc.)
+# é criado apenas por create_ebaz4205_project.tcl via 'make vivado-project'.
+# bd_update.tcl estava incompleto (sem EMIO Ethernet) e causava bitstream quebrado.
 puts "\n=== Abrindo projeto para síntese ===\n"
 open_project -quiet $project_file
 
-# ── 1. Resetar todos os runs OOC e principais ────────────────────────────
+# ── 1. Garantir que IP BilienarSolverUnit_DSP usa DSP48E1 (C_MULT_TYPE=1) ──
+# NOTA: A escrita do script Python é feita FORA de blocos if {} para evitar
+# o bug do TCL: { dentro de strings double-quoted dentro de if {} são
+# contados no balanceamento de chaves, causando "missing close-brace".
+set dsp_ip [get_ips -quiet BilienarSolverUnit_DSP]
+set xci_path ""
+if {[llength $dsp_ip] > 0} {
+    set xci_path [lindex [get_files BilienarSolverUnit_DSP.xci] 0]
+}
+
+# Escrever script Python no nível global (sem if aninhado)
+set pyscript "/tmp/patch_mult_type.py"
+set pyfd [open $pyscript w]
+puts $pyfd "path = r'$xci_path'"
+puts $pyfd {with open(path) as f:}
+puts $pyfd {    txt = f.read()}
+puts $pyfd "old = '\"C_MULT_TYPE\": \[ { \"value\": \"0\"'"
+puts $pyfd "new = '\"C_MULT_TYPE\": \[ { \"value\": \"1\"'"
+puts $pyfd {txt = txt.replace(old, new)}
+puts $pyfd {with open(path, 'w') as f:}
+puts $pyfd {    f.write(txt)}
+close $pyfd
+
+if {[llength $dsp_ip] > 0} {
+    set cmt [get_property CONFIG.C_MULT_TYPE $dsp_ip]
+    puts "→ BilienarSolverUnit_DSP: C_MULT_TYPE=$cmt, Locked=[get_property IS_LOCKED $dsp_ip]"
+    if {$cmt ne "1"} {
+        puts "→ Corrigindo C_MULT_TYPE para 1 (DSP48E1)..."
+        exec python3 $pyscript
+    }
+    generate_target all $dsp_ip -quiet
+}
+
+# Limpar DCP e cache do run DSP OOC (só se o run já existir)
+set dsp_runs [get_runs -quiet BilienarSolverUnit_DSP_synth_1]
+if {[llength $dsp_runs] > 0} {
+    set dsp_run_dir [get_property DIRECTORY $dsp_runs]
+    foreach f [list \
+        [file join $dsp_run_dir "BilienarSolverUnit_DSP.dcp"] \
+        [file join $dsp_run_dir "__synthesis_is_complete__"] \
+    ] {
+        if {[file exists $f]} { file delete $f; puts "→ Cache removido: [file tail $f]" }
+    }
+}
+
+# ── 2. Resetar todos os runs (apenas os que existem) ─────────────────────
 foreach run [list \
     "BilienarSolverUnit_DSP_synth_1" \
     "ebaz4205_hil_axi_top_0_0_synth_1" \
     "synth_1" \
     "impl_1" \
 ] {
-    if {[llength [get_runs $run]] > 0} {
+    if {[llength [get_runs -quiet $run]] > 0} {
         puts "→ Resetando: $run"
         reset_run $run
     }
 }
-
-# ── 2. Limpar cache do DSP IP e forçar re-síntese com Use_Mults ──────────
-# O Vivado reutiliza cache mesmo após mudança de Use_LUTs → Use_Mults.
-# Deletar o .dcp e o marcador de conclusão força nova síntese do IP.
-set dsp_run_dir [get_property DIRECTORY [get_runs BilienarSolverUnit_DSP_synth_1]]
-set dsp_dcp     [file join $dsp_run_dir "BilienarSolverUnit_DSP.dcp"]
-set dsp_done    [file join $dsp_run_dir "__synthesis_is_complete__"]
-foreach f [list $dsp_dcp $dsp_done] {
-    if {[file exists $f]} {
-        file delete $f
-        puts "→ Cache DSP removido: $f"
-    }
-}
-# Regenerar targets do IP para garantir consistência
-set dsp_ip [get_ips BilienarSolverUnit_DSP]
-generate_target all $dsp_ip
-puts "→ DSP IP targets regenerados (Use_Mults=[get_property CONFIG.Multiplier_Construction $dsp_ip])"
-
-# ── 3. Rodar DSP OOC primeiro (Use_Mults) ────────────────────────────────
-puts "\n=== Rodando DSP OOC synthesis (Use_Mults) ===\n"
-launch_runs BilienarSolverUnit_DSP_synth_1 -jobs 4
-wait_on_run BilienarSolverUnit_DSP_synth_1
-set s [get_property STATUS [get_runs BilienarSolverUnit_DSP_synth_1]]
-puts "DSP OOC status: $s"
-
-# ── 4. Rodar HIL_AXI_Top OOC (nome pode variar após recriação do BD) ─────
-puts "\n=== Rodando HIL_AXI_Top OOC synthesis ===\n"
-set hil_ooc [lsearch -inline [get_runs] *hil_axi_top*synth*]
-if {$hil_ooc ne ""} {
-    reset_run $hil_ooc
-    launch_runs $hil_ooc -jobs 4
-    wait_on_run $hil_ooc
-    puts "HIL OOC status: [get_property STATUS [get_runs $hil_ooc]]"
-} else {
-    puts "AVISO: run HIL OOC não encontrado — synth_1 irá triggerar automaticamente"
-}
-
-# ── 5. Rodar synthesis principal ─────────────────────────────────────────
+# ── 3. Rodar synthesis principal (OOC hil_axi_top é triggrado automaticamente) ─
 puts "\n=== Iniciando synthesis top-level (jobs=4) ===\n"
 launch_runs synth_1 -jobs 4
 wait_on_run synth_1
