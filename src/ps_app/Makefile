@@ -40,7 +40,11 @@ native:
 clean:
 	rm -f $(TARGET) $(TARGET)_native
 
+BOARD_USER ?= petalinux
+BOARD_HOME  = /home/$(BOARD_USER)
+
 deploy: $(TARGET)
 	@if [ -z "$(IP)" ]; then echo "Usage: make deploy IP=<ip>"; exit 1; fi
-	scp $(TARGET) root@$(IP):/home/root/
-	@echo "Deployed to root@$(IP):/home/root/$(TARGET)"
+	scp $(TARGET) $(BOARD_USER)@$(IP):$(BOARD_HOME)/
+	@echo "Deployed to $(BOARD_USER)@$(IP):$(BOARD_HOME)/$(TARGET)"
+	@echo "Run on board: sudo $(BOARD_HOME)/$(TARGET)"
