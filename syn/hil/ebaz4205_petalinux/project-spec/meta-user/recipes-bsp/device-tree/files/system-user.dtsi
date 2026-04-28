@@ -2,7 +2,7 @@
 / {
 };
 
-/* EBAZ4205: Realtek RTL8211E PHY on MDIO address 1 */
+/* EBAZ4205: IC-Plus IP101GA PHY via EMIO/PL GMII, MDIO address 1 */
 &gem0 {
 	phy-handle = <&phy0>;
 	mdio {
