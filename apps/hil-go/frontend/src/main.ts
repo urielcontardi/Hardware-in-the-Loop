@@ -282,7 +282,10 @@ function buildPlots() {
       stroke: CHANNELS[ci].color,
       width: 1.5,
       show: visible[ci],
+      value: opts => CHANNELS[ci].unit,
     }));
+
+    const yPos = chIdx.map(ci => CHANNELS[ci].name).join(", ");
 
     const p = new uPlot(
       {
@@ -293,7 +296,12 @@ function buildPlots() {
         scales: { x: { time: false } },
         axes: [
           { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" } },
-          { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" } },
+          {
+            stroke: "#3a5575",
+            grid: { stroke: "#0e1d30", width: 1 },
+            ticks: { stroke: "#0e1d30" },
+            label: yPos || "Y",
+          },
         ],
         series,
         legend: { show: true, live: true },
