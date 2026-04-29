@@ -6,10 +6,14 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed build/appicon.png
+var icon []byte
 
 func main() {
 	app := NewApp()
@@ -18,6 +22,7 @@ func main() {
 		Title:  "HIL Monitor",
 		Width:  1280,
 		Height: 800,
+		Linux:  &linux.Options{Icon: icon},
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
