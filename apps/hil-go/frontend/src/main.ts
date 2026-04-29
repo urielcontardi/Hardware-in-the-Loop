@@ -296,7 +296,7 @@ function buildPlots() {
           { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" } },
         ],
         series,
-        legend: { show: chIdx.length > 0, live: true },
+        legend: { show: true, live: true },
       },
       [xs, ...chIdx.map(ci => ys[ci])] as uPlot.AlignedData,
       wrap,
