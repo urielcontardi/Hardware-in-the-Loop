@@ -45,9 +45,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <header class="topbar">
     <div class="topbar-brand">
       <img src="/LSE_LOGO.png" alt="LSE" class="app-logo" />
+      <div class="topbar-sep"></div>
       <div>
         <span class="app-name">HIL Monitor</span>
-        <span class="app-sub">Hardware-in-the-Loop</span>
+        <span class="app-sub">Hardware-in-the-Loop · LSE</span>
       </div>
     </div>
     <div class="topbar-right">
