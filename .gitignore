@@ -90,6 +90,7 @@ Thumbs.db
 # Build output (binaries)
 build/
 src/ps_app/hil_controller
+src/ps_app/test_fpga
 
 # HIL Monitor (Wails/Go)
 apps/hil-go/frontend/node_modules/
