@@ -3,17 +3,20 @@
 
 #include <stdint.h>
 
-/* ── HIL_Regs_AXI — AXI4-Lite custom slave (PS writes, PL reads) ─────────
- * Single module replacing the 3 AXI GPIO write IPs.
+/* ── HIL_Regs_AXI — AXI4-Lite custom slave ────────────────────────────────
  * Register map (byte offsets from base):
- *   0x00  va_ref      signed int32, ±CARRIER_MAX
- *   0x04  vb_ref
- *   0x08  vc_ref
- *   0x0C  pwm_ctrl    bit0=enable, bit1=clear_fault, [31:2]=decim_ratio
- *   0x10  vdc_word    Q18.14 signed (V)
- *   0x14  torque_word Q18.14 signed (N·m)
- *   0x18  debug_magic  read-only, fixed 0x48494C52 ("HILR")
- *   0x1C  debug0       read-only, mirror of HIL_AXI_Top debug bus
+ *   0x00  va_ref           write — signed int32, ±CARRIER_MAX
+ *   0x04  vb_ref           write
+ *   0x08  vc_ref           write
+ *   0x0C  pwm_ctrl         write — bit0=enable, bit1=clear_fault, [31:2]=decim
+ *   0x10  vdc_word         write — Q18.14 signed (V)
+ *   0x14  torque_word      write — Q18.14 signed (N·m)
+ *   0x18  DEBUG_MAGIC      read  — 0x48494C52 ("HILR")
+ *   0x1C  debug_status     read  — bitfield (rst_n, enable, busy, ...)
+ *   0x20  free_run_ctr     read  — clock vivo
+ *   0x24  carrier_tick_ctr read  — ticks do NPC carrier
+ *   0x28  timer_tick_ctr   read  — ticks do timer do TIM_Solver
+ *   0x2C  data_valid_latch read  — bit[0]=1: solver produziu saída
  */
 #define ADDR_HIL_REGS        0x43C00000U
 #define REG_VA_REF           0x00U
@@ -23,7 +26,11 @@
 #define REG_VDC_WORD         0x10U
 #define REG_TORQUE_WORD      0x14U
 #define REG_DEBUG_MAGIC      0x18U
-#define REG_DEBUG0           0x1CU
+#define REG_DEBUG_STATUS     0x1CU
+#define REG_DEBUG_FREE_RUN   0x20U
+#define REG_DEBUG_CARRIER    0x24U
+#define REG_DEBUG_TIMER      0x28U
+#define REG_DEBUG_DV_LATCH   0x2CU
 
 /* ── AXI GPIO — monitor (PL writes, PS reads) ─────────────────────────── */
 #define ADDR_GPIO_MONITOR_1   0x41200000U  /* ch1=ialpha_mon,     ch2=ibeta_mon      */

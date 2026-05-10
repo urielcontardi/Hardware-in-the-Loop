@@ -83,23 +83,15 @@ static int test_axi_readback(void)
 
     gpio_write(ADDR_HIL_REGS, REG_VA_REF, 0);
 
-    gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, 0xA5A55A5AU);
-    uint32_t regs_magic = gpio_read(ADDR_HIL_REGS, REG_TORQUE_WORD);
-    gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, 0xA5A55A5BU);
-    uint32_t top_debug0 = gpio_read(ADDR_HIL_REGS, REG_TORQUE_WORD);
-    gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, 0);
-
-    printf("\n  Debug via HIL_Regs_AXI:\n");
-    printf("    regs_magic      = 0x%08X  %s\n",
+    /* Verifica magic read-only em 0x18 — prova que o bitstream é desta build */
+    uint32_t regs_magic = gpio_read(ADDR_HIL_REGS, REG_DEBUG_MAGIC);
+    printf("\n  Verificacao do bitstream (0x18 = DEBUG_MAGIC):\n");
+    printf("    regs_magic = 0x%08X  %s\n",
            regs_magic, regs_magic == 0x48494C52U ? "OK" : "FAIL");
-    printf("    top_debug0      = 0x%08X  %s\n",
-           top_debug0, top_debug0 == 0x48494C44U ? "OK" : "FAIL");
 
     if (regs_magic != 0x48494C52U) {
-        uint32_t direct_magic = gpio_read(ADDR_HIL_REGS, REG_DEBUG_MAGIC);
-        printf("    direct 0x18     = 0x%08X\n", direct_magic);
-        printf("  [!] O HIL_Regs_AXI ainda nao contem o readback novo no offset ja validado 0x14.\n"
-               "      Isso indica DCP/OOC stale ou bitstream que nao corresponde ao RTL.\n");
+        printf("  [!] Bitstream desatualizado ou FPGA nao configurado.\n"
+               "      Rode: sudo fpgautil -b ebaz4205_wrapper.bin\n");
         ok = 0;
     }
 
@@ -132,25 +124,37 @@ static void read_debug_monitors(uint32_t *free_run,
                                 uint32_t *status,
                                 uint32_t *data_valid_latch)
 {
-    uint32_t magic    = gpio_read(ADDR_GPIO_MONITOR_1, GPIO_CH1_OFFSET);
-    *free_run         = gpio_read(ADDR_GPIO_MONITOR_1, GPIO_CH2_OFFSET);
-    *carrier          = gpio_read(ADDR_GPIO_MONITOR_2, GPIO_CH1_OFFSET);
-    *timer            = gpio_read(ADDR_GPIO_MONITOR_2, GPIO_CH2_OFFSET);
+    /* Debug bus agora vem do HIL_Regs_AXI (offsets 0x1C..0x2C).
+     * Os AXI GPIO monitors carregam grandezas físicas reais. */
+    *status           = gpio_read(ADDR_HIL_REGS, REG_DEBUG_STATUS);
+    *free_run         = gpio_read(ADDR_HIL_REGS, REG_DEBUG_FREE_RUN);
+    *carrier          = gpio_read(ADDR_HIL_REGS, REG_DEBUG_CARRIER);
+    *timer            = gpio_read(ADDR_HIL_REGS, REG_DEBUG_TIMER);
+    *data_valid_latch = gpio_read(ADDR_HIL_REGS, REG_DEBUG_DV_LATCH) & 1U;
     *solver_done      = 0;
-    *status           = gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH1_OFFSET);
-    *data_valid_latch = gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH2_OFFSET) & 1U;
-    (void)magic;
+}
+
+static void read_physical_monitors(int32_t *ialpha,
+                                   int32_t *ibeta,
+                                   int32_t *flux_a,
+                                   int32_t *flux_b,
+                                   int32_t *speed,
+                                   uint32_t *data_valid)
+{
+    *ialpha     = (int32_t)gpio_read(ADDR_GPIO_MONITOR_1, GPIO_CH1_OFFSET);
+    *ibeta      = (int32_t)gpio_read(ADDR_GPIO_MONITOR_1, GPIO_CH2_OFFSET);
+    *flux_a     = (int32_t)gpio_read(ADDR_GPIO_MONITOR_2, GPIO_CH1_OFFSET);
+    *flux_b     = (int32_t)gpio_read(ADDR_GPIO_MONITOR_2, GPIO_CH2_OFFSET);
+    *speed      = (int32_t)gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH1_OFFSET);
+    *data_valid = gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH2_OFFSET) & 1U;
 }
 
 static void print_debug_snapshot(const char *tag)
 {
     uint32_t free_run, carrier, timer, solver_done, status, dv_latch;
-    uint32_t magic = gpio_read(ADDR_GPIO_MONITOR_1, GPIO_CH1_OFFSET);
 
     read_debug_monitors(&free_run, &carrier, &timer, &solver_done, &status, &dv_latch);
     printf("\n  Debug monitors (%s):\n", tag);
-    printf("    debug_magic      = 0x%08X  %s\n",
-           magic, magic == 0x48494C44U ? "OK" : "FAIL");
     printf("    free_run_ctr     = %10u\n", free_run);
     printf("    carrier_tick_ctr = %10u\n", carrier);
     printf("    timer_tick_ctr   = %10u\n", timer);
@@ -194,9 +198,6 @@ static int test_solver(void)
     (void)done1;
 
     printf("\n  Debug monitors (apos enable):\n");
-    uint32_t magic = gpio_read(ADDR_GPIO_MONITOR_1, GPIO_CH1_OFFSET);
-    printf("    debug_magic      = 0x%08X  %s\n",
-           magic, magic == 0x48494C44U ? "OK" : "FAIL");
     printf("    free_run_ctr     = %10u  delta=%10u\n", free1,    free1 - free0);
     printf("    carrier_tick_ctr = %10u  delta=%10u\n", carrier1, carrier1 - carrier0);
     printf("    timer_tick_ctr   = %10u  delta=%10u\n", timer1,   timer1 - timer0);
@@ -204,29 +205,6 @@ static int test_solver(void)
     print_debug_status(status1);
 
     printf("\n  Diagnostico:\n");
-
-    gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, 0xA5A55A5AU);
-    uint32_t regs_magic = gpio_read(ADDR_HIL_REGS, REG_TORQUE_WORD);
-    gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, 0xA5A55A5BU);
-    uint32_t top_debug0 = gpio_read(ADDR_HIL_REGS, REG_TORQUE_WORD);
-    gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, 0);
-
-    if (regs_magic != 0x48494C52U) {
-        printf("  [!] HIL_Regs_AXI nao tem o magic novo. O .bit carregado nao e desta build.\n");
-        return -1;
-    }
-
-    if (top_debug0 == 0x48494C44U && magic != 0x48494C44U) {
-        printf("  [!] HIL_AXI_Top esta vivo via HIL_Regs_AXI, mas AXI GPIO monitor le zero.\n"
-               "      Foque no caminho AXI GPIO monitor/BD/addressing, nao no TIM_Solver.\n");
-        return -1;
-    }
-
-    if (top_debug0 != 0x48494C44U || magic != 0x48494C44U) {
-        printf("  [!] Saidas do HIL_AXI_Top nao estao chegando aos caminhos de debug.\n"
-               "      Isso indica BD/module reference stale ou conexao do HIL_AXI_Top errada.\n");
-        return -1;
-    }
 
     if (free1 == free0) {
         printf("  [!] HIL_AXI_Top nao tem clock: free_run_ctr nao incrementa.\n");
@@ -258,8 +236,44 @@ static int test_solver(void)
         return -1;
     }
 
-    printf("  [OK] Caminho clock/reset/timer/solver_done esta vivo.\n"
-           "       Proximo passo: desabilitar DEBUG_MONITORS e validar grandezas fisicas.\n");
+    printf("  [OK] Caminho clock/reset/timer/solver_done esta vivo.\n");
+    return 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────── */
+
+/* Q14.28 → physical: o AXI GPIO entrega os 32 MSBs de um valor de 42 bits
+ * em Q14.28, então o valor lido é Q14.18 → divisor = 2^18 = 262144. */
+static double q1418_to_real(int32_t q)
+{
+    return (double)q / 262144.0;
+}
+
+static int test_physical(void)
+{
+    printf("\n=== STEP 3: Grandezas fisicas (AXI GPIO monitors) ===\n");
+
+    int32_t  ialpha, ibeta, flux_a, flux_b, speed;
+    uint32_t dv;
+
+    /* Lê 3x com pequeno intervalo para confirmar atividade */
+    for (int i = 0; i < 3; i++) {
+        read_physical_monitors(&ialpha, &ibeta, &flux_a, &flux_b, &speed, &dv);
+        printf("\n  Amostra %d (data_valid=%u):\n", i + 1, dv);
+        printf("    ialpha     = %12d  (%9.4f A)\n",  ialpha, q1418_to_real(ialpha));
+        printf("    ibeta      = %12d  (%9.4f A)\n",  ibeta,  q1418_to_real(ibeta));
+        printf("    flux_alpha = %12d  (%9.4f Wb)\n", flux_a, q1418_to_real(flux_a));
+        printf("    flux_beta  = %12d  (%9.4f Wb)\n", flux_b, q1418_to_real(flux_b));
+        printf("    speed_mech = %12d  (%9.4f rad/s)\n", speed, q1418_to_real(speed));
+        ms_sleep(100);
+    }
+
+    if (dv == 0) {
+        printf("\n  [!] data_valid=0 — solver nao produziu saida.\n");
+        return -1;
+    }
+
+    printf("\n  [OK] Solver gerando grandezas fisicas via AXI GPIO.\n");
     return 0;
 }
 
@@ -285,6 +299,8 @@ int main(void)
     }
 
     int step2 = test_solver();
+    int step3 = test_physical();
+
     /* Desliga o modulador antes de sair */
     gpio_set_pwm_ctrl(0, 0, 0);
     gpio_set_vref(0, 0, 0);
@@ -293,8 +309,9 @@ int main(void)
 
     printf("\n=== RESUMO ===\n");
     printf("  AXI bus (HIL_Regs readback): %s\n", step1 == 0 ? "OK" : "FAIL");
-    printf("  TIM_Solver ativo:            %s\n", step2 == 0 ? "OK" : "FAIL");
+    printf("  TIM_Solver debug counters:   %s\n", step2 == 0 ? "OK" : "FAIL");
+    printf("  Grandezas fisicas no GPIO:   %s\n", step3 == 0 ? "OK" : "FAIL");
     printf("\n");
 
-    return (step1 == 0 && step2 == 0) ? 0 : 1;
+    return (step1 == 0 && step2 == 0 && step3 == 0) ? 0 : 1;
 }
