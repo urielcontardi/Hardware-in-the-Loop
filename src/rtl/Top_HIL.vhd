@@ -331,7 +331,11 @@ Begin
         -- Mechanical speed
         speed_mech_o        => speed_mech_int,
         -- Data valid
-        data_valid_o        => data_valid_int
+        data_valid_o        => data_valid_int,
+        timer_tick_dbg_o    => open,
+        clarke_valid_dbg_o  => open,
+        solver_busy_dbg_o   => open,
+        solver_done_dbg_o   => open
     );
 
 End Architecture;

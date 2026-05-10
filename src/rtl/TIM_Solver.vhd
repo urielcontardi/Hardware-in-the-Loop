@@ -93,7 +93,13 @@ Entity TIM_Solver is
         -- Mechanical outputs
         speed_mech_o        : out std_logic_vector(DATA_WIDTH-1 downto 0);
 
-        data_valid_o        : out std_logic
+        data_valid_o        : out std_logic;
+
+        -- Debug observability for board bring-up
+        timer_tick_dbg_o    : out std_logic;
+        clarke_valid_dbg_o  : out std_logic;
+        solver_busy_dbg_o   : out std_logic;
+        solver_done_dbg_o   : out std_logic
 
     );
 End entity;
@@ -351,5 +357,10 @@ Begin
     flux_rotor_alpha_o  <= Xvec_fp(0);
     flux_rotor_beta_o   <= Xvec_fp(1);
     speed_mech_o        <= Xvec_fp(4);
+
+    timer_tick_dbg_o    <= timer_tick;
+    clarke_valid_dbg_o  <= clarke_valid;
+    solver_busy_dbg_o   <= solver_busy;
+    solver_done_dbg_o   <= solver_done;
 
 End architecture;

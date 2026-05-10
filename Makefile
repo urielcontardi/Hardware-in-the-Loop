@@ -366,9 +366,14 @@ PETALINUX_IMAGES := $(PETALINUX_DIR)/images/linux
 # has a different DDR calibration (0x452464D3) that does NOT boot this board.
 XSA_NEW          := $(SYN_HIL)/ebaz4205.xsa
 VIVADO_BIT       := $(SYN_HIL)/ebaz4205/ebaz4205.runs/impl_1/ebaz4205_wrapper.bit
+# .bin = byte-swapped bitstream required by PetaLinux fpga_manager (fpgautil -b)
+# The Vivado .bit has a header that fpga_manager rejects; bootgen strips/swaps it.
+VIVADO_BIN       := $(VIVADO_BIT).bin
 
 .PHONY: linux-config linux-build linux-package linux-all linux-all-axi \
-        linux-update-sdimages linux-flash linux-extract-fsbl ps-build ps-deploy ps-clean ps-sdk
+        linux-update-sdimages linux-flash linux-extract-fsbl \
+        bit-to-bin \
+        ps-build ps-build-test ps-deploy ps-deploy-test ps-clean ps-sdk
 
 _petalinux_check_env:
 	@if [ ! -f "$(PETALINUX_ENV)" ]; then \
@@ -519,8 +524,10 @@ linux-flash:
 PS_APP_DIR   := src/ps_app
 PS_SDK_ENV   := $(PETALINUX_DIR)/images/linux/sdk/environment-setup-cortexa9t2hf-neon-amd-linux-gnueabi
 IP           ?= 192.168.1.100
+BOARD_USER   ?= petalinux
+BOARD_HOME   ?= /home/$(BOARD_USER)
 
-.PHONY: ps-build ps-deploy ps-clean ps-sdk
+.PHONY: ps-build ps-build-test ps-deploy ps-deploy-test ps-deploy-bit hil-deploy-test ps-clean ps-sdk
 
 ## Generate PetaLinux SDK (run once after linux-build)
 ps-sdk: _petalinux_check_env
@@ -548,6 +555,20 @@ ps-build:
 		$(MAKE) -C $(PS_APP_DIR)"
 	@echo "  Binary: $(PS_APP_DIR)/hil_controller"
 
+## Cross-compile FPGA smoke test binary
+ps-build-test:
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       PS App — Build test_fpga (ARM)         ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(PS_SDK_ENV)" ]; then \
+		echo "ERROR: SDK not found. Run 'make ps-sdk' first."; \
+		exit 1; \
+	fi
+	@bash -c "source $(PS_SDK_ENV) && \
+		$(MAKE) -C $(PS_APP_DIR) test"
+	@echo "  Binary: $(PS_APP_DIR)/test_fpga"
+
 ## Deploy PS application to board via SCP
 ps-deploy: ps-build
 	@echo ""
@@ -555,6 +576,58 @@ ps-deploy: ps-build
 	@echo "║       PS App — Deploy to board               ║"
 	@echo "╚══════════════════════════════════════════════╝"
 	@$(MAKE) -C $(PS_APP_DIR) deploy IP=$(IP)
+
+## Deploy smoke test to board via SCP
+ps-deploy-test: ps-build-test
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       PS App — Deploy test_fpga to board     ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@$(MAKE) -C $(PS_APP_DIR) deploy-test IP=$(IP)
+
+## Convert Vivado .bit to byte-swapped .bin required by PetaLinux fpga_manager
+# PetaLinux 2024+ rejects the raw .bit header; fpgautil -b needs .bin format.
+# bootgen strips the Vivado header and byte-swaps the payload automatically.
+bit-to-bin: _petalinux_check_env
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       Vivado .bit → .bin (bootgen)           ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@if [ ! -f "$(VIVADO_BIT)" ]; then \
+		echo "ERROR: $(VIVADO_BIT) not found — run 'make synth' first."; \
+		exit 1; \
+	fi
+	$(eval _BIF := $(shell mktemp /tmp/bit2bin.XXXXXX.bif))
+	@printf 'all:\n{\n    %s\n}\n' "$(ROOT)/$(VIVADO_BIT)" > $(_BIF)
+	@bash -c "source $(PETALINUX_ENV) && \
+		bootgen -image $(_BIF) -arch zynq -process_bitstream bin -w on \
+		        -o $(ROOT)/$(VIVADO_BIN)"
+	@rm -f $(_BIF)
+	@echo "  .bin gerado: $(VIVADO_BIN)"
+	@sha256sum "$(VIVADO_BIN)"
+
+## Deploy the current Vivado bitstream (.bin) to board via SCP
+ps-deploy-bit: bit-to-bin
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       Vivado — Deploy bitstream to board     ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@sha256sum "$(VIVADO_BIN)"
+	scp "$(VIVADO_BIN)" $(BOARD_USER)@$(IP):$(BOARD_HOME)/ebaz4205_wrapper.bin
+	@echo "Deployed to $(BOARD_USER)@$(IP):$(BOARD_HOME)/ebaz4205_wrapper.bin"
+	@echo "Load on board: sudo fpgautil -b $(BOARD_HOME)/ebaz4205_wrapper.bin"
+
+## Deploy bitstream + smoke test from this workspace to board via SCP
+hil-deploy-test: ps-build-test ps-deploy-bit
+	@echo ""
+	@echo "╔══════════════════════════════════════════════╗"
+	@echo "║       HIL — Deploy bitstream + test_fpga     ║"
+	@echo "╚══════════════════════════════════════════════╝"
+	@sha256sum "$(PS_APP_DIR)/test_fpga"
+	scp "$(PS_APP_DIR)/test_fpga" $(BOARD_USER)@$(IP):$(BOARD_HOME)/
+	@echo "Run on board:"
+	@echo "  sudo fpgautil -b $(BOARD_HOME)/ebaz4205_wrapper.bin"
+	@echo "  sudo $(BOARD_HOME)/test_fpga"
 
 ## Clean PS application build
 ps-clean:

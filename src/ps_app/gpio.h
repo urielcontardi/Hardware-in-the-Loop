@@ -12,6 +12,8 @@
  *   0x0C  pwm_ctrl    bit0=enable, bit1=clear_fault, [31:2]=decim_ratio
  *   0x10  vdc_word    Q18.14 signed (V)
  *   0x14  torque_word Q18.14 signed (N·m)
+ *   0x18  debug_magic  read-only, fixed 0x48494C52 ("HILR")
+ *   0x1C  debug0       read-only, mirror of HIL_AXI_Top debug bus
  */
 #define ADDR_HIL_REGS        0x43C00000U
 #define REG_VA_REF           0x00U
@@ -20,6 +22,8 @@
 #define REG_PWM_CTRL         0x0CU
 #define REG_VDC_WORD         0x10U
 #define REG_TORQUE_WORD      0x14U
+#define REG_DEBUG_MAGIC      0x18U
+#define REG_DEBUG0           0x1CU
 
 /* ── AXI GPIO — monitor (PL writes, PS reads) ─────────────────────────── */
 #define ADDR_GPIO_MONITOR_1   0x41200000U  /* ch1=ialpha_mon,     ch2=ibeta_mon      */
@@ -35,8 +39,8 @@
 #define PWM_CTRL_CLEAR_FAULT (1 << 1)
 #define PWM_CTRL_DECIM_SHIFT 2
 
-/* CARRIER_MAX: 150 MHz / (1 kHz * 2) = 75000 */
-#define CARRIER_MAX  75000
+/* CARRIER_MAX: 100 MHz / (1 kHz * 2) = 50000 */
+#define CARRIER_MAX  50000
 
 int  gpio_init(void);
 void gpio_deinit(void);
