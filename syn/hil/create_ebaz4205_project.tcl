@@ -504,11 +504,24 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_regs_0/torque_word_o] \
         [get_bd_pins hil_axi_top_0/torque_word_i]
 
-    # Espelho de debug por dentro do HIL_Regs_AXI, que ja provou responder no AXI.
-    # Isto permite separar falha do AXI GPIO monitor de falha real no HIL_AXI_Top.
+    # Debug bus do HIL_AXI_Top → HIL_Regs_AXI (offsets 0x1C..0x2C).
+    # Permite ler contadores e status word via PS sem ocupar os AXI GPIOs,
+    # que ficam dedicados às grandezas físicas (ialpha, ibeta, flux, speed).
     connect_bd_net \
-        [get_bd_pins hil_axi_top_0/ialpha_mon_o] \
-        [get_bd_pins hil_regs_0/debug0_i]
+        [get_bd_pins hil_axi_top_0/dbg_status_o] \
+        [get_bd_pins hil_regs_0/dbg_status_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/dbg_free_run_o] \
+        [get_bd_pins hil_regs_0/dbg_free_run_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/dbg_carrier_o] \
+        [get_bd_pins hil_regs_0/dbg_carrier_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/dbg_timer_o] \
+        [get_bd_pins hil_regs_0/dbg_timer_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/dbg_dv_latch_o] \
+        [get_bd_pins hil_regs_0/dbg_dv_latch_i]
 
     # ── HIL module → PS7 : interrupção de portadora (1 kHz) ──────────────────
     connect_bd_net \
