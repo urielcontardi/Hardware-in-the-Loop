@@ -345,6 +345,7 @@ synth:
 		-journal vivado_impl.jou
 	@echo ""
 	@grep -E "XSA exportado|ERROR|WARNING.*critical" $(SYN_HIL)/vivado_impl.log || true
+	@$(MAKE) bit-to-bin
 
 ## Flash SD card with pre-built images (usage: make flash SD=/dev/sdX)
 flash:
