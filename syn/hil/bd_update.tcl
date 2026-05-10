@@ -140,6 +140,7 @@ connect_bd_net [get_bd_pins hil_regs_0/vc_ref_o]      [get_bd_pins hil_axi_top_0
 connect_bd_net [get_bd_pins hil_regs_0/pwm_ctrl_o]    [get_bd_pins hil_axi_top_0/pwm_ctrl_i]
 connect_bd_net [get_bd_pins hil_regs_0/vdc_word_o]    [get_bd_pins hil_axi_top_0/vdc_word_i]
 connect_bd_net [get_bd_pins hil_regs_0/torque_word_o] [get_bd_pins hil_axi_top_0/torque_word_i]
+connect_bd_net [get_bd_pins hil_axi_top_0/ialpha_mon_o] [get_bd_pins hil_regs_0/debug0_i]
 
 # ── HIL_AXI_Top → monitors ───────────────────────────────────────────────
 connect_bd_net [get_bd_pins hil_axi_top_0/ialpha_mon_o]     [get_bd_pins axi_gpio_monitor_1/gpio_io_i]

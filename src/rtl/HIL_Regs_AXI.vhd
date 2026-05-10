@@ -12,6 +12,8 @@
 --   0x0C  pwm_ctrl    bit0=enable, bit1=clear_fault, [31:2]=decim_ratio
 --   0x10  vdc_word    Q18.14 signed (V)
 --   0x14  torque_word Q18.14 signed (N·m)
+--   0x18  debug_magic  read-only, fixed 0x48494C52 ("HILR")
+--   0x1C  debug0       read-only, external debug bus from HIL_AXI_Top
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -55,7 +57,10 @@ entity HIL_Regs_AXI is
         vc_ref_o      : out std_logic_vector(31 downto 0);
         pwm_ctrl_o    : out std_logic_vector(31 downto 0);
         vdc_word_o    : out std_logic_vector(31 downto 0);
-        torque_word_o : out std_logic_vector(31 downto 0)
+        torque_word_o : out std_logic_vector(31 downto 0);
+
+        -- Read-only debug input sampled through this known-good AXI slave.
+        debug0_i      : in  std_logic_vector(31 downto 0)
     );
 end entity;
 
@@ -78,6 +83,25 @@ architecture rtl of HIL_Regs_AXI is
     signal reg_pwm_ctrl    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_vdc_word    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_torque_word : std_logic_vector(31 downto 0) := (others => '0');
+
+    constant DEBUG_MAGIC : std_logic_vector(31 downto 0) := x"48494C52"; -- "HILR"
+
+    -- Prevent Vivado from trimming output port connections via dead-cone elimination.
+    -- Without these attributes, synthesis sees the registers as "only driving
+    -- logic that produces constant 0 outputs" and eliminates the output ports.
+    attribute dont_touch : string;
+    attribute dont_touch of reg_va_ref      : signal is "true";
+    attribute dont_touch of reg_vb_ref      : signal is "true";
+    attribute dont_touch of reg_vc_ref      : signal is "true";
+    attribute dont_touch of reg_pwm_ctrl    : signal is "true";
+    attribute dont_touch of reg_vdc_word    : signal is "true";
+    attribute dont_touch of reg_torque_word : signal is "true";
+    attribute dont_touch of va_ref_o        : signal is "true";
+    attribute dont_touch of vb_ref_o        : signal is "true";
+    attribute dont_touch of vc_ref_o        : signal is "true";
+    attribute dont_touch of pwm_ctrl_o      : signal is "true";
+    attribute dont_touch of vdc_word_o      : signal is "true";
+    attribute dont_touch of torque_word_o   : signal is "true";
 
 begin
 
@@ -166,6 +190,8 @@ begin
                         when "011" => rdata <= reg_pwm_ctrl;
                         when "100" => rdata <= reg_vdc_word;
                         when "101" => rdata <= reg_torque_word;
+                        when "110" => rdata <= DEBUG_MAGIC;
+                        when "111" => rdata <= debug0_i;
                         when others => rdata <= (others => '0');
                     end case;
                     rvalid <= '1';

@@ -3,7 +3,7 @@
 #
 # Recria o projeto Vivado 2025.1 para a EBAZ4205 (Zynq-7010),
 # replicando exatamente o que o ebaz4205.tcl original (2021.2) fazia:
-#   - PS7 completo (FCLK0=50MHz, FCLK3=25MHz, ENET0 EMIO, MDIO EMIO,
+#   - PS7 completo (FCLK0=100MHz, FCLK3=25MHz, ENET0 EMIO, MDIO EMIO,
 #                   DDR3, SD0, UART1, NAND)
 #   - xlconcat_0 : agrega RXD[3:0] + RXD[7:4] → ENET0_GMII_RXD[7:0]
 #   - xlslice_0  : fatia TXD[7:0] → enet0_gmii_txd[3:0]
@@ -70,7 +70,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_ACT_DCI_PERIPHERAL_FREQMHZ    {10.158730} \
         CONFIG.PCW_ACT_ENET0_PERIPHERAL_FREQMHZ  {25.000000} \
         CONFIG.PCW_ACT_ENET1_PERIPHERAL_FREQMHZ  {10.000000} \
-        CONFIG.PCW_ACT_FPGA0_PERIPHERAL_FREQMHZ  {150.000000} \
+        CONFIG.PCW_ACT_FPGA0_PERIPHERAL_FREQMHZ  {100.000000} \
         CONFIG.PCW_ACT_FPGA1_PERIPHERAL_FREQMHZ  {10.000000} \
         CONFIG.PCW_ACT_FPGA2_PERIPHERAL_FREQMHZ  {10.000000} \
         CONFIG.PCW_ACT_FPGA3_PERIPHERAL_FREQMHZ  {25.000000} \
@@ -91,8 +91,8 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_ARMPLL_CTRL_FBDIV             {40} \
         CONFIG.PCW_CAN_PERIPHERAL_DIVISOR0       {1} \
         CONFIG.PCW_CAN_PERIPHERAL_DIVISOR1       {1} \
-        CONFIG.PCW_CLK0_FREQ   {150000000} \
-        CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ      {150} \
+        CONFIG.PCW_CLK0_FREQ   {100000000} \
+        CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ      {100} \
         CONFIG.PCW_CLK1_FREQ   {10000000} \
         CONFIG.PCW_CLK2_FREQ   {10000000} \
         CONFIG.PCW_CLK3_FREQ   {25000000} \
@@ -504,6 +504,12 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_regs_0/torque_word_o] \
         [get_bd_pins hil_axi_top_0/torque_word_i]
 
+    # Espelho de debug por dentro do HIL_Regs_AXI, que ja provou responder no AXI.
+    # Isto permite separar falha do AXI GPIO monitor de falha real no HIL_AXI_Top.
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/ialpha_mon_o] \
+        [get_bd_pins hil_regs_0/debug0_i]
+
     # ── HIL module → PS7 : interrupção de portadora (1 kHz) ──────────────────
     connect_bd_net \
         [get_bd_pins hil_axi_top_0/carrier_tick_o] \
@@ -642,7 +648,7 @@ puts ""
 puts "============================================================"
 puts " Projeto criado: $proj_dir"
 puts " BD: ebaz4205  |  Top: ebaz4205_wrapper"
-puts " FCLK0=50MHz, FCLK3=25MHz, ENET0 EMIO, LED via GPIO_O[1:0]"
+puts " FCLK0=100MHz, FCLK3=25MHz, ENET0 EMIO, LED via GPIO_O[1:0]"
 puts "============================================================"
 
 # =============================================================================
@@ -763,9 +769,7 @@ puts "   sim_bsu_compare: tb_BSU_StubVsIP"
 puts ""
 puts " Infraestrutura HIL PS<->PL:"
 puts "   HIL_AXI_Top    : NPCManager + NPC->Voltage + TIM_Solver"
-puts "   AXI GPIO escrita: axi_gpio_vref_ab   (va,vb)"
-puts "                     axi_gpio_vref_c    (vc, pwm_ctrl)"
-puts "                     axi_gpio_vdc_torque (vdc, torque)"
+puts "   HIL_Regs_AXI    : va/vb/vc, pwm_ctrl, vdc, torque, debug readback"
 puts "   AXI GPIO leitura: axi_gpio_monitor_{1,2,3} (ialpha,ibeta,flux,speed)"
 puts "   IRQ_F2P\[0\]    : carrier_tick_o (1 kHz, 1 pulso/periodo)"
 puts "   AXI DMA S2MM   : axi_dma_0 (256b stream -> HP0 -> DDR)"

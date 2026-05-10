@@ -14,6 +14,13 @@ if pgrep -x picocom > /dev/null; then
     sleep 0.5
 fi
 
+# ── garante que o driver FTDI está carregado ──────────────────────────────────
+if ! lsmod | grep -q ftdi_sio; then
+    echo "Carregando módulo ftdi_sio..."
+    sudo modprobe ftdi_sio
+    sleep 0.5
+fi
+
 # ── coleta dispositivos ────────────────────────────────────────────────────────
 mapfile -t PORTS < <(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null)
 

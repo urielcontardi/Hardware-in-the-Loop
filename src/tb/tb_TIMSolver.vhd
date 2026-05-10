@@ -114,8 +114,12 @@ Begin
         ibeta_o             => ibeta_o,                
         flux_rotor_alpha_o  => flux_rotor_alpha_o, 
         flux_rotor_beta_o   => flux_rotor_beta_o,       
-        speed_mech_o        => speed_mech_o,        
-        data_valid_o        => data_valid_o
+        speed_mech_o        => speed_mech_o,
+        data_valid_o        => data_valid_o,
+        timer_tick_dbg_o    => open,
+        clarke_valid_dbg_o  => open,
+        solver_busy_dbg_o   => open,
+        solver_done_dbg_o   => open
     );
 
     --------------------------------------------------------------------------
