@@ -59,3 +59,9 @@ func (r *Ring) PopN(dst []frame.Sample) int {
 func (r *Ring) Len() int {
 	return int(r.head.Load() - r.tail.Load())
 }
+
+// Clear drops all buffered samples. It is used when the telemetry stream is
+// intentionally stopped so stale samples are not plotted after Stop/Detach.
+func (r *Ring) Clear() {
+	r.tail.Store(r.head.Load())
+}

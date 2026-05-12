@@ -14,9 +14,11 @@ import (
 
 // Stats holds atomic counters readable from any goroutine.
 type Stats struct {
+	PacketsRaw atomic.Uint64
 	SamplesRx  atomic.Uint64
 	Dropped    atomic.Uint64 // ring full
 	CRCErrors  atomic.Uint64
+	Invalid    atomic.Uint64
 	SeqMissed  atomic.Uint64 // gaps in sequence numbers
 	PacketsRx  atomic.Uint64
 }
@@ -59,6 +61,19 @@ func (rv *Receiver) Stop() {
 	}
 }
 
+// Punch sends a tiny packet from the telemetry UDP socket. This keeps stateful
+// firewalls/NATs open for the reverse telemetry stream without touching data.
+func (rv *Receiver) Punch(ip string, port int) {
+	if rv.conn == nil || ip == "" {
+		return
+	}
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, port))
+	if err != nil {
+		return
+	}
+	_, _ = rv.conn.WriteToUDP([]byte("HIL_TELEM_PUNCH"), addr)
+}
+
 func (rv *Receiver) loop() {
 	buf := make([]byte, 4096)
 	var lastSeq uint32
@@ -80,12 +95,16 @@ func (rv *Receiver) loop() {
 				continue
 			}
 		}
+		rv.Stats.PacketsRaw.Add(1)
 
 		f, err := frame.Decode(buf[:n])
 		if err != nil {
 			if err == frame.ErrCRC {
 				rv.Stats.CRCErrors.Add(1)
 				log.Printf("receiver: CRC error (packet dropped)")
+			} else {
+				rv.Stats.Invalid.Add(1)
+				log.Printf("receiver: invalid telemetry packet: %v", err)
 			}
 			continue
 		}

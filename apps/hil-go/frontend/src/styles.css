@@ -15,7 +15,7 @@
   --ok:          #00e890;
   --r:           5px;
   --topbar-h:    70px;
-  --sidebar-w:   268px;
+  --sidebar-w:   300px;
   --toolbar-h:   36px;
 }
 
@@ -132,6 +132,50 @@ body {
   border: 1px solid #600020;
 }
 
+/* ── STATE BADGE (FSM: idle / running / paused / stopped / offline) ──── */
+.state-badge {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  padding: 4px 12px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  min-width: 76px;
+  text-align: center;
+}
+
+.state-idle {
+  background: #0a1626;
+  color: #5a7898;
+  border: 1px solid #1a2e44;
+}
+
+.state-running {
+  background: #002a18;
+  color: var(--ok);
+  border: 1px solid #006038;
+  box-shadow: 0 0 8px rgba(0, 232, 144, 0.18);
+}
+
+.state-paused {
+  background: #2a1d00;
+  color: var(--warn);
+  border: 1px solid #6a4a00;
+}
+
+.state-stopped {
+  background: #2e0010;
+  color: var(--danger);
+  border: 1px solid #700020;
+}
+
+.state-offline {
+  background: #1a1a1a;
+  color: var(--muted);
+  border: 1px solid #303030;
+}
+
 /* ── WORKSPACE ────────────────────────────────── */
 .workspace {
   flex: 1;
@@ -224,7 +268,19 @@ body {
 }
 .btn-danger:hover { background: #450018; border-color: var(--danger); }
 
+.btn-warn {
+  background: #2a1d00;
+  border-color: #6a4a00;
+  color: var(--warn);
+}
+.btn-warn:hover { background: #3d2a00; border-color: var(--warn); }
+
 .btn-sm { font-size: 11px; padding: 4px 10px; flex: none; }
+
+/* 3-col control row for Run/Pause/Stop */
+.btn-row-3 {
+  grid-template-columns: repeat(3, 1fr) !important;
+}
 
 .btn-write {
   background: #0a1b2e;
