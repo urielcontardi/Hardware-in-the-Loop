@@ -1,6 +1,7 @@
 #include "gpio.h"
 #include "vf_ctrl.h"
 #include "telemetry.h"
+#include "dma_telem.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,6 +98,17 @@ static void cancel_timer(void)
 static pthread_t telem_tid;
 static volatile int telem_active = 0;
 
+/*
+ * DMA telemetry thread — transfers DMA_BURST_FRAMES samples per DMA call,
+ * then pushes each sample through the UDP telemetry path. Falls back to
+ * the legacy GPIO-polling path if DMA init fails.
+ *
+ * Rate:
+ *   DMA burst = 512 frames at ~10 kHz → each transfer takes ~51 ms.
+ *   Push 512 samples per burst → 512 × 32 samples/packet → ~16 UDP packets.
+ */
+static int use_dma = 0;    /* set to 1 if DMA init succeeds */
+
 static void *telem_thread_fn(void *arg)
 {
     (void)arg;
@@ -105,24 +117,53 @@ static void *telem_thread_fn(void *arg)
     sigaddset(&set, SIGRTMIN);
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000 }; /* 100 µs → 10 kHz */
+    if (use_dma) {
+        /* ── DMA path ──────────────────────────────────────────────── */
+        dma_sample_t dma_buf[DMA_BURST_FRAMES];
 
-    while (running && telem_active) {
-        nanosleep(&ts, NULL);
+        while (running && telem_active) {
+            int n = dma_telem_transfer(dma_buf, 500 /* ms timeout */);
+            if (n <= 0) {
+                /* DMA error — short sleep and retry */
+                usleep(10000);
+                continue;
+            }
 
-        vf_params_t p;
-        vf_get_params(&p);
-        uint8_t flags = (uint8_t)((p.enable & 0x01)
-                       | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
+            vf_params_t p;
+            vf_get_params(&p);
+            uint8_t flags = (uint8_t)((p.enable & 0x01)
+                           | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
 
-        telem_push(
-            (float)gpio_get_ialpha()     * MON_SCALE,
-            (float)gpio_get_ibeta()      * MON_SCALE,
-            (float)gpio_get_flux_alpha() * MON_SCALE,
-            (float)gpio_get_flux_beta()  * MON_SCALE,
-            (float)gpio_get_speed()      * MON_SCALE,
-            flags
-        );
+            for (int i = 0; i < n && telem_active; i++) {
+                telem_push(dma_buf[i].ialpha,
+                           dma_buf[i].ibeta,
+                           dma_buf[i].flux_alpha,
+                           dma_buf[i].flux_beta,
+                           dma_buf[i].speed,
+                           flags);
+            }
+        }
+    } else {
+        /* ── GPIO fallback — 10 kHz polling ────────────────────────── */
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000 }; /* 100 µs */
+
+        while (running && telem_active) {
+            nanosleep(&ts, NULL);
+
+            vf_params_t p;
+            vf_get_params(&p);
+            uint8_t flags = (uint8_t)((p.enable & 0x01)
+                           | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
+
+            telem_push(
+                (float)gpio_get_ialpha()     * MON_SCALE,
+                (float)gpio_get_ibeta()      * MON_SCALE,
+                (float)gpio_get_flux_alpha() * MON_SCALE,
+                (float)gpio_get_flux_beta()  * MON_SCALE,
+                (float)gpio_get_speed()      * MON_SCALE,
+                flags
+            );
+        }
     }
     return NULL;
 }
@@ -514,6 +555,14 @@ int main(void)
     if (vf_init()   < 0)  return 1;
     if (setup_1khz_timer() < 0) return 1;
 
+    /* Try DMA telemetry; fall back to GPIO polling if unavailable */
+    if (dma_telem_init() == 0) {
+        use_dma = 1;
+        printf("Telemetry: DMA path active (synchronized, 42-bit full precision)\n");
+    } else {
+        printf("Telemetry: DMA unavailable, using GPIO polling fallback\n");
+    }
+
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return 1; }
 
@@ -554,6 +603,7 @@ int main(void)
     stop_discovery();
     cancel_timer();
     stop_telem_thread();
+    if (use_dma) dma_telem_deinit();
     vf_deinit();
     gpio_deinit();
     close(sock);
