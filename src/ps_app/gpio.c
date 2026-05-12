@@ -89,11 +89,13 @@ void gpio_set_vref(int32_t va, int32_t vb, int32_t vc)
     gpio_write(ADDR_HIL_REGS, REG_VC_REF, (uint32_t)vc);
 }
 
-void gpio_set_pwm_ctrl(int enable, int clear_fault, uint32_t decim_ratio)
+void gpio_set_pwm_ctrl(int enable, int clear_fault, int solver_reset,
+                       uint32_t decim_ratio)
 {
     uint32_t val = 0;
-    if (enable)      val |= PWM_CTRL_ENABLE;
-    if (clear_fault) val |= PWM_CTRL_CLEAR_FAULT;
+    if (enable)       val |= PWM_CTRL_ENABLE;
+    if (clear_fault)  val |= PWM_CTRL_CLEAR_FAULT;
+    if (solver_reset) val |= PWM_CTRL_SOLVER_RESET;
     val |= (decim_ratio << PWM_CTRL_DECIM_SHIFT);
     gpio_write(ADDR_HIL_REGS, REG_PWM_CTRL, val);
 }
