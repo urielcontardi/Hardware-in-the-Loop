@@ -15,7 +15,7 @@
 
 TARGET      := hil_controller
 TARGET_TEST := test_fpga
-SRCS        := main.c gpio.c vf_ctrl.c telemetry.c
+SRCS        := main.c gpio.c vf_ctrl.c telemetry.c dma_telem.c
 CFLAGS  := -O2 -Wall -Wextra
 LDFLAGS := -lm -lpthread -lrt
 
