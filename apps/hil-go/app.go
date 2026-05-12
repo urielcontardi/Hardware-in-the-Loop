@@ -73,19 +73,17 @@ func (a *App) broadcastLoop() {
 func (a *App) SetParams(
 	ip string,
 	freqHz, vdcV, torqueNm float32,
-	baseFreqHz, maxVPu, boostVPu float32,
+	baseFreqHz, maxVPu, accelTimeSec float32,
 	enable bool, applyEnable bool,
-	decim int,
 	attachTelem bool,
 ) (*hilUDP.HilStatus, error) {
 	p := hilUDP.SetParams{
-		FreqHz:     &freqHz,
-		VdcV:       &vdcV,
-		TorqueNm:   &torqueNm,
-		BaseFreqHz: &baseFreqHz,
-		MaxVPu:     &maxVPu,
-		BoostVPu:   &boostVPu,
-		Decim:      &decim,
+		FreqHz:       &freqHz,
+		VdcV:         &vdcV,
+		TorqueNm:     &torqueNm,
+		BaseFreqHz:   &baseFreqHz,
+		MaxVPu:       &maxVPu,
+		AccelTimeSec: &accelTimeSec,
 	}
 	if applyEnable {
 		en := 0
@@ -124,6 +122,13 @@ func (a *App) StopController(ip string) (*hilUDP.HilStatus, error) {
 		a.ring.Clear()
 	}
 	return status, err
+}
+
+// ResetSolver clears the FPGA TIM_Solver integrator states. Used between
+// runs when the previous experiment left the rotor flux/speed in a state
+// that masks the new excitation.
+func (a *App) ResetSolver(ip string) (*hilUDP.HilStatus, error) {
+	return hilUDP.ResetSolver(ip)
 }
 
 // AttachTelemetry tells the board to push telemetry to this PC.

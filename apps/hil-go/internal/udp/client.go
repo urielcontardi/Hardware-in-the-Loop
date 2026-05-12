@@ -54,11 +54,12 @@ type HilStatus struct {
 	FluxAlphaWb      float32 `json:"flux_alpha_Wb"`
 	FluxBetaWb       float32 `json:"flux_beta_Wb"`
 	FreqHz           float32 `json:"freq_hz"`
+	FreqActualHz     float32 `json:"freq_actual_hz"`
 	VdcV             float32 `json:"vdc_v"`
 	TorqueNm         float32 `json:"torque_nm"`
 	BaseFreqHz       float32 `json:"base_freq_hz"`
 	MaxVPu           float32 `json:"max_v_pu"`
-	BoostVPu         float32 `json:"boost_v_pu"`
+	AccelTimeSec     float32 `json:"accel_time_s"`
 	Enable           int     `json:"enable"`
 	TelemDst         string  `json:"telem_dst"`
 	TelemActive      int     `json:"telem_active"`
@@ -81,15 +82,15 @@ type DiscoveryResponse struct {
 // SetParams: fields sent with {"cmd":"set"}. Pointers so we can omit fields
 // the user did not touch (and let the board keep the previous value).
 type SetParams struct {
-	FreqHz     *float32 `json:"freq_hz,omitempty"`
-	VdcV       *float32 `json:"vdc_v,omitempty"`
-	TorqueNm   *float32 `json:"torque_nm,omitempty"`
-	BaseFreqHz *float32 `json:"base_freq_hz,omitempty"`
-	MaxVPu     *float32 `json:"max_v_pu,omitempty"`
-	BoostVPu   *float32 `json:"boost_v_pu,omitempty"`
-	Enable     *int     `json:"enable,omitempty"`
-	Decim      *int     `json:"decim,omitempty"`
-	TelemDst   string   `json:"telem_dst,omitempty"`
+	FreqHz       *float32 `json:"freq_hz,omitempty"`
+	VdcV         *float32 `json:"vdc_v,omitempty"`
+	TorqueNm     *float32 `json:"torque_nm,omitempty"`
+	BaseFreqHz   *float32 `json:"base_freq_hz,omitempty"`
+	MaxVPu       *float32 `json:"max_v_pu,omitempty"`
+	AccelTimeSec *float32 `json:"accel_time_s,omitempty"`
+	Enable       *int     `json:"enable,omitempty"`
+	Decim        *int     `json:"decim,omitempty"`
+	TelemDst     string   `json:"telem_dst,omitempty"`
 }
 
 func sendRecv(ip string, payload []byte) (*HilStatus, error) {
@@ -244,8 +245,8 @@ func Set(ip string, p SetParams) (*HilStatus, error) {
 	if p.MaxVPu != nil {
 		payload["max_v_pu"] = *p.MaxVPu
 	}
-	if p.BoostVPu != nil {
-		payload["boost_v_pu"] = *p.BoostVPu
+	if p.AccelTimeSec != nil {
+		payload["accel_time_s"] = *p.AccelTimeSec
 	}
 	if p.Enable != nil {
 		payload["enable"] = *p.Enable
@@ -279,6 +280,14 @@ func Pause(ip string) (*HilStatus, error) {
 // Daemon stays alive — subsequent commands still work.
 func Stop(ip string) (*HilStatus, error) {
 	return sendRecv(ip, []byte(`{"cmd":"stop"}`))
+}
+
+// ResetSolver pulses the FPGA solver_reset bit, zeroing the integrator
+// states (currents, fluxes, speed) without clobbering the V/F params.
+// Leaves the motor disabled (board reports PAUSED) so the user can
+// inspect the cleared state before the next Run.
+func ResetSolver(ip string) (*HilStatus, error) {
+	return sendRecv(ip, []byte(`{"cmd":"reset"}`))
 }
 
 // Telem (re)configures the telemetry push destination.

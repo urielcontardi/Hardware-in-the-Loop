@@ -539,6 +539,24 @@ body {
 /* ── PS CONTROL PANEL ─────────────────────────────── */
 .panel-ps { margin-top: 4px; }
 
+/* ── ADVANCED DETAILS ─────────────────────────── */
+.adv-details {
+  margin-top: 4px;
+}
+.adv-summary {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+  list-style: none;
+}
+.adv-summary::-webkit-details-marker { display: none; }
+.adv-details[open] .adv-summary { color: var(--accent); }
+.adv-details[open] .adv-summary::before { content: "▾ "; }
+.adv-details:not([open]) .adv-summary::before { content: "▸ "; }
+
 .field-inline {
   display: flex;
   align-items: center;
