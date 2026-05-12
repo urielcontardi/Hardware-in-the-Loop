@@ -9,7 +9,9 @@
 --   0x00  va_ref           write — signed int32, ±CARRIER_MAX
 --   0x04  vb_ref           write
 --   0x08  vc_ref           write
---   0x0C  pwm_ctrl         write — bit0=enable, bit1=clear_fault, [31:2]=decim
+--   0x0C  pwm_ctrl         write — bit0=enable, bit1=clear_fault,
+--                                   bit2=solver_reset (1=hold solver in reset),
+--                                   [31:3]=decim ratio
 --   0x10  vdc_word         write — Q18.14 signed (V)
 --   0x14  torque_word      write — Q18.14 signed (N·m)
 --   0x18  DEBUG_MAGIC      read  — 0x48494C52 ("HILR"), prova bitstream certo
