@@ -11,8 +11,9 @@ type HilStatus = {
   state: "idle" | "running" | "paused" | "stopped" | string;
   speed_rad_s: number; ialpha_A: number; ibeta_A: number;
   flux_alpha_Wb: number; flux_beta_Wb: number;
-  freq_hz: number; vdc_v: number; torque_nm: number;
-  base_freq_hz: number; max_v_pu: number; boost_v_pu: number;
+  freq_hz: number; freq_actual_hz: number;
+  vdc_v: number; torque_nm: number;
+  base_freq_hz: number; max_v_pu: number; accel_time_s: number;
   enable: number;
   telem_dst: string;
   telem_active: number;
@@ -33,11 +34,12 @@ type DiscoveryResponse = {
 type HilApi = {
   onTelemetry(cb: (samples: Sample[]) => void): void;
   DiscoverBoard(ip?: string): Promise<DiscoveryResponse>;
-  SetParams(ip: string, freqHz: number, vdcV: number, torqueNm: number, baseFreqHz: number, maxVPu: number, boostVPu: number, enable: boolean, applyEnable: boolean, decim: number, attachTelem: boolean): Promise<HilStatus>;
+  SetParams(ip: string, freqHz: number, vdcV: number, torqueNm: number, baseFreqHz: number, maxVPu: number, accelTimeSec: number, enable: boolean, applyEnable: boolean, attachTelem: boolean): Promise<HilStatus>;
   GetStatus(ip: string): Promise<HilStatus>;
   Run(ip: string): Promise<HilStatus>;
   Pause(ip: string): Promise<HilStatus>;
   StopController(ip: string): Promise<HilStatus>;
+  ResetSolver(ip: string): Promise<HilStatus>;
   AttachTelemetry(ip: string): Promise<HilStatus>;
   DetachTelemetry(ip: string): Promise<HilStatus>;
   GetStats(): Promise<Record<string, number>>;
@@ -89,6 +91,7 @@ const api: HilApi = isWails ? {
   Run: WailsApp.Run as HilApi["Run"],
   Pause: WailsApp.Pause as HilApi["Pause"],
   StopController: WailsApp.StopController as HilApi["StopController"],
+  ResetSolver: WailsApp.ResetSolver as HilApi["ResetSolver"],
   AttachTelemetry: WailsApp.AttachTelemetry as HilApi["AttachTelemetry"],
   DetachTelemetry(ip) {
     return WailsApp.StopController(ip) as Promise<HilStatus>;
@@ -111,7 +114,7 @@ const api: HilApi = isWails ? {
   DiscoverBoard(ip) {
     return postJSON<DiscoveryResponse>("/api/discover", { ip });
   },
-  SetParams(ip, freqHz, vdcV, torqueNm, baseFreqHz, maxVPu, boostVPu, enable, applyEnable, decim, attachTelem) {
+  SetParams(ip, freqHz, vdcV, torqueNm, baseFreqHz, maxVPu, accelTimeSec, enable, applyEnable, attachTelem) {
     const body: Record<string, unknown> = {
       ip,
       freq_hz: freqHz,
@@ -119,8 +122,7 @@ const api: HilApi = isWails ? {
       torque_nm: torqueNm,
       base_freq_hz: baseFreqHz,
       max_v_pu: maxVPu,
-      boost_v_pu: boostVPu,
-      decim,
+      accel_time_s: accelTimeSec,
       attach_udp: attachTelem,
     };
     if (applyEnable) body.enable = enable ? 1 : 0;
@@ -138,6 +140,9 @@ const api: HilApi = isWails ? {
   StopController(ip) {
     return postJSON<HilStatus>("/api/stop", { ip });
   },
+  ResetSolver(ip) {
+    return postJSON<HilStatus>("/api/reset", { ip });
+  },
   AttachTelemetry(ip) {
     return postJSON<HilStatus>("/api/attach", { ip });
   },
@@ -153,30 +158,60 @@ const api: HilApi = isWails ? {
 };
 
 // ── Channels ──────────────────────────────────────────────────────────────────
-const CHANNELS = [
-  { name: "Iα",    unit: "A",     color: "#4fc3f7", key: "Ia"    },
-  { name: "Iβ",    unit: "A",     color: "#ef9a9a", key: "Ib"    },
-  { name: "Φα",    unit: "Wb",    color: "#81c784", key: "FluxA" },
-  { name: "Φβ",    unit: "Wb",    color: "#ce93d8", key: "FluxB" },
-  { name: "Speed", unit: "rad/s", color: "#ffcc80", key: "Speed" },
-] as const;
-type ChKey = typeof CHANNELS[number]["key"];
-const N_CH = CHANNELS.length;
+// Storage is always αβ (matches what the board pushes); rendering may convert
+// to abc on-the-fly via the channel `read` function below.
+type ChDef = {
+  name: string;
+  unit: string;
+  color: string;
+  read: (s: Sample) => number;
+  defaultSubplot: number;
+};
+
+const SQRT3_2 = Math.sqrt(3) / 2;
+// Inverse Clarke (amplitude-invariant, matches FPGA convention):
+//   xa = xα, xb = -xα/2 + (√3/2)·xβ, xc = -xα/2 - (√3/2)·xβ
+const xa = (a: number, _b: number) => a;
+const xb = (a: number, b: number)  => -a / 2 + SQRT3_2 * b;
+const xc = (a: number, b: number)  => -a / 2 - SQRT3_2 * b;
+
+const CHANNELS_AB: ChDef[] = [
+  { name: "Iα",    unit: "A",     color: "#4fc3f7", read: s => s.Ia,    defaultSubplot: 0 },
+  { name: "Iβ",    unit: "A",     color: "#ef9a9a", read: s => s.Ib,    defaultSubplot: 0 },
+  { name: "Φα",    unit: "Wb",    color: "#81c784", read: s => s.FluxA, defaultSubplot: 1 },
+  { name: "Φβ",    unit: "Wb",    color: "#ce93d8", read: s => s.FluxB, defaultSubplot: 1 },
+  { name: "Speed", unit: "RPM",   color: "#ffcc80", read: s => s.Speed * 60 / (2 * Math.PI), defaultSubplot: 2 },
+];
+
+const CHANNELS_ABC: ChDef[] = [
+  { name: "Ia",    unit: "A",     color: "#4fc3f7", read: s => xa(s.Ia, s.Ib),       defaultSubplot: 0 },
+  { name: "Ib",    unit: "A",     color: "#ef9a9a", read: s => xb(s.Ia, s.Ib),       defaultSubplot: 0 },
+  { name: "Ic",    unit: "A",     color: "#ffd54f", read: s => xc(s.Ia, s.Ib),       defaultSubplot: 0 },
+  { name: "Φa",    unit: "Wb",    color: "#81c784", read: s => xa(s.FluxA, s.FluxB), defaultSubplot: 1 },
+  { name: "Φb",    unit: "Wb",    color: "#ce93d8", read: s => xb(s.FluxA, s.FluxB), defaultSubplot: 1 },
+  { name: "Φc",    unit: "Wb",    color: "#a5d6a7", read: s => xc(s.FluxA, s.FluxB), defaultSubplot: 1 },
+  { name: "Speed", unit: "RPM",   color: "#ffcc80", read: s => s.Speed * 60 / (2 * Math.PI), defaultSubplot: 2 },
+];
+
+const DISPLAY_MODE_STORAGE_KEY = "hil-display-mode";
+let displayMode: "ab" | "abc" = (localStorage.getItem(DISPLAY_MODE_STORAGE_KEY) as "ab" | "abc") || "abc";
+let CHANNELS: ChDef[] = displayMode === "abc" ? CHANNELS_ABC : CHANNELS_AB;
+let N_CH = CHANNELS.length;
 const MAX_SAMPLES = 100_000;
 
 // ── App state ─────────────────────────────────────────────────────────────────
-const tBuf: number[]    = [];
-const yBufs: number[][] = Array.from({ length: N_CH }, () => []);
+const tBuf: number[]      = [];
+const samplesBuf: Sample[] = [];   // raw αβ samples paralelos a tBuf
 let sampleCount = 0;
 let t0 = performance.now();
 let lastBoardState: string = "idle";
 let lastSampleAt = 0;             // ms — for "stream stalled" detection
 let liveMode = true;
 
-// Subplot state — default: Iα Iβ → plot 0, Φα Φβ Speed → plot 1
-let nSubplots = 2;
-const chSubplot = [0, 0, 1, 1, 1];
-const visible   = Array(N_CH).fill(true);
+// Subplot state — derived from each channel's defaultSubplot.
+let nSubplots = 3;
+let chSubplot: number[] = CHANNELS.map(c => c.defaultSubplot);
+let visible:   boolean[] = Array(N_CH).fill(true);
 
 // uPlot instances (one per subplot)
 let plots: uPlot[] = [];
@@ -194,6 +229,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </div>
     </div>
     <div class="topbar-right">
+      <div id="freq-badge" class="badge badge-idle" style="font-variant-numeric:tabular-nums">— Hz</div>
       <div id="state-badge" class="state-badge state-idle">IDLE</div>
       <div id="ws-badge" class="badge badge-idle">● TELEM OFF</div>
     </div>
@@ -218,33 +254,36 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <section class="panel">
         <div class="panel-title">PARAMETERS</div>
         <div class="field-inline">
-          <label>Freq (Hz)</label>
-          <input id="freq" type="number" value="60" min="0" max="200" step="1" class="write-input" />
+          <label>Speed (RPM)</label>
+          <input id="rpm" type="number" value="1800" min="0" max="12000" step="60" class="write-input" />
         </div>
         <div class="field-inline">
-          <label>Vdc (V)</label>
+          <label title="Tempo para rampar 0 → velocidade nominal">Accel (s)</label>
+          <input id="accel-time" type="number" value="5" min="0.1" max="300" step="0.5" class="write-input" />
+        </div>
+        <div class="field-inline">
+          <label title="Tensão do barramento DC do inversor">Vdc (V)</label>
           <input id="vdc" type="number" value="311" min="0" max="600" step="1" class="write-input" />
         </div>
         <div class="field-inline">
-          <label>Torque (N·m)</label>
-          <input id="torque" type="number" value="0" min="-50" max="50" step="0.1" class="write-input" />
+          <label title="Torque de carga mecânica aplicado ao rotor">Torque (N·m)</label>
+          <input id="torque" type="number" value="0" min="-200" max="200" step="1" class="write-input" />
         </div>
-        <div class="field-inline">
-          <label>Base Freq (Hz)</label>
-          <input id="base-freq" type="number" value="60" min="1" max="400" step="1" class="write-input" />
-        </div>
-        <div class="field-inline">
-          <label>Max V/F (pu)</label>
-          <input id="max-vpu" type="number" value="1" min="0" max="1" step="0.01" class="write-input" />
-        </div>
-        <div class="field-inline">
-          <label>Boost (pu)</label>
-          <input id="boost-vpu" type="number" value="0" min="0" max="1" step="0.01" class="write-input" />
-        </div>
-        <div class="field-inline">
-          <label>Decim</label>
-          <input id="decim" type="number" value="0" min="0" max="100000" step="1" class="write-input" />
-        </div>
+        <details class="adv-details">
+          <summary class="adv-summary">▸ Advanced</summary>
+          <div class="field-inline" style="margin-top:6px">
+            <label title="Número de pares de polos do motor">Pole pairs</label>
+            <input id="npp" type="number" value="2" min="1" max="8" step="1" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Velocidade síncrona nominal — tensão máxima é aplicada aqui">Rated RPM</label>
+            <input id="rated-rpm" type="number" value="1800" min="60" max="12000" step="60" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Tensão máxima de modulação em pu de Vdc/2">Max V/F (pu)</label>
+            <input id="max-vpu" type="number" value="1" min="0" max="1" step="0.01" class="write-input" />
+          </div>
+        </details>
         <div class="btn-row" style="margin-top:8px">
           <button id="btn-apply" class="btn btn-write">Apply Params</button>
         </div>
@@ -253,8 +292,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <section class="panel">
         <div class="panel-title">CONTROL</div>
         <div class="btn-row">
-          <button id="btn-run"   class="btn btn-primary" title="Enable motor with current params">▶ Run</button>
+          <button id="btn-run"   class="btn btn-primary" title="Enable motor with current params (also pulses solver reset)">▶ Run</button>
           <button id="btn-stop"  class="btn btn-danger" title="Disable motor, reset params (daemon stays alive)">■ Stop</button>
+        </div>
+        <div class="btn-row" style="margin-top:6px">
+          <button id="btn-reset" class="btn btn-sm" title="Pulse FPGA solver reset — clears integrator states (currents/flux/speed) without changing params">⟲ Reset solver</button>
         </div>
         <div id="ps-status" class="ps-status hidden"></div>
       </section>
@@ -263,11 +305,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="panel-title">PLOTS</div>
 
         <div class="subplot-layout-row">
+          <span class="subplot-layout-label">Frame</span>
+          <div class="subplot-n-group" id="mode-group">
+            <button class="subplot-n-btn" data-mode="ab">αβ</button>
+            <button class="subplot-n-btn" data-mode="abc">abc</button>
+          </div>
+        </div>
+
+        <div class="subplot-layout-row">
           <span class="subplot-layout-label">Subplots</span>
           <div class="subplot-n-group">
             <button class="subplot-n-btn" data-n="1">1</button>
-            <button class="subplot-n-btn active" data-n="2">2</button>
-            <button class="subplot-n-btn" data-n="3">3</button>
+            <button class="subplot-n-btn" data-n="2">2</button>
+            <button class="subplot-n-btn active" data-n="3">3</button>
             <button class="subplot-n-btn" data-n="4">4</button>
           </div>
         </div>
@@ -277,14 +327,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div class="btn-row" style="margin-top:8px">
           <button id="btn-live" class="btn btn-sm">Live</button>
           <button id="btn-fit" class="btn btn-sm">Fit</button>
-          <button id="btn-clear" class="btn btn-sm">Clear plot</button>
-          <span id="sample-count" class="plot-info">0 samples</span>
+          <button id="btn-smooth" class="btn btn-sm" title="Filtro passa-baixa: remove ripple do PWM (janela 10 amostras = 1 período de 1kHz)">Smooth</button>
+          <button id="btn-clear" class="btn btn-sm">Clear</button>
         </div>
+        <span id="sample-count" class="plot-info">0 samples</span>
       </section>
 
       <section class="panel">
         <div class="panel-title">STATS</div>
         <div class="ps-telemetry">
+          <div class="ps-telem-row"><span class="ps-telem-label">Fs</span>      <span id="st-fs">—</span>     <span class="ps-telem-unit">Hz</span></div>
           <div class="ps-telem-row"><span class="ps-telem-label">Rx</span>      <span id="st-rx">—</span>     <span class="ps-telem-unit">samples</span></div>
           <div class="ps-telem-row"><span class="ps-telem-label">Packets</span> <span id="st-pkt">—</span>    <span class="ps-telem-unit">UDP</span></div>
           <div class="ps-telem-row"><span class="ps-telem-label">Dropped</span> <span id="st-drop">—</span>   <span class="ps-telem-unit">samples</span></div>
@@ -302,18 +354,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const elIp          = document.querySelector<HTMLInputElement>("#ip")!;
-const elFreq        = document.querySelector<HTMLInputElement>("#freq")!;
+const elRpm         = document.querySelector<HTMLInputElement>("#rpm")!;
+const elAccelTime   = document.querySelector<HTMLInputElement>("#accel-time")!;
 const elVdc         = document.querySelector<HTMLInputElement>("#vdc")!;
 const elTorque      = document.querySelector<HTMLInputElement>("#torque")!;
-const elBaseFreq    = document.querySelector<HTMLInputElement>("#base-freq")!;
+const elNpp         = document.querySelector<HTMLInputElement>("#npp")!;
+const elRatedRpm    = document.querySelector<HTMLInputElement>("#rated-rpm")!;
 const elMaxVPu      = document.querySelector<HTMLInputElement>("#max-vpu")!;
-const elBoostVPu    = document.querySelector<HTMLInputElement>("#boost-vpu")!;
-const elDecim       = document.querySelector<HTMLInputElement>("#decim")!;
 const elBtnConnect  = document.querySelector<HTMLButtonElement>("#btn-connect")!;
 const elBtnDiscover = document.querySelector<HTMLButtonElement>("#btn-discover")!;
 const elBtnApply    = document.querySelector<HTMLButtonElement>("#btn-apply")!;
 const elBtnRun      = document.querySelector<HTMLButtonElement>("#btn-run")!;
 const elBtnStop     = document.querySelector<HTMLButtonElement>("#btn-stop")!;
+const elBtnReset    = document.querySelector<HTMLButtonElement>("#btn-reset")!;
+const elFreqBadge   = document.querySelector<HTMLDivElement>("#freq-badge")!;
 const elBtnLive     = document.querySelector<HTMLButtonElement>("#btn-live")!;
 const elBtnFit      = document.querySelector<HTMLButtonElement>("#btn-fit")!;
 const elBtnClear    = document.querySelector<HTMLButtonElement>("#btn-clear")!;
@@ -330,64 +384,94 @@ const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
 
 // ── Subplot count selector ────────────────────────────────────────────────────
-document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn").forEach(btn => {
+document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-n]").forEach(btn => {
   btn.addEventListener("click", () => setNSubplots(Number(btn.dataset.n)));
 });
 
-// ── Channel list ──────────────────────────────────────────────────────────────
-const valSpans: HTMLSpanElement[]     = [];
-const subplotBadges: HTMLButtonElement[] = [];
-
-CHANNELS.forEach((ch, i) => {
-  const row = document.createElement("label");
-  row.className = "ch-row";
-
-  const dot = document.createElement("span");
-  dot.className = "ch-dot";
-  dot.style.background = ch.color;
-
-  const cb = document.createElement("input");
-  cb.type = "checkbox"; cb.checked = true; cb.className = "ch-cb";
-
-  const name = document.createElement("span");
-  name.className = "ch-name"; name.textContent = ch.name;
-
-  const val = document.createElement("span");
-  val.className = "ch-value"; val.textContent = "—";
-  valSpans.push(val);
-
-  const unit = document.createElement("span");
-  unit.className = "ch-unit"; unit.textContent = ch.unit;
-
-  const badge = document.createElement("button");
-  badge.className = "ch-subplot-badge";
-  badge.dataset.sp = String(chSubplot[i]);
-  badge.textContent = String(chSubplot[i] + 1);
-  badge.title = "Click to move to next subplot";
-  subplotBadges.push(badge);
-
-  row.append(dot, cb, name, val, unit, badge);
-  elChList.append(row);
-
-  cb.addEventListener("change", () => {
-    visible[i] = cb.checked;
-    const s = chSubplot[i];
-    if (s < plots.length) {
-      const chIdx = getChIdx(s);
-      const seriesIdx = chIdx.indexOf(i) + 1;
-      if (seriesIdx > 0) plots[s].setSeries(seriesIdx, { show: cb.checked });
-    }
-  });
-
-  badge.addEventListener("click", e => {
-    e.preventDefault();
-    e.stopPropagation();
-    chSubplot[i] = (chSubplot[i] + 1) % nSubplots;
-    badge.textContent = String(chSubplot[i] + 1);
-    badge.dataset.sp  = String(chSubplot[i]);
-    buildPlots();
-  });
+// ── αβ ↔ abc toggle ───────────────────────────────────────────────────────────
+document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-mode]").forEach(btn => {
+  btn.classList.toggle("active", btn.dataset.mode === displayMode);
+  btn.addEventListener("click", () => setDisplayMode(btn.dataset.mode as "ab" | "abc"));
 });
+
+// ── Channel list ──────────────────────────────────────────────────────────────
+let valSpans: HTMLSpanElement[]     = [];
+let subplotBadges: HTMLButtonElement[] = [];
+
+function buildChannelList() {
+  elChList.innerHTML = "";
+  valSpans = [];
+  subplotBadges = [];
+
+  CHANNELS.forEach((ch, i) => {
+    const row = document.createElement("label");
+    row.className = "ch-row";
+
+    const dot = document.createElement("span");
+    dot.className = "ch-dot";
+    dot.style.background = ch.color;
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = visible[i]; cb.className = "ch-cb";
+
+    const name = document.createElement("span");
+    name.className = "ch-name"; name.textContent = ch.name;
+
+    const val = document.createElement("span");
+    val.className = "ch-value"; val.textContent = "—";
+    valSpans.push(val);
+
+    const unit = document.createElement("span");
+    unit.className = "ch-unit"; unit.textContent = ch.unit;
+
+    const badge = document.createElement("button");
+    badge.className = "ch-subplot-badge";
+    badge.dataset.sp = String(chSubplot[i]);
+    badge.textContent = String(chSubplot[i] + 1);
+    badge.title = "Click to move to next subplot";
+    subplotBadges.push(badge);
+
+    row.append(dot, cb, name, val, unit, badge);
+    elChList.append(row);
+
+    cb.addEventListener("change", () => {
+      visible[i] = cb.checked;
+      const s = chSubplot[i];
+      if (s < plots.length) {
+        const chIdx = getChIdx(s);
+        const seriesIdx = chIdx.indexOf(i) + 1;
+        if (seriesIdx > 0) plots[s].setSeries(seriesIdx, { show: cb.checked });
+      }
+    });
+
+    badge.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      chSubplot[i] = (chSubplot[i] + 1) % nSubplots;
+      badge.textContent = String(chSubplot[i] + 1);
+      badge.dataset.sp  = String(chSubplot[i]);
+      buildPlots();
+    });
+  });
+}
+
+buildChannelList();
+
+function setDisplayMode(mode: "ab" | "abc") {
+  if (mode === displayMode) return;
+  displayMode = mode;
+  localStorage.setItem(DISPLAY_MODE_STORAGE_KEY, mode);
+  CHANNELS = mode === "abc" ? CHANNELS_ABC : CHANNELS_AB;
+  N_CH = CHANNELS.length;
+  chSubplot = CHANNELS.map(c => Math.min(c.defaultSubplot, nSubplots - 1));
+  visible = Array(N_CH).fill(true);
+  document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-mode]").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+  buildChannelList();
+  buildPlots();
+  scheduleRender();
+}
 
 // ── Subplot helpers ───────────────────────────────────────────────────────────
 function getChIdx(s: number): number[] {
@@ -400,7 +484,7 @@ function plotHeight(): number {
 
 function setNSubplots(n: number) {
   nSubplots = n;
-  document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn").forEach(b => {
+  document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-n]").forEach(b => {
     b.classList.toggle("active", Number(b.dataset.n) === n);
   });
   for (let i = 0; i < N_CH; i++) {
@@ -411,6 +495,91 @@ function setNSubplots(n: number) {
     }
   }
   buildPlots();
+}
+
+// Min/max decimation: for each bucket, emit the sample at the min AND max of
+// the primary channel (channel 0) in time order. This preserves the signal
+// envelope so AC waveforms don't alias into jagged noise at low zoom levels.
+// smoothWin > 1 activates a moving-average pre-filter that removes PWM
+// switching ripple. Win=10 ≈ one 1 kHz PWM period at 10 kHz sample rate.
+let smoothWin = 1;
+
+function decimateAndProject(maxPts: number): { xs: number[]; ys: number[][] } {
+  const n = tBuf.length;
+  if (n === 0) return { xs: [], ys: Array.from({ length: N_CH }, () => []) };
+
+  // Helper: return the smoothed value for channel c at index i.
+  // When smoothWin=1 this is just a direct read (no overhead).
+  const smoothed = smoothWin <= 1
+    ? (c: number, i: number) => CHANNELS[c].read(samplesBuf[i])
+    : (c: number, i: number) => {
+        const half = Math.floor(smoothWin / 2);
+        const lo = Math.max(0, i - half);
+        const hi = Math.min(n - 1, i + half);
+        let sum = 0;
+        for (let k = lo; k <= hi; k++) sum += CHANNELS[c].read(samplesBuf[k]);
+        return sum / (hi - lo + 1);
+      };
+
+  if (n <= maxPts) {
+    return {
+      xs: tBuf.slice(),
+      ys: Array.from({ length: N_CH }, (_, c) => samplesBuf.map((_, i) => smoothed(c, i))),
+    };
+  }
+
+  const buckets = Math.max(1, Math.floor(maxPts / 2));
+  const bucketSize = n / buckets;
+  const xs: number[] = [];
+  const ys: number[][] = Array.from({ length: N_CH }, () => []);
+
+  for (let b = 0; b < buckets; b++) {
+    const i0 = Math.floor(b * bucketSize);
+    const i1 = Math.min(Math.floor((b + 1) * bucketSize), n) - 1;
+    if (i0 > i1) continue;
+
+    if (smoothWin > 1) {
+      // In smooth mode: one point per bucket (mean), no min/max needed.
+      const mid = Math.floor((i0 + i1) / 2);
+      xs.push(tBuf[mid]);
+      for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, mid));
+    } else {
+      // Raw mode: min/max envelope to preserve AC waveform peaks.
+      let minIdx = i0, maxIdx = i0;
+      let minV = CHANNELS[0].read(samplesBuf[i0]);
+      let maxV = minV;
+      for (let i = i0 + 1; i <= i1; i++) {
+        const v = CHANNELS[0].read(samplesBuf[i]);
+        if (v < minV) { minV = v; minIdx = i; }
+        if (v > maxV) { maxV = v; maxIdx = i; }
+      }
+      const [first, second] = minIdx <= maxIdx ? [minIdx, maxIdx] : [maxIdx, minIdx];
+      xs.push(tBuf[first]);
+      for (let c = 0; c < N_CH; c++) ys[c].push(CHANNELS[c].read(samplesBuf[first]));
+      if (first !== second) {
+        xs.push(tBuf[second]);
+        for (let c = 0; c < N_CH; c++) ys[c].push(CHANNELS[c].read(samplesBuf[second]));
+      }
+    }
+  }
+
+  return { xs, ys };
+}
+
+// Shared cursor sync key — all subplots show the cursor at the same x position.
+const cursorSync = (uPlot as any).sync("hil");
+
+// X-axis sync guard — prevents recursive setScale loops when propagating.
+let scaleSyncing = false;
+
+function syncXScale(source: uPlot) {
+  if (scaleSyncing) return;
+  scaleSyncing = true;
+  const { min, max } = source.scales.x;
+  plots.forEach(p => { if (p !== source) p.setScale("x", { min: min ?? null, max: max ?? null }); });
+  // leaving live mode when user zooms/pans
+  if (min != null || max != null) liveMode = false;
+  scaleSyncing = false;
 }
 
 // ── Build / rebuild all uPlot instances ───────────────────────────────────────
@@ -425,15 +594,8 @@ function buildPlots() {
   const w = Math.max(400, elPlotArea.clientWidth);
   const h = plotHeight();
 
-  const n = tBuf.length;
   const maxPts = Math.max(600, w * 2);
-  const step = n <= maxPts ? 1 : Math.ceil(n / maxPts);
-  const xs: number[] = [];
-  const ys: number[][] = Array.from({ length: N_CH }, () => []);
-  for (let j = 0; j < n; j += step) {
-    xs.push(tBuf[j]);
-    for (let c = 0; c < N_CH; c++) ys[c].push(yBufs[c][j] ?? 0);
-  }
+  const { xs, ys } = decimateAndProject(maxPts);
 
   for (let s = 0; s < nSubplots; s++) {
     const chIdx = getChIdx(s);
@@ -448,17 +610,21 @@ function buildPlots() {
       stroke: CHANNELS[ci].color,
       width: 1.5,
       show: visible[ci],
-      value: opts => CHANNELS[ci].unit,
+      value: (_u: uPlot) => CHANNELS[ci].unit,
     }));
 
-    const yPos = chIdx.map(ci => CHANNELS[ci].name).join(", ");
+    const yLabel = chIdx.map(ci => CHANNELS[ci].unit).find(Boolean) ?? "Y";
 
     const p = new uPlot(
       {
         width: w,
         height: h,
         pxAlign: 0,
-        cursor: { show: true, drag: { x: true, y: false, uni: 50 } },
+        cursor: {
+          show: true,
+          drag: { x: true, y: false, uni: 50 },
+          sync: { key: cursorSync.key },
+        },
         scales: { x: { time: false } },
         axes: [
           { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" } },
@@ -466,11 +632,14 @@ function buildPlots() {
             stroke: "#3a5575",
             grid: { stroke: "#0e1d30", width: 1 },
             ticks: { stroke: "#0e1d30" },
-            label: yPos || "Y",
+            label: yLabel,
           },
         ],
         series,
         legend: { show: true, live: true },
+        hooks: {
+          setScale: [(u: uPlot, key: string) => { if (key === "x") syncXScale(u); }],
+        },
       },
       [xs, ...chIdx.map(ci => ys[ci])] as uPlot.AlignedData,
       wrap,
@@ -502,21 +671,17 @@ function scheduleRender() {
     renderPending = false;
     const w = elPlotArea.clientWidth || 800;
     const maxPts = Math.max(600, w * 2);
-    const n = tBuf.length;
-    const step = n <= maxPts ? 1 : Math.ceil(n / maxPts);
-
-    const xs: number[] = [];
-    const ys: number[][] = Array.from({ length: N_CH }, () => []);
-    for (let i = 0; i < n; i += step) {
-      xs.push(tBuf[i]);
-      for (let c = 0; c < N_CH; c++) ys[c].push(yBufs[c][i] ?? 0);
-    }
+    const { xs, ys } = decimateAndProject(maxPts);
 
     plots.forEach((p, s) => {
       const chIdx = getChIdx(s);
       p.setData([xs, ...chIdx.map(ci => ys[ci])] as uPlot.AlignedData);
-      if (liveMode) p.setScale("x", { min: null, max: null });
     });
+    if (liveMode) {
+      scaleSyncing = true;
+      plots.forEach(p => p.setScale("x", { min: null, max: null }));
+      scaleSyncing = false;
+    }
 
     elSampleCount.textContent = `${sampleCount.toLocaleString()} samples`;
   });
@@ -530,19 +695,19 @@ api.onTelemetry((samples: Sample[]) => {
   for (const s of samples) {
     const t = (performance.now() - t0) / 1000;
     tBuf.push(t);
-    CHANNELS.forEach((ch, i) => yBufs[i].push(s[ch.key as ChKey]));
+    samplesBuf.push(s);
     sampleCount++;
   }
 
   if (tBuf.length > MAX_SAMPLES) {
     const drop = tBuf.length - MAX_SAMPLES;
     tBuf.splice(0, drop);
-    for (let i = 0; i < N_CH; i++) yBufs[i].splice(0, drop);
+    samplesBuf.splice(0, drop);
   }
 
   const last = samples[samples.length - 1];
   CHANNELS.forEach((ch, i) => {
-    valSpans[i].textContent = last[ch.key as ChKey].toFixed(4);
+    valSpans[i].textContent = ch.read(last).toFixed(4);
   });
 
   scheduleRender();
@@ -584,16 +749,20 @@ function setTelemBadge(active: boolean, stalled: boolean) {
 }
 
 // ── Param push ────────────────────────────────────────────────────────────────
+function getNpp()  { return Math.max(1, Number(elNpp.value) || 2); }
+
 function readParams() {
+  const npp      = getNpp();
+  const rpm      = Number(elRpm.value);
+  const ratedRpm = Number(elRatedRpm.value) || 1800;
   return {
-    ip:     elIp.value.trim(),
-    freq:   Number(elFreq.value),
-    vdc:    Number(elVdc.value),
-    torque: Number(elTorque.value),
-    baseFreq: Number(elBaseFreq.value),
-    maxVPu: Number(elMaxVPu.value),
-    boostVPu: Number(elBoostVPu.value),
-    decim: Number(elDecim.value),
+    ip:        elIp.value.trim(),
+    freq:      rpm * npp / 60,        // electrical Hz
+    baseFreq:  ratedRpm * npp / 60,   // base electrical Hz (rated V at this freq)
+    vdc:       Number(elVdc.value),
+    torque:    Number(elTorque.value),
+    maxVPu:    Number(elMaxVPu.value),
+    accelTime: Number(elAccelTime.value),
   };
 }
 
@@ -630,12 +799,19 @@ function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
   // clobbering whatever the user typed in.
   const hydrate = opts.hydrate ?? (s.state !== "stopped" && s.state !== "idle");
   if (hydrate) {
-    if (s.freq_hz   != null) elFreq.value   = String(s.freq_hz);
-    if (s.vdc_v     != null) elVdc.value    = String(s.vdc_v);
-    if (s.torque_nm != null) elTorque.value = String(s.torque_nm);
-    if (s.base_freq_hz != null) elBaseFreq.value = String(s.base_freq_hz);
-    if (s.max_v_pu     != null) elMaxVPu.value   = String(s.max_v_pu);
-    if (s.boost_v_pu   != null) elBoostVPu.value = String(s.boost_v_pu);
+    const npp = getNpp();
+    if (s.freq_hz      != null) elRpm.value       = String(Math.round(s.freq_hz * 60 / npp));
+    if (s.base_freq_hz != null) elRatedRpm.value  = String(Math.round(s.base_freq_hz * 60 / npp));
+    if (s.vdc_v        != null) elVdc.value       = String(s.vdc_v);
+    if (s.torque_nm    != null) elTorque.value    = String(s.torque_nm);
+    if (s.max_v_pu     != null) elMaxVPu.value    = String(s.max_v_pu);
+    if (s.accel_time_s != null) elAccelTime.value = String(s.accel_time_s);
+  }
+  if (s.freq_actual_hz != null) {
+    const npp = getNpp();
+    const actualRpm = Math.round(s.freq_actual_hz * 60 / npp);
+    elFreqBadge.textContent = `${actualRpm} RPM`;
+    elFreqBadge.className = actualRpm > 0 ? "badge badge-streaming" : "badge badge-idle";
   }
   const tx = s.telem_packets_sent != null ? ` tx=${s.telem_packets_sent}` : "";
   const txErr = s.telem_send_errors ? ` tx_err=${s.telem_send_errors}` : "";
@@ -646,7 +822,7 @@ function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
 function resetPlotBuffer() {
   liveMode = true;
   tBuf.length = 0;
-  for (let i = 0; i < N_CH; i++) yBufs[i].length = 0;
+  samplesBuf.length = 0;
   sampleCount = 0;
   t0 = performance.now();
   plots.forEach((p, s) => {
@@ -681,9 +857,8 @@ elBtnConnect.addEventListener("click", () => withButton(elBtnConnect, async () =
 }));
 
 elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
-  const { ip, freq, vdc, torque, baseFreq, maxVPu, boostVPu, decim } = readParams();
-  // applyEnable=false → params only; do not toggle FSM
-  const s = await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, boostVPu, false, false, decim, true) as HilStatus;
+  const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
+  const s = await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, false) as HilStatus;
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
   setStatus("Params applied", "ok");
@@ -691,12 +866,9 @@ elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
 }));
 
 elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
-  const { ip, freq, vdc, torque, baseFreq, maxVPu, boostVPu, decim } = readParams();
-  // Each Run is a fresh experiment: clear the plot before the board starts
-  // pushing samples so the time axis restarts at 0.
+  const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
   resetPlotBuffer();
-  // Push current params first (so Run uses fresh values), then enable
-  await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, boostVPu, false, false, decim, true);
+  await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
   const s = await api.Run(ip) as HilStatus;
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
@@ -704,33 +876,52 @@ elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
   applyResponse(s);
 }));
 
+elBtnReset.addEventListener("click", () => withButton(elBtnReset, async () => {
+  const { ip } = readParams();
+  const s = await api.ResetSolver(ip) as HilStatus;
+  applyBoardIP(s.board_ip);
+  setStatus("Solver states reset", "ok");
+  applyResponse(s);
+}));
+
 elBtnStop.addEventListener("click", () => withButton(elBtnStop, async () => {
   const { ip } = readParams();
   const s = await api.StopController(ip) as HilStatus;
   applyBoardIP(s.board_ip);
-  // Board stops its telem thread on Stop — reflect it in the badge.
-  // The form values stay as the user typed them (applyResponse won't hydrate
-  // on the "stopped" state) so the next Run reuses the same config.
+  // Board stops its telem thread on Stop — reflect it in the badge. The plot
+  // is intentionally left intact so the user can inspect the last run; the
+  // next Run will clear it. Form values also stay (applyResponse won't
+  // hydrate on the "stopped" state).
   setTelemBadge(false, false);
-  resetPlotBuffer();
   setStatus("Stopped (daemon alive — can Run again)", "ok");
   applyResponse(s);
 }));
 
 function fitPlots() {
   liveMode = false;
+  scaleSyncing = true;
   plots.forEach(p => p.setScale("x", { min: null, max: null }));
+  scaleSyncing = false;
   setStatus("Plot fitted to buffered data", "ok");
 }
 
 function enableLiveMode() {
   liveMode = true;
+  scaleSyncing = true;
   plots.forEach(p => p.setScale("x", { min: null, max: null }));
-  setStatus("Live plot mode", "ok");
+  scaleSyncing = false;
+  setStatus("Live mode", "ok");
 }
 
 elBtnFit.addEventListener("click", fitPlots);
 elBtnLive.addEventListener("click", enableLiveMode);
+
+const elBtnSmooth = document.querySelector<HTMLButtonElement>("#btn-smooth")!;
+elBtnSmooth.addEventListener("click", () => {
+  smoothWin = smoothWin <= 1 ? 10 : 1;
+  elBtnSmooth.classList.toggle("active", smoothWin > 1);
+  scheduleRender();
+});
 
 function detachOnExit() {
   const ip = elIp.value.trim();
@@ -753,9 +944,17 @@ window.addEventListener("pagehide", detachOnExit);
 elBtnClear.addEventListener("click", resetPlotBuffer);
 
 // ── Stats polling ─────────────────────────────────────────────────────────────
+let prevSamplesRx = 0;
+let prevStatsAt   = performance.now();
 setInterval(async () => {
   try {
     const s = await api.GetStats() as Record<string, number>;
+    const now = performance.now();
+    const dt  = (now - prevStatsAt) / 1000;
+    const fs  = dt > 0 ? Math.round((s.samples_rx - prevSamplesRx) / dt) : 0;
+    prevSamplesRx = s.samples_rx;
+    prevStatsAt   = now;
+    (document.querySelector("#st-fs")   as HTMLElement).textContent = fs > 0 ? fs.toLocaleString() : "—";
     (document.querySelector("#st-rx")   as HTMLElement).textContent = s.samples_rx?.toLocaleString() ?? "—";
     (document.querySelector("#st-pkt")  as HTMLElement).textContent = s.packets_rx?.toLocaleString() ?? "—";
     (document.querySelector("#st-drop") as HTMLElement).textContent = s.dropped?.toLocaleString()    ?? "—";

@@ -38,16 +38,16 @@ type server struct {
 }
 
 type setRequest struct {
-	IP         string   `json:"ip"`
-	FreqHz     *float32 `json:"freq_hz,omitempty"`
-	VdcV       *float32 `json:"vdc_v,omitempty"`
-	TorqueNm   *float32 `json:"torque_nm,omitempty"`
-	BaseFreqHz *float32 `json:"base_freq_hz,omitempty"`
-	MaxVPu     *float32 `json:"max_v_pu,omitempty"`
-	BoostVPu   *float32 `json:"boost_v_pu,omitempty"`
-	Enable     *int     `json:"enable,omitempty"`
-	Decim      *int     `json:"decim,omitempty"`
-	AttachUDP  bool     `json:"attach_udp,omitempty"`
+	IP           string   `json:"ip"`
+	FreqHz       *float32 `json:"freq_hz,omitempty"`
+	VdcV         *float32 `json:"vdc_v,omitempty"`
+	TorqueNm     *float32 `json:"torque_nm,omitempty"`
+	BaseFreqHz   *float32 `json:"base_freq_hz,omitempty"`
+	MaxVPu       *float32 `json:"max_v_pu,omitempty"`
+	AccelTimeSec *float32 `json:"accel_time_s,omitempty"`
+	Enable       *int     `json:"enable,omitempty"`
+	Decim        *int     `json:"decim,omitempty"`
+	AttachUDP    bool     `json:"attach_udp,omitempty"`
 }
 
 type ipRequest struct {
@@ -88,6 +88,7 @@ func main() {
 	mux.HandleFunc("/api/run", s.handleRun)
 	mux.HandleFunc("/api/pause", s.handlePause)
 	mux.HandleFunc("/api/stop", s.handleStop)
+	mux.HandleFunc("/api/reset", s.handleReset)
 	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/events", s.handleEvents)
 
@@ -408,14 +409,14 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := hiludp.SetParams{
-		FreqHz:     req.FreqHz,
-		VdcV:       req.VdcV,
-		TorqueNm:   req.TorqueNm,
-		BaseFreqHz: req.BaseFreqHz,
-		MaxVPu:     req.MaxVPu,
-		BoostVPu:   req.BoostVPu,
-		Enable:     req.Enable,
-		Decim:      req.Decim,
+		FreqHz:       req.FreqHz,
+		VdcV:         req.VdcV,
+		TorqueNm:     req.TorqueNm,
+		BaseFreqHz:   req.BaseFreqHz,
+		MaxVPu:       req.MaxVPu,
+		AccelTimeSec: req.AccelTimeSec,
+		Enable:       req.Enable,
+		Decim:        req.Decim,
 	}
 	if req.AttachUDP {
 		p.TelemDst = s.localIP
@@ -440,6 +441,10 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handlePause(w http.ResponseWriter, r *http.Request) {
 	s.forwardCommand(w, r, hiludp.Pause)
+}
+
+func (s *server) handleReset(w http.ResponseWriter, r *http.Request) {
+	s.forwardCommand(w, r, hiludp.ResetSolver)
 }
 
 func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
