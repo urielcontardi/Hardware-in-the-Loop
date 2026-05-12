@@ -179,11 +179,11 @@ static int test_solver(void)
 
     gpio_set_vdc_torque(vdc_q, 0);
     gpio_set_vref(va, vb, vc);
-    gpio_set_pwm_ctrl(0, 1, 0);   /* clear_fault */
+    gpio_set_pwm_ctrl(0, 1, 0, 0);   /* clear_fault */
     ms_sleep(2);
     print_debug_snapshot("apos clear_fault");
 
-    gpio_set_pwm_ctrl(1, 0, 0);   /* enable */
+    gpio_set_pwm_ctrl(1, 0, 0, 0);   /* enable */
 
     uint32_t free0, carrier0, timer0, done0, status0, dv0;
     uint32_t free1, carrier1, timer1, done1, status1, dv1;
@@ -302,7 +302,7 @@ int main(void)
     int step3 = test_physical();
 
     /* Desliga o modulador antes de sair */
-    gpio_set_pwm_ctrl(0, 0, 0);
+    gpio_set_pwm_ctrl(0, 0, 0, 0);
     gpio_set_vref(0, 0, 0);
     gpio_set_vdc_torque(0, 0);
     gpio_deinit();

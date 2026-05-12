@@ -105,7 +105,7 @@ static void *telem_thread_fn(void *arg)
     sigaddset(&set, SIGRTMIN);
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000 }; /* 1 ms */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000 }; /* 100 µs → 10 kHz */
 
     while (running && telem_active) {
         nanosleep(&ts, NULL);
@@ -161,6 +161,11 @@ static void ensure_telem_to(const char *ip)
 
 static void apply_run(void)
 {
+    /* Zera estados integradores do solver antes de cada partida — caso
+     * contrário fluxos/correntes do run anterior podem mascarar a nova
+     * excitação (constantes de tempo do rotor podem ser de segundos). */
+    vf_reset_solver();
+
     vf_params_t p;
     vf_get_params(&p);
     p.enable = 1;
@@ -187,13 +192,16 @@ static void apply_stop(void)
         .freq_hz      = 0.0f,
         .vdc_v        = 300.0f,
         .torque_nm    = 0.0f,
-        .base_freq_hz = 50.0f,
+        .base_freq_hz = 60.0f,
         .max_v_pu     = 1.0f,
-        .boost_v_pu   = 0.0f,
+        .accel_time_s = 5.0f,
         .enable       = 0,
         .decim        = 0,
     };
     vf_set_params(&p);
+    /* Zera os estados integradores para que monitor leituras imediatamente
+     * após o Stop reflitam o solver parado, não o último ponto operacional. */
+    vf_reset_solver();
     hil_state = HIL_STOPPED;
 }
 
@@ -210,6 +218,8 @@ static void apply_stop(void)
  *   RUN:      {"cmd":"run"}    — enable motor with current params
  *   PAUSE:    {"cmd":"pause"}  — disable motor, keep params
  *   STOP:     {"cmd":"stop"}   — disable motor, reset params (daemon stays)
+ *   RESET:    {"cmd":"reset"}  — pulse solver_reset to zero integrator states,
+ *                                keep params; FSM goes to PAUSED.
  *   TELEM:    {"cmd":"telem","dst":"<ip>"} — set telemetry destination
  *   SHUTDOWN: {"cmd":"shutdown"} — terminate daemon process
  *   PING:     {"cmd":"ping"}   — lightweight health check
@@ -248,11 +258,12 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
         "\"flux_alpha_Wb\":%.4f,"
         "\"flux_beta_Wb\":%.4f,"
         "\"freq_hz\":%.2f,"
+        "\"freq_actual_hz\":%.2f,"
         "\"vdc_v\":%.2f,"
         "\"torque_nm\":%.4f,"
         "\"base_freq_hz\":%.2f,"
         "\"max_v_pu\":%.4f,"
-        "\"boost_v_pu\":%.4f,"
+        "\"accel_time_s\":%.2f,"
         "\"enable\":%d,"
         "\"telem_dst\":\"%s\","
         "\"telem_active\":%d,"
@@ -265,8 +276,9 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
         (float)gpio_get_ibeta()      * MON_SCALE,
         (float)gpio_get_flux_alpha() * MON_SCALE,
         (float)gpio_get_flux_beta()  * MON_SCALE,
-        p.freq_hz, p.vdc_v, p.torque_nm,
-        p.base_freq_hz, p.max_v_pu, p.boost_v_pu,
+        p.freq_hz, vf_get_freq_actual(),
+        p.vdc_v, p.torque_nm,
+        p.base_freq_hz, p.max_v_pu, p.accel_time_s,
         p.enable,
         telem_dst_ip,
         telem_active,
@@ -288,14 +300,14 @@ static void handle_packet(int sock, const char *buf,
         int explicit_enable = 0;
         int new_enable = p.enable;
 
-        if ((ptr = strstr(buf, "\"freq_hz\":")))    sscanf(ptr + 10, "%f", &p.freq_hz);
-        if ((ptr = strstr(buf, "\"vdc_v\":")))       sscanf(ptr + 8,  "%f", &p.vdc_v);
-        if ((ptr = strstr(buf, "\"torque_nm\":")))   sscanf(ptr + 12, "%f", &p.torque_nm);
-        if ((ptr = strstr(buf, "\"base_freq_hz\":"))) sscanf(ptr + 15, "%f", &p.base_freq_hz);
-        if ((ptr = strstr(buf, "\"max_v_pu\":")))     sscanf(ptr + 11, "%f", &p.max_v_pu);
-        if ((ptr = strstr(buf, "\"boost_v_pu\":")))   sscanf(ptr + 13, "%f", &p.boost_v_pu);
-        if ((ptr = strstr(buf, "\"decim\":")))       { int d; sscanf(ptr + 8, "%d", &d); p.decim = d; }
-        if ((ptr = strstr(buf, "\"enable\":")))      { sscanf(ptr + 9, "%d", &new_enable); explicit_enable = 1; }
+        if ((ptr = strstr(buf, "\"freq_hz\":")))       sscanf(ptr + 10, "%f", &p.freq_hz);
+        if ((ptr = strstr(buf, "\"vdc_v\":")))         sscanf(ptr + 8,  "%f", &p.vdc_v);
+        if ((ptr = strstr(buf, "\"torque_nm\":")))     sscanf(ptr + 12, "%f", &p.torque_nm);
+        if ((ptr = strstr(buf, "\"base_freq_hz\":")))  sscanf(ptr + 15, "%f", &p.base_freq_hz);
+        if ((ptr = strstr(buf, "\"max_v_pu\":")))      sscanf(ptr + 11, "%f", &p.max_v_pu);
+        if ((ptr = strstr(buf, "\"accel_time_s\":")))  sscanf(ptr + 15, "%f", &p.accel_time_s);
+        if ((ptr = strstr(buf, "\"decim\":")))        { int d; sscanf(ptr + 8, "%d", &d); p.decim = d; }
+        if ((ptr = strstr(buf, "\"enable\":")))       { sscanf(ptr + 9, "%d", &new_enable); explicit_enable = 1; }
 
         if (explicit_enable) p.enable = new_enable ? 1 : 0;
         vf_set_params(&p);
@@ -305,8 +317,8 @@ static void handle_packet(int sock, const char *buf,
         else if (hil_state == HIL_IDLE || hil_state == HIL_STOPPED)
             hil_state = HIL_PAUSED;  /* configured but not enabled yet */
 
-        printf("[SET] freq=%.2fHz vdc=%.2fV torque=%.4fNm enable=%d decim=%d state=%s\n",
-               p.freq_hz, p.vdc_v, p.torque_nm, p.enable, p.decim, state_name(hil_state));
+        printf("[SET] freq=%.2fHz vdc=%.2fV torque=%.4fNm accel=%.1fs enable=%d state=%s\n",
+               p.freq_hz, p.vdc_v, p.torque_nm, p.accel_time_s, p.enable, state_name(hil_state));
 
         /* Auto-configure telemetry destination if provided */
         char ip[INET_ADDRSTRLEN] = {0};
@@ -327,6 +339,12 @@ static void handle_packet(int sock, const char *buf,
     } else if (strstr(buf, "\"cmd\":\"stop\"")) {
         apply_stop();
         printf("[STOP] state=%s (daemon alive)\n", state_name(hil_state));
+
+    } else if (strstr(buf, "\"cmd\":\"reset\"")) {
+        vf_reset_solver();
+        /* Reset leaves params intact but motor disabled — same posture as Pause. */
+        if (hil_state == HIL_RUNNING) hil_state = HIL_PAUSED;
+        printf("[RESET] solver states cleared, state=%s\n", state_name(hil_state));
 
     } else if (strstr(buf, "\"cmd\":\"telem\"")) {
         char ip[INET_ADDRSTRLEN] = {0};
@@ -518,7 +536,7 @@ int main(void)
 
     printf("Listening on UDP port %d\n", UDP_PORT);
     printf("Telemetry push port: %d  (burst=%d samples)\n", TELEM_PORT, TELEM_BURST);
-    printf("Commands: set / get / run / pause / stop / telem / ping / shutdown\n\n");
+    printf("Commands: set / get / run / pause / stop / reset / telem / ping / shutdown\n\n");
 
     char buf[512];
     while (running) {

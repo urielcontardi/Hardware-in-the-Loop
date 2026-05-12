@@ -8,7 +8,9 @@
  *   0x00  va_ref           write — signed int32, ±CARRIER_MAX
  *   0x04  vb_ref           write
  *   0x08  vc_ref           write
- *   0x0C  pwm_ctrl         write — bit0=enable, bit1=clear_fault, [31:2]=decim
+ *   0x0C  pwm_ctrl         write — bit0=enable, bit1=clear_fault,
+ *                                  bit2=solver_reset (1=hold solver in reset),
+ *                                  [31:3]=decim
  *   0x10  vdc_word         write — Q18.14 signed (V)
  *   0x14  torque_word      write — Q18.14 signed (N·m)
  *   0x18  DEBUG_MAGIC      read  — 0x48494C52 ("HILR")
@@ -42,9 +44,10 @@
 #define GPIO_CH2_OFFSET  0x008
 
 /* pwm_ctrl bits */
-#define PWM_CTRL_ENABLE      (1 << 0)
-#define PWM_CTRL_CLEAR_FAULT (1 << 1)
-#define PWM_CTRL_DECIM_SHIFT 2
+#define PWM_CTRL_ENABLE       (1 << 0)
+#define PWM_CTRL_CLEAR_FAULT  (1 << 1)
+#define PWM_CTRL_SOLVER_RESET (1 << 2)
+#define PWM_CTRL_DECIM_SHIFT  3
 
 /* CARRIER_MAX: 100 MHz / (1 kHz * 2) = 50000 */
 #define CARRIER_MAX  50000
@@ -57,7 +60,8 @@ uint32_t gpio_read (uint32_t base, uint32_t offset);
 
 /* Helpers — write to HIL_Regs_AXI */
 void gpio_set_vref(int32_t va, int32_t vb, int32_t vc);
-void gpio_set_pwm_ctrl(int enable, int clear_fault, uint32_t decim_ratio);
+void gpio_set_pwm_ctrl(int enable, int clear_fault, int solver_reset,
+                       uint32_t decim_ratio);
 void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word);
 
 /* Helpers — read from AXI GPIO monitors */
