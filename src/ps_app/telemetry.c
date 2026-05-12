@@ -27,6 +27,8 @@ static uint16_t crc16(const uint8_t *data, size_t len)
 static int               sock       = -1;
 static struct sockaddr_in dest_addr;
 static uint32_t          seq        = 0;
+static uint32_t          packets_sent = 0;
+static uint32_t          send_errors  = 0;
 static telem_sample_t    burst[TELEM_BURST];
 static int               burst_idx  = 0;
 static uint8_t           last_flags = 0;
@@ -40,6 +42,19 @@ int telem_init(const char *dest_ip)
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("telem: socket"); return -1; }
 
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in src_addr;
+    memset(&src_addr, 0, sizeof(src_addr));
+    src_addr.sin_family      = AF_INET;
+    src_addr.sin_port        = htons(TELEM_PORT);
+    src_addr.sin_addr.s_addr = INADDR_ANY;
+    if (bind(sock, (struct sockaddr *)&src_addr, sizeof(src_addr)) < 0) {
+        perror("telem: bind");
+        close(sock); sock = -1; return -1;
+    }
+
     memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port   = htons(TELEM_PORT);
@@ -50,6 +65,8 @@ int telem_init(const char *dest_ip)
 
     burst_idx  = 0;
     seq        = 0;
+    packets_sent = 0;
+    send_errors  = 0;
     last_flags = 0;
     printf("telemetry → %s:%d  burst=%d\n", dest_ip, TELEM_PORT, TELEM_BURST);
     return 0;
@@ -104,10 +121,24 @@ void telem_push(float ia, float ib, float flux_a, float flux_b,
     frame[pos++] = (uint8_t)(crc     );
     frame[pos++] = (uint8_t)(crc >> 8);
 
-    sendto(sock, frame, pos, 0,
-           (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    ssize_t sent = sendto(sock, frame, pos, 0,
+                          (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (sent == (ssize_t)pos) {
+        packets_sent++;
+    } else {
+        send_errors++;
+        if ((send_errors % 100u) == 1u)
+            perror("telem: sendto");
+    }
 
     burst_idx = 0;
+}
+
+void telem_stats(telem_stats_t *out)
+{
+    if (!out) return;
+    out->packets_sent = packets_sent;
+    out->send_errors  = send_errors;
 }
 
 void telem_deinit(void)

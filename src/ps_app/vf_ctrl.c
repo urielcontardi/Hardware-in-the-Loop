@@ -25,6 +25,9 @@ static vf_params_t      params = {
     .freq_hz   = 0.0f,
     .vdc_v     = 300.0f,
     .torque_nm = 0.0f,
+    .base_freq_hz = FREQ_NOM_HZ,
+    .max_v_pu     = V_NOM_PU,
+    .boost_v_pu   = 0.0f,
     .enable    = 0,
     .decim     = 0,
 };
@@ -83,8 +86,19 @@ void vf_tick(void)
     float freq = p.freq_hz;
     if (freq < 0.0f) freq = 0.0f;
 
-    float v_pu = V_NOM_PU * (freq / FREQ_NOM_HZ);
-    if (v_pu > V_NOM_PU) v_pu = V_NOM_PU;
+    float base_freq = p.base_freq_hz;
+    if (base_freq <= 0.0f) base_freq = FREQ_NOM_HZ;
+
+    float max_v_pu = p.max_v_pu;
+    if (max_v_pu <= 0.0f) max_v_pu = V_NOM_PU;
+    if (max_v_pu > 1.0f) max_v_pu = 1.0f;
+
+    float boost_v_pu = p.boost_v_pu;
+    if (boost_v_pu < 0.0f) boost_v_pu = 0.0f;
+    if (boost_v_pu > max_v_pu) boost_v_pu = max_v_pu;
+
+    float v_pu = boost_v_pu + (max_v_pu - boost_v_pu) * (freq / base_freq);
+    if (v_pu > max_v_pu) v_pu = max_v_pu;
 
     /* Integra ângulo */
     float omega = 2.0f * (float)M_PI * freq;

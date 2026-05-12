@@ -10,6 +10,9 @@
  *   freq_hz   — frequência elétrica de saída [Hz]
  *   vdc_v     — tensão DC do barramento [V]
  *   torque_nm — torque de carga [N·m]  (passa direto ao solver)
+ *   base_freq_hz — frequência nominal/base do V/F [Hz]
+ *   max_v_pu  — tensão máxima de modulação [pu]
+ *   boost_v_pu — boost de baixa frequência [pu]
  *   enable    — 0=desligado, 1=ligado
  *   decim     — decimation ratio (0 = default 375 → 10 kHz DMA output)
  *
@@ -23,6 +26,9 @@ typedef struct {
     float freq_hz;    /* frequência elétrica [Hz] — default 0 */
     float vdc_v;      /* tensão DC [V]             — default 300 */
     float torque_nm;  /* torque de carga [N·m]     — default 0   */
+    float base_freq_hz; /* frequência base V/F [Hz] — default 50  */
+    float max_v_pu;     /* tensão máxima [pu]       — default 1   */
+    float boost_v_pu;   /* boost baixa freq [pu]    — default 0   */
     int   enable;     /* 0=off, 1=on               — default 0   */
     int   decim;      /* decimation ratio           — default 0   */
 } vf_params_t;

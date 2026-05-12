@@ -33,6 +33,11 @@ typedef struct {
     float speed;
 } telem_sample_t;
 
+typedef struct {
+    uint32_t packets_sent;
+    uint32_t send_errors;
+} telem_stats_t;
+
 /*
  * telem_init  — open UDP socket, set destination IP
  *               call once, or again to retarget
@@ -42,6 +47,7 @@ typedef struct {
 int  telem_init  (const char *dest_ip);
 void telem_push  (float ia, float ib, float flux_a, float flux_b,
                   float speed, uint8_t flags);
+void telem_stats (telem_stats_t *out);
 void telem_deinit(void);
 
 #endif /* TELEMETRY_H */
