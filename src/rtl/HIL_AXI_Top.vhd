@@ -87,7 +87,8 @@ Entity HIL_AXI_Top is
         vb_ref_i         : in  std_logic_vector(NPC_DW-1 downto 0);
         vc_ref_i         : in  std_logic_vector(NPC_DW-1 downto 0);
 
-        -- ── Controle PWM (bit[0]=enable, bit[1]=clear_fault) ─────────────────
+        -- ── Controle PWM (bit[0]=enable, bit[1]=clear_fault,
+        --                  bit[2]=solver_reset, bits[31:3]=decim) ─────────
         pwm_ctrl_i       : in  std_logic_vector(31 downto 0);
 
         -- ── Barramento DC e torque de carga (Q18.14 signed → Q14.28) ─────────
@@ -137,8 +138,14 @@ Architecture rtl of HIL_AXI_Top is
     --------------------------------------------------------------------------
     -- Controle
     --------------------------------------------------------------------------
-    signal pwm_enable_s  : std_logic;
-    signal pwm_clear_s   : std_logic;
+    signal pwm_enable_s        : std_logic;
+    signal pwm_clear_s         : std_logic;
+    signal pwm_solver_reset_s  : std_logic;
+    -- Reset síncrono efetivo do TIM_Solver: combina rst_n global do sistema
+    -- com o bit[2] do pwm_ctrl (software-pulsable). PS pulsa esse bit para
+    -- zerar os estados integradores (correntes, fluxos, velocidade) entre
+    -- runs sem precisar de reload do bitstream.
+    signal solver_rst_n_s      : std_logic;
 
     --------------------------------------------------------------------------
     -- Barramento DC (42 bits)
@@ -216,8 +223,12 @@ Begin
     --------------------------------------------------------------------------
     -- Desempacotamento do controle PWM
     --------------------------------------------------------------------------
-    pwm_enable_s <= pwm_ctrl_i(0);
-    pwm_clear_s  <= pwm_ctrl_i(1);
+    pwm_enable_s       <= pwm_ctrl_i(0);
+    pwm_clear_s        <= pwm_ctrl_i(1);
+    pwm_solver_reset_s <= pwm_ctrl_i(2);
+    -- Active-low reset para o TIM_Solver: assertado quando rst_n global cai
+    -- OU quando o PS escreve bit[2]=1 no pwm_ctrl.
+    solver_rst_n_s     <= rst_n and not pwm_solver_reset_s;
 
     --------------------------------------------------------------------------
     -- Conversão Q18.14 (32 bits do PS) → Q14.28 (42 bits interno do solver)
@@ -314,7 +325,7 @@ Begin
     )
     port map (
         sysclk              => clk,
-        reset_n             => rst_n,
+        reset_n             => solver_rst_n_s,
         va_i                => va_motor,
         vb_i                => vb_motor,
         vc_i                => vc_motor,
@@ -408,11 +419,13 @@ Begin
     end process Debug_Counters;
 
     --------------------------------------------------------------------------
-    -- Ratio do decimador: bits[31:2] do pwm_ctrl; 0 = default 375
+    -- Ratio do decimador: bits[31:3] do pwm_ctrl; 0 = default 375
     -- 375 → 3.75 MHz / 375 = 10 kHz de saída para o DMA
+    -- (bit[2] foi realocado para solver_reset; decim agora tem 29 bits,
+    --  ainda muito mais do que o necessário — uso típico < 16 bits.)
     --------------------------------------------------------------------------
-    decim_ratio <= unsigned(pwm_ctrl_i(31 downto 2)) when
-                   unsigned(pwm_ctrl_i(31 downto 2)) /= 0 else
+    decim_ratio <= resize(unsigned(pwm_ctrl_i(31 downto 3)), 30) when
+                   unsigned(pwm_ctrl_i(31 downto 3)) /= 0 else
                    to_unsigned(375, 30);
 
     --------------------------------------------------------------------------
