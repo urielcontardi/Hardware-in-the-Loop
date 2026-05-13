@@ -1,9 +1,6 @@
-# EBAZ4205 — Linux Boot via PetaLinux 2025.1
+# EBAZ4205 — HIL Linux Boot (PetaLinux 2025.1 + Vivado 2025.1)
 
-Este diretório contém tudo necessário para:
-1. Recriar o projeto Vivado (PS7 + Ethernet EMIO + LEDs)
-2. Gerar o XSA e compilar o PetaLinux
-3. Gravar o SD card e bootar Linux na EBAZ4205
+Tudo necessário para recompilar o design FPGA, gerar o Linux e gravar no SD card da EBAZ4205.
 
 ---
 
@@ -11,55 +8,53 @@ Este diretório contém tudo necessário para:
 
 | Item | Especificação |
 |------|--------------|
-| Placa | EBAZ4205 |
-| FPGA | Zynq-7010 (xc7z010clg400-1) |
-| RAM | 256 MB DDR3 (MT41K128M16 JT-125) |
-| Ethernet PHY | IP101GA (GMII 4-bit via EMIO) |
-| Boot | SD card (MIO40–45) |
-| Console | UART1 (MIO24–25), 115200 8N1 |
+| Placa | EBAZ4205 (Zynq-7010) |
+| FPGA | xc7z010clg400-1 |
+| RAM | 256 MB DDR3 |
+| Ethernet PHY | IP101GA via EMIO/PL (GMII 4-bit, 100Mbps) |
+| Boot | SD card (SD0, MIO40–45) |
+| Console UART | UART1 (MIO24=TX, MIO25=RX), 115200 8N1 — header J7 |
 
-### Modificação de hardware obrigatória para boot SD
+### Modificação de hardware obrigatória
 
-Por padrão a placa vem configurada para boot NAND. Para bootar pelo SD card
-é necessário mover o resistor **R2584 → R2577** na PCB (MIO4 e MIO5 para VCC).
+A placa vem de fábrica configurada para boot por **NAND flash**. Para bootar pelo SD card é preciso mover o resistor **R2584 → R2577** na PCB (coloca MIO4 e MIO5 em VCC, selecionando SD boot).
 
----
-
-## Estrutura do diretório
+### Conexão UART (J7)
 
 ```
-syn/hil/
-├── create_ebaz4205_project.tcl   # Recria o projeto Vivado 2025.1 do zero
-├── run_impl_export.tcl           # Sintetiza, implementa e exporta XSA
-├── ebaz4205_board.xdc            # Constraints (pinos, IOSTANDARD, false paths)
-├── flash_sd.sh                   # Grava SD card com as imagens
-├── sd_images/                    # Imagens pré-compiladas prontas para flash
-│   ├── BOOT.BIN                  # FSBL + bitstream + U-Boot
-│   ├── boot.scr                  # Script de boot do U-Boot
-│   ├── image.ub                  # Kernel + device tree (FIT image)
-│   └── rootfs.tar.gz             # Sistema de arquivos raiz (EXT4)
-└── ebaz4205_petalinux/           # Projeto PetaLinux
-    └── project-spec/             # Configurações rastreadas no git
-        ├── configs/config        # Configuração do sistema (FIT offset, rootfs EXT4)
-        ├── configs/rootfs_config # Pacotes incluídos no rootfs
-        └── meta-user/            # Recipes customizadas
+J7 Pin 1 → VCC 3.3V  (não conecte)
+J7 Pin 2 → TX placa  → RX do adaptador USB-serial
+J7 Pin 3 → RX placa  → TX do adaptador USB-serial
+J7 Pin 4 → GND       → GND do adaptador
 ```
-
----
-
-## Opção A — Flash direto (imagens pré-compiladas)
-
-Use quando quiser bootar Linux sem precisar recompilar.
 
 ```bash
-# Verificar device do SD card
-lsblk
-
-# Gravar (substitua /dev/sdX pelo device correto)
-sudo ./flash_sd.sh /dev/sdX
+picocom -b 115200 /dev/ttyUSB1    # ajuste o device conforme seu sistema
 ```
 
-O script cria automaticamente:
+---
+
+## Pré-requisitos (build completo)
+
+| Ferramenta | Versão | Path padrão |
+|-----------|--------|-------------|
+| Vivado | 2025.1 | `/opt/Xilinx/2025.1/Vivado/bin/vivado` |
+| PetaLinux | 2025.1 | `~/xilinx/petalinux/settings.sh` |
+
+> Se os paths forem diferentes, edite as variáveis `VIVADO` e `PETALINUX_ENV` no `Makefile` raiz.
+
+---
+
+## Opção A — Gravar direto (imagens prontas)
+
+Use quando não quiser recompilar. As imagens testadas estão em `sd_images/`:
+
+```bash
+# Na raiz do repositório:
+make linux-flash SD=/dev/sdX    # substitua pelo device correto (ex: /dev/sda)
+```
+
+O script particiona o SD automaticamente:
 - **p1** FAT32 256 MB → `BOOT.BIN`, `boot.scr`, `image.ub`
 - **p2** EXT4 restante → rootfs
 
@@ -67,131 +62,142 @@ O script cria automaticamente:
 
 ## Opção B — Build completo do zero
 
-Use quando quiser modificar o design FPGA ou o sistema Linux.
-
-### Pré-requisitos
-
-| Ferramenta | Versão |
-|-----------|--------|
-| Vivado | 2025.1 |
-| PetaLinux | 2025.1 |
+Reconstrói tudo: Vivado → síntese → PetaLinux → SD card.
 
 ```bash
-source /opt/Xilinx/2025.1/Vivado/settings64.sh
-source ~/xilinx/petalinux/settings.sh
+# Na raiz do repositório (~90 min na primeira vez):
+make linux-all-axi
+
+# Depois de concluído, gravar:
+make linux-flash SD=/dev/sdX
 ```
 
-### 1. Criar projeto Vivado e gerar XSA
+### O que `make linux-all-axi` faz
+
+| Passo | Comando | O que faz |
+|-------|---------|-----------|
+| 1/5 | `make vivado-project` | Cria projeto Vivado com BD completo (PS7 + EMIO Ethernet + HIL_Regs_AXI + DSP48E1) |
+| 2/5 | `make synth` | Síntese + implementação + exporta `ebaz4205.xsa` e `.bit` |
+| 3/5 | `make linux-config` | Importa XSA no PetaLinux com `--silentconfig` (preserva configs) |
+| 4/5 | `make linux-build` | Compila kernel, rootfs e FSBL |
+| 5/5 | `make linux-package` | Empacota `BOOT.BIN` (FSBL + bitstream + U-Boot) |
+
+### Passo a passo manual (se preferir controle individual)
 
 ```bash
-cd syn/hil
-
-# Criar projeto (PS7 + Ethernet EMIO + LEDs)
-vivado -mode batch -source create_ebaz4205_project.tcl
-
-# Sintetizar + implementar + exportar XSA
-vivado -mode batch -source run_impl_export.tcl
-# Gera: syn/hil/ebaz4205.xsa
-```
-
-### 2. Configurar e compilar PetaLinux
-
-```bash
-cd syn/hil/ebaz4205_petalinux
-
-# Importar XSA (abre menuconfig — apenas na primeira vez ou após mudar o XSA)
-petalinux-config --get-hw-description=../ebaz4205.xsa
-# Parâmetros importantes já configurados:
-#   u-boot Configuration → FIT image offset = 0x6000000  (256 MB RAM)
-#   Image Packaging → Root filesystem type = EXT4
-
-# Configurar U-Boot (necessário apenas uma vez)
-# ATENÇÃO: bug conhecido — corrigir system-conf.dtsi antes de rodar
-sed -i 's/&ps7_nand_0/\&nfc0/g' \
-  components/plnx_workspace/device-tree/device-tree/system-conf.dtsi
-petalinux-config -c u-boot
-# No menuconfig: Boot options → Boot media → [*] Support for SD/EMMC
-
-# Build completo (~30–60 min na primeira vez)
-petalinux-build
-
-# Gerar BOOT.BIN
-petalinux-package boot --force \
-  --fsbl ./images/linux/zynq_fsbl.elf \
-  --fpga ./images/linux/system.bit \
-  --u-boot ./images/linux/u-boot.elf
-```
-
-### 3. Gravar SD card
-
-```bash
-cd syn/hil
-sudo ./flash_sd.sh /dev/sdX
-```
-
-### 4. Atualizar imagens pré-compiladas no repo
-
-```bash
-cp ebaz4205_petalinux/images/linux/BOOT.BIN   sd_images/
-cp ebaz4205_petalinux/images/linux/boot.scr   sd_images/
-cp ebaz4205_petalinux/images/linux/image.ub   sd_images/
-cp ebaz4205_petalinux/images/linux/rootfs.tar.gz sd_images/
+make vivado-project          # Cria ebaz4205.xpr
+make synth                   # Gera ebaz4205.xsa e ebaz4205_wrapper.bit
+make linux-config            # Importa XSA no PetaLinux
+make linux-build             # Build (~30-60 min)
+make linux-package           # Empacota BOOT.BIN
+make linux-update-sdimages   # Copia para sd_images/
+make linux-flash SD=/dev/sdX # Grava SD card
 ```
 
 ---
 
-## Boot e acesso ao console
+## Detalhes de implementação importantes
 
-Conecte um adaptador USB-Serial (3.3V TTL) ao header UART da placa:
+### Por que usamos o XSA gerado pelo Vivado 2025.1
+
+O FSBL (First Stage Boot Loader) inicializa o DDR3 usando valores de calibração específicos do hardware. O XSA gerado pelo Vivado 2025.1 (`ebaz4205.xsa`) contém a calibração correta para esta placa:
 
 ```
-Placa TX → Adaptador RX
-Placa RX → Adaptador TX
-GND      → GND
+DDR PHY calibration: 0x44E458D3  ← valor correto para este board
 ```
 
-```bash
-picocom -b 115200 /dev/ttyUSB0
-```
+O Makefile usa sempre o XSA da síntese atual para compilar o FSBL.
 
-Para sair do picocom: `Ctrl+A` seguido de `Ctrl+X`.
+### Por que o Ethernet precisa de EMIO
 
-**Login:** usuário `petalinux` (cria senha no primeiro acesso).
+O PHY IP101GA da EBAZ4205 está conectado ao PL (FPGA), não diretamente ao PS via MIO. O Block Design inclui:
+- `xlconcat_0` — agrega RXD[3:0] em barramento 8-bit para o PS
+- `xlslice_0` — fatia TXD[7:0] → 4-bit para o PHY
+- MDIO via EMIO (MDC + MDIO)
+- Clock 25 MHz para o PHY gerado pelo PL (FCLK3)
+
+O node PHY no device tree (`system-user.dtsi`) está configurado para o IP101GA no endereço MDIO 0.
+
+### HIL_Regs_AXI
+
+Registrador AXI4-Lite customizado que expõe controles do HIL para o PS:
+
+| Offset | Registrador | Formato |
+|--------|------------|---------|
+| 0x00 | `va_ref` | signed int32 |
+| 0x04 | `vb_ref` | signed int32 |
+| 0x08 | `vc_ref` | signed int32 |
+| 0x0C | `pwm_ctrl` | bit0=enable, bit1=fault, [31:2]=decimation |
+| 0x10 | `vdc_word` | Q18.14 (V) |
+| 0x14 | `torque_word` | Q18.14 (N·m) |
+
+**Base address:** `0x43C00000` (definido no Block Design e em `src/ps_app/gpio.h`)
 
 ---
 
-## Atualizar apenas o bitstream (sem rebuild Linux)
+## Boot e login
 
-Quando só o design PL mudar:
+Após gravar e ligar a placa, aguarde ~15 segundos. No terminal serial:
 
+```
+PetaLinux 2025.1 ebaz4205_petalinux ttyPS0
+
+ebaz4205_petalinux login: root
+```
+
+Login: `root` (sem senha no build padrão).
+
+Via SSH (após DHCP obter IP):
 ```bash
-# 1. Regerar XSA
-cd syn/hil
-vivado -mode batch -source run_impl_export.tcl
-
-# 2. Atualizar PetaLinux com novo XSA
-cd ebaz4205_petalinux
-petalinux-config --get-hw-description=../ebaz4205.xsa
-
-# 3. Rebuild e reempacotar
-petalinux-build
-petalinux-package boot --force \
-  --fsbl ./images/linux/zynq_fsbl.elf \
-  --fpga ./images/linux/system.bit \
-  --u-boot ./images/linux/u-boot.elf
-
-# 4. Regravar SD
-cd ..
-sudo ./flash_sd.sh /dev/sdX
+ssh root@<IP-da-placa>
 ```
 
 ---
 
-## Notas e bugs conhecidos
+## Atualizar só o bitstream (sem rebuild completo)
 
-| Problema | Causa | Solução |
-|----------|-------|---------|
-| `ps7_nand_0: label not found` | Bug PetaLinux 2025.1 | Renomear `&ps7_nand_0` → `&nfc0` em `system-conf.dtsi` |
-| `udhcpc: no lease` no boot | Sem cabo/DHCP na rede | Normal — não afeta o boot |
-| `No Valid Environment Area found` | U-Boot sem env na FAT | Normal — usa environment padrão |
-| UART sem saída | TX/RX invertido | Trocar RX↔TX no adaptador |
+Quando só o design PL mudar e o Linux não precisar ser recompilado:
+
+```bash
+make vivado-project   # apenas se o projeto não existir
+make synth            # nova síntese → novo ebaz4205.xsa + .bit
+make linux-config     # atualiza XSA no PetaLinux
+make linux-build      # recompila FSBL com novo XSA
+make linux-package    # novo BOOT.BIN
+make linux-update-sdimages && make linux-flash SD=/dev/sdX
+```
+
+---
+
+## Estrutura do diretório
+
+```
+syn/hil/
+├── create_ebaz4205_project.tcl   # Recria projeto Vivado completo do zero
+├── run_impl_export.tcl           # Síntese + implementação + exporta XSA
+├── resynth.tcl                   # Re-síntese sem recriar o projeto
+├── ebaz4205_board.xdc            # Constraints: pinos, EMIO Ethernet, LEDs
+├── flash_sd.sh                   # Particiona e grava SD card
+├── sd_images/                    # Imagens pré-compiladas e testadas
+│   ├── BOOT.BIN                  # FSBL + bitstream + U-Boot
+│   ├── boot.scr                  # Script U-Boot
+│   ├── image.ub                  # Kernel FIT image + DTB
+│   └── rootfs.tar.gz             # Rootfs EXT4
+└── ebaz4205_petalinux/
+    └── project-spec/             # Configurações versionadas
+        ├── configs/config        # DDR 256MB, UART1, SD0, FIT offset 0x6000000
+        └── meta-user/
+            └── recipes-bsp/device-tree/files/system-user.dtsi  # PHY node IP101GA
+```
+
+---
+
+## Bugs conhecidos e soluções
+
+| Sintoma | Causa | Solução aplicada automaticamente |
+|---------|-------|----------------------------------|
+| `ps7_nand_0: label not found` | PetaLinux 2024.2+ referencia label inexistente | `make linux-config` aplica `sed` automaticamente |
+| `No Valid Environment Area found` (U-Boot) | U-Boot sem área de env na FAT | Normal — usa defaults |
+| Ethernet não sobe | PHY node ausente no DTB | Configurado em `system-user.dtsi` |
+| Placa não boota nada na serial | FSBL com DDR calibração errada | `make linux-config` usa o XSA correto |
+| UART sem saída | TX/RX invertido no adaptador | Trocar RX↔TX no cabo |

@@ -4,6 +4,9 @@
 # Top-level: ebaz4205_wrapper (BD ebaz4205)
 # =============================================================================
 
+# Nota: MARK_DEBUG via XDC não resolve o problema OOC.
+# Fix via atributo VHDL mark_debug em HIL_AXI_Top.vhd (aplicado na síntese OOC).
+
 # -----------------------------------------------------------------------------
 # LEDs — GPIO_O[1:0] via xlslice_1 → LED[1:0]
 #   LED[0] = verde (W13)
