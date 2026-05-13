@@ -118,13 +118,14 @@ static void *telem_thread_fn(void *arg)
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
     if (use_dma) {
-        /* ── DMA path ──────────────────────────────────────────────── */
+        /* ── DMA double-buffer path ────────────────────────────────── */
         dma_sample_t dma_buf[DMA_BURST_FRAMES];
 
         while (running && telem_active) {
-            int n = dma_telem_transfer(dma_buf, 500 /* ms timeout */);
+            /* dma_telem_next: waits for active buffer, re-arms the other,
+             * then decodes — DMA is always running with minimal gap. */
+            int n = dma_telem_next(dma_buf, 500 /* ms timeout */);
             if (n <= 0) {
-                /* DMA error — short sleep and retry */
                 usleep(10000);
                 continue;
             }
