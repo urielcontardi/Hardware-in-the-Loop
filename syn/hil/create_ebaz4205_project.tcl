@@ -624,6 +624,10 @@ add_files -fileset sources_1 -norecurse \
 add_files -fileset sources_1 -norecurse \
     $root_dir/src/rtl/TIM_Solver.vhd
 
+# IIR Filter (anti-aliasing pre-filter for the AXI Stream decimator path)
+add_files -fileset sources_1 -norecurse \
+    $root_dir/src/rtl/IIRFilter.vhd
+
 # HIL AXI Top (wrapper com interface PS↔PL)
 add_files -fileset sources_1 -norecurse \
     $root_dir/src/rtl/HIL_AXI_Top.vhd

@@ -178,6 +178,14 @@ Architecture rtl of HIL_AXI_Top is
     signal flux_alpha_s  : std_logic_vector(TIM_DW-1 downto 0);
     signal flux_beta_s   : std_logic_vector(TIM_DW-1 downto 0);
     signal speed_s       : std_logic_vector(TIM_DW-1 downto 0);
+    -- Anti-aliased versions for the AXI Stream / DMA decimator path only.
+    -- GPIO monitors below keep the RAW signals so HIL fidelity is preserved
+    -- on the visualization path.
+    signal ialpha_aa     : std_logic_vector(TIM_DW-1 downto 0);
+    signal ibeta_aa      : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_alpha_aa : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_beta_aa  : std_logic_vector(TIM_DW-1 downto 0);
+    signal speed_aa      : std_logic_vector(TIM_DW-1 downto 0);
     signal data_valid_s      : std_logic;
     -- Sticky latch: fica '1' após o primeiro pulso data_valid; limpa com rst_n.
     signal data_valid_latch  : std_logic;
@@ -343,14 +351,51 @@ Begin
     );
 
     --------------------------------------------------------------------------
-    -- Monitoramento físico (sempre): 32 MSBs de cada saída de 42 bits do solver
+    -- Anti-aliasing low-pass for the DECIMATOR path only.
+    --   α = 2^-9  →  τ ≈ 138 µs  →  fc ≈ 1.15 kHz
+    -- A decimação de 3.7 MHz → 10 kHz (decim=375) tem Nyquist em 5 kHz; sem
+    -- este pré-filtro, harmônicos do PWM (1, 2, 3, 4 kHz) sofrem aliasing
+    -- na saída do decimador. Os GPIO monitors abaixo NÃO usam estes sinais —
+    -- preservam o conteúdo bruto do solver para fidelidade HIL.
+    --------------------------------------------------------------------------
+    IIR_aa_ialpha : entity work.IIRFilter
+        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+        port map (clk => clk, reset_n => solver_rst_n_s,
+                  data_valid => data_valid_s, x_i => ialpha_s, y_o => ialpha_aa);
+
+    IIR_aa_ibeta : entity work.IIRFilter
+        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+        port map (clk => clk, reset_n => solver_rst_n_s,
+                  data_valid => data_valid_s, x_i => ibeta_s, y_o => ibeta_aa);
+
+    IIR_aa_flux_alpha : entity work.IIRFilter
+        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+        port map (clk => clk, reset_n => solver_rst_n_s,
+                  data_valid => data_valid_s, x_i => flux_alpha_s, y_o => flux_alpha_aa);
+
+    IIR_aa_flux_beta : entity work.IIRFilter
+        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+        port map (clk => clk, reset_n => solver_rst_n_s,
+                  data_valid => data_valid_s, x_i => flux_beta_s, y_o => flux_beta_aa);
+
+    IIR_aa_speed : entity work.IIRFilter
+        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+        port map (clk => clk, reset_n => solver_rst_n_s,
+                  data_valid => data_valid_s, x_i => speed_s, y_o => speed_aa);
+
+    --------------------------------------------------------------------------
+    -- Monitoramento físico (FILTRADO): 32 MSBs do sinal pós-IIR anti-aliasing.
+    --   O polling do PS via /dev/mem é assíncrono (~10 kHz com jitter), que
+    --   é uma forma de amostragem. Sem filtro, o ripple PWM de 1 kHz cria
+    --   aliasing nas leituras. O filtro IIR (fc ≈ 1.15 kHz) deixa o sinal
+    --   coerente com o que o PS consegue amostrar.
     --   mark_debug nos ports força preservação pelo link_design (OOC DCP fix)
     --------------------------------------------------------------------------
-    ialpha_mon_o     <= ialpha_s(TIM_DW-1 downto TIM_DW-32);
-    ibeta_mon_o      <= ibeta_s(TIM_DW-1 downto TIM_DW-32);
-    flux_alpha_mon_o <= flux_alpha_s(TIM_DW-1 downto TIM_DW-32);
-    flux_beta_mon_o  <= flux_beta_s(TIM_DW-1 downto TIM_DW-32);
-    speed_mon_o      <= speed_s(TIM_DW-1 downto TIM_DW-32);
+    ialpha_mon_o     <= ialpha_aa(TIM_DW-1 downto TIM_DW-32);
+    ibeta_mon_o      <= ibeta_aa(TIM_DW-1 downto TIM_DW-32);
+    flux_alpha_mon_o <= flux_alpha_aa(TIM_DW-1 downto TIM_DW-32);
+    flux_beta_mon_o  <= flux_beta_aa(TIM_DW-1 downto TIM_DW-32);
+    speed_mon_o      <= speed_aa(TIM_DW-1 downto TIM_DW-32);
     data_valid_mon_o <= data_valid_latch;
 
     --------------------------------------------------------------------------
@@ -443,11 +488,11 @@ Begin
             elsif data_valid_s = '1' then
                 if decim_count >= decim_ratio - 1 then
                     decim_count <= (others => '0');
-                    axis_tdata_r( 41 downto   0) <= ialpha_s;
-                    axis_tdata_r( 83 downto  42) <= ibeta_s;
-                    axis_tdata_r(125 downto  84) <= flux_alpha_s;
-                    axis_tdata_r(167 downto 126) <= flux_beta_s;
-                    axis_tdata_r(209 downto 168) <= speed_s;
+                    axis_tdata_r( 41 downto   0) <= ialpha_aa;
+                    axis_tdata_r( 83 downto  42) <= ibeta_aa;
+                    axis_tdata_r(125 downto  84) <= flux_alpha_aa;
+                    axis_tdata_r(167 downto 126) <= flux_beta_aa;
+                    axis_tdata_r(209 downto 168) <= speed_aa;
                     axis_tdata_r(255 downto 210) <= (others => '0');
                     axis_tvalid_r <= '1';
                 else

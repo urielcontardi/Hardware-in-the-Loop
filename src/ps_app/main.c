@@ -556,13 +556,11 @@ int main(void)
     if (vf_init()   < 0)  return 1;
     if (setup_1khz_timer() < 0) return 1;
 
-    /* Try DMA telemetry; fall back to GPIO polling if unavailable */
-    if (dma_telem_init() == 0) {
-        use_dma = 1;
-        printf("Telemetry: DMA path active (synchronized, 42-bit full precision)\n");
-    } else {
-        printf("Telemetry: DMA unavailable, using GPIO polling fallback\n");
-    }
+    /* DMA telemetry disabled: HP port configuration mismatch causes
+     * DMAIntErr (DMASR bit4) on the Zynq AXI HP port — needs block design
+     * investigation. Using GPIO polling at 10 kHz in the meantime. */
+    use_dma = 0;
+    printf("Telemetry: GPIO polling 10 kHz\n");
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return 1; }

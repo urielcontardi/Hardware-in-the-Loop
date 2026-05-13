@@ -502,7 +502,7 @@ function setNSubplots(n: number) {
 // envelope so AC waveforms don't alias into jagged noise at low zoom levels.
 // smoothWin > 1 activates a moving-average pre-filter that removes PWM
 // switching ripple. Win=10 ≈ one 1 kHz PWM period at 10 kHz sample rate.
-let smoothWin = 1;
+let smoothWin = 10;  // default: remove 1 kHz PWM ripple (10 samples = 1 PWM period)
 
 function decimateAndProject(maxPts: number): { xs: number[]; ys: number[][] } {
   const n = tBuf.length;
@@ -533,33 +533,30 @@ function decimateAndProject(maxPts: number): { xs: number[]; ys: number[][] } {
   const xs: number[] = [];
   const ys: number[][] = Array.from({ length: N_CH }, () => []);
 
+  // Always use min/max envelope so AC peaks are preserved at any zoom level.
+  // In smooth mode, min/max is computed over the SMOOTHED signal — this shows
+  // the envelope of the fundamental (PWM ripple filtered out) instead of
+  // returning random-phase mid-point samples.
   for (let b = 0; b < buckets; b++) {
     const i0 = Math.floor(b * bucketSize);
     const i1 = Math.min(Math.floor((b + 1) * bucketSize), n) - 1;
     if (i0 > i1) continue;
 
-    if (smoothWin > 1) {
-      // In smooth mode: one point per bucket (mean), no min/max needed.
-      const mid = Math.floor((i0 + i1) / 2);
-      xs.push(tBuf[mid]);
-      for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, mid));
-    } else {
-      // Raw mode: min/max envelope to preserve AC waveform peaks.
-      let minIdx = i0, maxIdx = i0;
-      let minV = CHANNELS[0].read(samplesBuf[i0]);
-      let maxV = minV;
-      for (let i = i0 + 1; i <= i1; i++) {
-        const v = CHANNELS[0].read(samplesBuf[i]);
-        if (v < minV) { minV = v; minIdx = i; }
-        if (v > maxV) { maxV = v; maxIdx = i; }
-      }
-      const [first, second] = minIdx <= maxIdx ? [minIdx, maxIdx] : [maxIdx, minIdx];
-      xs.push(tBuf[first]);
-      for (let c = 0; c < N_CH; c++) ys[c].push(CHANNELS[c].read(samplesBuf[first]));
-      if (first !== second) {
-        xs.push(tBuf[second]);
-        for (let c = 0; c < N_CH; c++) ys[c].push(CHANNELS[c].read(samplesBuf[second]));
-      }
+    let minIdx = i0, maxIdx = i0;
+    let minV = smoothed(0, i0);
+    let maxV = minV;
+    for (let i = i0 + 1; i <= i1; i++) {
+      const v = smoothed(0, i);
+      if (v < minV) { minV = v; minIdx = i; }
+      if (v > maxV) { maxV = v; maxIdx = i; }
+    }
+
+    const [first, second] = minIdx <= maxIdx ? [minIdx, maxIdx] : [maxIdx, minIdx];
+    xs.push(tBuf[first]);
+    for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, first));
+    if (first !== second) {
+      xs.push(tBuf[second]);
+      for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, second));
     }
   }
 
@@ -917,6 +914,7 @@ elBtnFit.addEventListener("click", fitPlots);
 elBtnLive.addEventListener("click", enableLiveMode);
 
 const elBtnSmooth = document.querySelector<HTMLButtonElement>("#btn-smooth")!;
+elBtnSmooth.classList.add("active");  // default on
 elBtnSmooth.addEventListener("click", () => {
   smoothWin = smoothWin <= 1 ? 10 : 1;
   elBtnSmooth.classList.toggle("active", smoothWin > 1);

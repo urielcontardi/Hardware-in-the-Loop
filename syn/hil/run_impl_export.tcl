@@ -15,6 +15,15 @@ set_param general.maxThreads 4
 
 open_project $proj_file
 
+# Ensure IIRFilter.vhd (anti-aliasing filter for AXI Stream decimator) is in
+# the project sources. Idempotent: add_files warns on duplicate, no failure.
+set iir_path "[file normalize [file join [file dirname [info script]] ../../src/rtl/IIRFilter.vhd]]"
+if {[lsearch -exact [get_files] $iir_path] == -1} {
+    puts "Adding IIRFilter.vhd to project sources..."
+    add_files -fileset sources_1 -norecurse $iir_path
+    update_compile_order -fileset sources_1
+}
+
 # Upgrade IPs locked from previous Vivado version
 set locked [get_ips -filter {UPGRADE_VERSIONS != ""}]
 if {[llength $locked] > 0} {
