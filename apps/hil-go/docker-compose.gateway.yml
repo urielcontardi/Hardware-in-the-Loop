@@ -1,0 +1,11 @@
+services:
+  hil-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    image: hil-gateway:local
+    container_name: hil-gateway
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      HIL_HTTP_ADDR: "127.0.0.1:5177"
