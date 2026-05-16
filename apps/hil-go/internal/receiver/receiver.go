@@ -109,13 +109,16 @@ func (rv *Receiver) loop() {
 			continue
 		}
 
-		// sequence gap detection
-		if !first {
+		// sequence gap detection. A lower sequence number means the board-side
+		// telemetry sender restarted; resync without counting a wrap-sized gap.
+		if !first && f.Seq > lastSeq {
 			gap := f.Seq - lastSeq - 1
 			if gap > 0 {
 				rv.Stats.SeqMissed.Add(uint64(gap))
 				log.Printf("receiver: seq gap %d→%d (%d missed)", lastSeq, f.Seq, gap)
 			}
+		} else if !first && f.Seq <= lastSeq {
+			log.Printf("receiver: sequence restarted %d→%d", lastSeq, f.Seq)
 		}
 		lastSeq = f.Seq
 		first = false

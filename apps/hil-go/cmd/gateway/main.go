@@ -27,6 +27,12 @@ var staticFiles embed.FS
 const (
 	defaultHTTPAddr = "127.0.0.1:5177"
 	telemetryPort   = 5006
+	// transportDecim — FPGA AXI-Stream decimation factor. 375 → ~9.876 kHz.
+	// On-chip IIR (ALPHA_BITS=9, fc ≈ 1.15 kHz) is the anti-aliasing pre-
+	// filter. Lowering this requires re-tuning the IIR. Display-rate
+	// reduction is the host's job (min/max envelope in decimateAndProject),
+	// not the FPGA decimator's.
+	transportDecim = 375
 )
 
 type server struct {
@@ -35,6 +41,8 @@ type server struct {
 	localIP     string
 	targetMu    sync.RWMutex
 	telemTarget string
+	scanMu      sync.Mutex
+	lastScanAt  time.Time
 }
 
 type setRequest struct {
@@ -64,7 +72,7 @@ func main() {
 		addr = defaultHTTPAddr
 	}
 
-	r := ring.New(65536)
+	r := ring.New(262144)
 	recv := receiver.New(telemetryPort, r)
 	if err := recv.Start(); err != nil {
 		log.Fatalf("telemetry receiver: %v", err)
@@ -232,7 +240,17 @@ func discoveryFromStatus(ip string, status *hiludp.HilStatus) hiludp.DiscoveryRe
 	}
 }
 
+const scanCooldown = 10 * time.Second
+
 func (s *server) scanForBoard() (*hiludp.DiscoveryResponse, error) {
+	s.scanMu.Lock()
+	if since := time.Since(s.lastScanAt); since < scanCooldown {
+		s.scanMu.Unlock()
+		return nil, fmt.Errorf("scan cooldown: wait %.0fs before retrying", (scanCooldown - since).Seconds())
+	}
+	s.lastScanAt = time.Now()
+	s.scanMu.Unlock()
+
 	ip := net.ParseIP(s.localIP).To4()
 	if ip == nil {
 		return nil, errors.New("gateway has no local IPv4 address for LAN scan")
@@ -244,7 +262,7 @@ func (s *server) scanForBoard() (*hiludp.DiscoveryResponse, error) {
 
 	found := make(chan hiludp.DiscoveryResponse, 1)
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 32)
+	sem := make(chan struct{}, 8) // low concurrency — avoids flooding the board's UDP recv buffer
 
 	for host := 1; host <= 254; host++ {
 		candidate := fmt.Sprintf("%s%d", prefix, host)
@@ -365,8 +383,10 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setTelemetryTarget(ip)
+	s.ring.Clear()
 	s.recv.Punch(ip, telemetryPort)
-	status, err := hiludp.Telem(ip, s.localIP)
+	decim := transportDecim
+	status, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemDst: s.localIP})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -419,8 +439,13 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 		Decim:        req.Decim,
 	}
 	if req.AttachUDP {
+		if p.Decim == nil {
+			decim := transportDecim
+			p.Decim = &decim
+		}
 		p.TelemDst = s.localIP
 		s.setTelemetryTarget(ip)
+		s.ring.Clear()
 		s.recv.Punch(ip, telemetryPort)
 	}
 
@@ -539,9 +564,10 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	ctx := r.Context()
-	ticker := time.NewTicker(50 * time.Millisecond)
+	s.ring.Clear()
+	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
-	scratch := make([]frame.Sample, 512)
+	scratch := make([]frame.Sample, 4096)
 
 	for {
 		select {

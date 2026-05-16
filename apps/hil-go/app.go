@@ -20,9 +20,20 @@ type App struct {
 	done    chan struct{}
 }
 
+// transportDecim — FPGA AXI-Stream decimation factor (used when DMA path is
+// enabled). 375 → 3.704 MHz / 375 = ~9.876 kHz. The on-chip IIR
+// (ALPHA_BITS=9, fc ≈ 1.15 kHz) is the anti-aliasing pre-filter for this rate.
+//
+// NOTE: As of this commit the PS-side falls back to GPIO polling (10 kHz)
+// because the AXI DMA HP-slave path is not cache-coherent with the Cortex-A9
+// and userspace lacks the D-cache invalidate primitive needed before each
+// buffer read. Proper fix is to re-route AXI DMA to S_AXI_ACP in the Vivado
+// design. See src/ps_app/main.c and src/ps_app/dma_telem.c.
+const transportDecim = 375
+
 func NewApp() *App {
 	return &App{
-		ring: ring.New(65536),
+		ring: ring.New(262144),
 		done: make(chan struct{}),
 	}
 }
@@ -52,7 +63,7 @@ func (a *App) shutdown(_ context.Context) {
 func (a *App) broadcastLoop() {
 	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
-	scratch := make([]frame.Sample, 512)
+	scratch := make([]frame.Sample, 4096)
 
 	for {
 		select {
@@ -61,7 +72,8 @@ func (a *App) broadcastLoop() {
 		case <-ticker.C:
 			n := a.ring.PopN(scratch)
 			if n > 0 {
-				runtime.EventsEmit(a.ctx, "telemetry", scratch[:n])
+				batch := append([]frame.Sample(nil), scratch[:n]...)
+				runtime.EventsEmit(a.ctx, "telemetry", batch)
 			}
 		}
 	}
@@ -94,6 +106,8 @@ func (a *App) SetParams(
 	}
 	if attachTelem {
 		p.TelemDst = a.localIP
+		decim := transportDecim
+		p.Decim = &decim
 	}
 	return hilUDP.Set(ip, p)
 }
@@ -133,7 +147,11 @@ func (a *App) ResetSolver(ip string) (*hilUDP.HilStatus, error) {
 
 // AttachTelemetry tells the board to push telemetry to this PC.
 func (a *App) AttachTelemetry(ip string) (*hilUDP.HilStatus, error) {
-	return hilUDP.Telem(ip, a.localIP)
+	if a.ring != nil {
+		a.ring.Clear()
+	}
+	decim := transportDecim
+	return hilUDP.Set(ip, hilUDP.SetParams{Decim: &decim, TelemDst: a.localIP})
 }
 
 // Ping is a quick health check.
