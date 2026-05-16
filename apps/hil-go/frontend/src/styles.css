@@ -277,6 +277,15 @@ body {
 
 .btn-sm { font-size: 11px; padding: 4px 10px; flex: none; }
 
+/* Active state for toggle buttons (e.g. Pause when frozen). Stronger than
+   hover so the user always knows the view is held. */
+.btn-sm.active {
+  background: #3d2a00;
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.btn-sm.active:hover { background: #4a3300; }
+
 /* 3-col control row for Run/Pause/Stop */
 .btn-row-3 {
   grid-template-columns: repeat(3, 1fr) !important;
@@ -362,11 +371,18 @@ body {
 }
 
 .ch-cb {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   accent-color: var(--blue);
   cursor: pointer;
+  margin: 0;
 }
+
+/* Visual feedback when a channel is hidden — entire row dims so the user
+   can tell at a glance which series are visible without hunting for the
+   checkbox state. Color dot stays vivid as the only "active" cue. */
+.ch-row.ch-hidden { opacity: 0.4; }
+.ch-row.ch-hidden .ch-dot { opacity: 1; }
 
 .ch-name {
   font-size: 10.5px;

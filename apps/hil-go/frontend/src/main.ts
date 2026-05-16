@@ -197,16 +197,53 @@ const DISPLAY_MODE_STORAGE_KEY = "hil-display-mode";
 let displayMode: "ab" | "abc" = (localStorage.getItem(DISPLAY_MODE_STORAGE_KEY) as "ab" | "abc") || "abc";
 let CHANNELS: ChDef[] = displayMode === "abc" ? CHANNELS_ABC : CHANNELS_AB;
 let N_CH = CHANNELS.length;
-const MAX_SAMPLES = 100_000;
+const MAX_SAMPLES = 600_000;
+// Overview buffer: stores min+max of channel-0 (Iα) per 1000-sample bucket.
+// At 10 kHz / 1000 = 10 Hz decimation rate; each 100 ms bucket captures ~6
+// full electrical cycles of a 60 Hz motor, so the min/max pair preserves the
+// signal envelope accurately at any zoom level without aliasing.
+// 2 pts/bucket × 10 Hz × 7200 s ≈ 144 000 pts → ~2 h of session history.
+const OVERVIEW_EVERY = 1_000;
+const MAX_OVERVIEW_SAMPLES = 144_000;
+// Nominal telemetry rate. Used only to estimate sample timestamps when
+// pushing into the local time-series buffer (the board does not embed
+// per-sample timestamps in the UDP frames). Slight drift between this value
+// and the actual board rate is benign at chart resolution.
+const DISPLAY_SAMPLE_RATE_HZ = 10_000;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 const tBuf: number[]      = [];
 const samplesBuf: Sample[] = [];   // raw αβ samples paralelos a tBuf
+// Overview buffers — min+max envelope pairs per OVERVIEW_EVERY raw samples.
+// Used for rendering when the view extends further back than the high-res buffer.
+const ovTBuf: number[]    = [];
+const ovSBuf:  Sample[]   = [];
+let   ovCounter            = 0;
+// Per-bucket accumulators (reset each time ovCounter reaches OVERVIEW_EVERY).
+let ovBucketMinV = Infinity,  ovBucketMaxV = -Infinity;
+let ovBucketMinT = 0,         ovBucketMaxT = 0;
+let ovBucketMinS: Sample | null = null, ovBucketMaxS: Sample | null = null;
 let sampleCount = 0;
 let t0 = performance.now();
+let nextSampleTime = 0;
+let lastTelemetryBatchAt = 0;
+let estimatedSamplePeriod = 1 / DISPLAY_SAMPLE_RATE_HZ;
 let lastBoardState: string = "idle";
 let lastSampleAt = 0;             // ms — for "stream stalled" detection
-let liveMode = true;
+// ── Scope-style view state ────────────────────────────────────────────────────
+// Visible window = [viewEndSec - windowSec, viewEndSec].
+//   • Live (paused = false): viewEndSec tracks the latest sample.
+//   • Paused: viewEndSec is frozen at the value at pause time and only moves
+//     when the user pans (drag-x). Window can still change (wheel / buttons).
+// All plots share the SAME x range — we set it explicitly each frame instead
+// of relying on uPlot's auto-fit, which avoids the whole "live vs auto-fit"
+// guessing game that produced the prior bugs.
+let paused = false;
+let windowSec = 1.0;
+let viewEndSec = 0;
+const WINDOW_PRESETS_MS = [500, 1000, 5000, 30000, 60000];
+const WINDOW_MIN_SEC = 0.01;     //  10 ms — finest zoom
+const WINDOW_MAX_SEC = 60.0;     //  60 s  — full buffer width (= MAX_SAMPLES/fs)
 
 // Subplot state — derived from each channel's defaultSubplot.
 let nSubplots = 3;
@@ -322,12 +359,25 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
         </div>
 
+        <div class="subplot-layout-row">
+          <span class="subplot-layout-label">Window</span>
+          <div class="subplot-n-group" id="window-group">
+            <button class="subplot-n-btn" data-win-ms="500">500ms</button>
+            <button class="subplot-n-btn active" data-win-ms="1000">1s</button>
+            <button class="subplot-n-btn" data-win-ms="5000">5s</button>
+            <button class="subplot-n-btn" data-win-ms="30000">30s</button>
+            <button class="subplot-n-btn" data-win-ms="0">All</button>
+          </div>
+        </div>
+
+        <div class="btn-row" style="margin-top:6px">
+          <button id="btn-pause" class="btn btn-sm" title="Pause the live view (or use mouse wheel on plot)">⏸ Pause</button>
+          <button id="btn-latest" class="btn btn-sm" title="Snap to the latest sample and resume live follow">↻ Latest</button>
+        </div>
+
         <div id="ch-list" class="channel-list"></div>
 
         <div class="btn-row" style="margin-top:8px">
-          <button id="btn-live" class="btn btn-sm">Live</button>
-          <button id="btn-fit" class="btn btn-sm">Fit</button>
-          <button id="btn-smooth" class="btn btn-sm" title="Filtro passa-baixa: remove ripple do PWM (janela 10 amostras = 1 período de 1kHz)">Smooth</button>
           <button id="btn-clear" class="btn btn-sm">Clear</button>
         </div>
         <span id="sample-count" class="plot-info">0 samples</span>
@@ -368,9 +418,9 @@ const elBtnRun      = document.querySelector<HTMLButtonElement>("#btn-run")!;
 const elBtnStop     = document.querySelector<HTMLButtonElement>("#btn-stop")!;
 const elBtnReset    = document.querySelector<HTMLButtonElement>("#btn-reset")!;
 const elFreqBadge   = document.querySelector<HTMLDivElement>("#freq-badge")!;
-const elBtnLive     = document.querySelector<HTMLButtonElement>("#btn-live")!;
-const elBtnFit      = document.querySelector<HTMLButtonElement>("#btn-fit")!;
 const elBtnClear    = document.querySelector<HTMLButtonElement>("#btn-clear")!;
+const elBtnPause    = document.querySelector<HTMLButtonElement>("#btn-pause")!;
+const elBtnLatest   = document.querySelector<HTMLButtonElement>("#btn-latest")!;
 const elPsStatus    = document.querySelector<HTMLDivElement>("#ps-status")!;
 const elConnStatus  = document.querySelector<HTMLDivElement>("#conn-status")!;
 const elStateBadge  = document.querySelector<HTMLDivElement>("#state-badge")!;
@@ -434,7 +484,8 @@ function buildChannelList() {
     row.append(dot, cb, name, val, unit, badge);
     elChList.append(row);
 
-    cb.addEventListener("change", () => {
+    const applyVisible = () => {
+      row.classList.toggle("ch-hidden", !cb.checked);
       visible[i] = cb.checked;
       const s = chSubplot[i];
       if (s < plots.length) {
@@ -442,7 +493,9 @@ function buildChannelList() {
         const seriesIdx = chIdx.indexOf(i) + 1;
         if (seriesIdx > 0) plots[s].setSeries(seriesIdx, { show: cb.checked });
       }
-    });
+    };
+    applyVisible();  // initial state class
+    cb.addEventListener("change", applyVisible);
 
     badge.addEventListener("click", e => {
       e.preventDefault();
@@ -504,28 +557,57 @@ function setNSubplots(n: number) {
 // switching ripple. Win=10 ≈ one 1 kHz PWM period at 10 kHz sample rate.
 let smoothWin = 10;  // default: remove 1 kHz PWM ripple (10 samples = 1 PWM period)
 
-function decimateAndProject(maxPts: number): { xs: number[]; ys: number[][] } {
-  const n = tBuf.length;
+// Binary search: first index i with buf[i] >= target.
+function lowerBound(target: number, buf = tBuf): number {
+  let lo = 0, hi = buf.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (buf[mid] < target) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// Returns total session duration in seconds (from overview if available).
+function getSessionSec(): number {
+  if (ovTBuf.length > 1) return ovTBuf[ovTBuf.length - 1] - ovTBuf[0];
+  if (tBuf.length  > 1) return tBuf[tBuf.length - 1]  - tBuf[0];
+  return 0;
+}
+
+// Decimate an arbitrary time/sample buffer pair to ~maxPts points in [xMin, xMax].
+// xMin/xMax === null means "use the entire buffer".
+// Decimation works on the VISIBLE slice so zooming in always gives full resolution.
+function decimateFrom(
+  tbuf: number[], sbuf: Sample[],
+  maxPts: number, xMin: number | null, xMax: number | null,
+): { xs: number[]; ys: number[][] } {
+  const total = tbuf.length;
+  if (total === 0) return { xs: [], ys: Array.from({ length: N_CH }, () => []) };
+
+  const iStart = xMin == null ? 0     : lowerBound(xMin, tbuf);
+  const iEnd   = xMax == null ? total : lowerBound(xMax, tbuf);
+  const n = Math.max(0, iEnd - iStart);
   if (n === 0) return { xs: [], ys: Array.from({ length: N_CH }, () => []) };
 
-  // Helper: return the smoothed value for channel c at index i.
-  // When smoothWin=1 this is just a direct read (no overhead).
   const smoothed = smoothWin <= 1
-    ? (c: number, i: number) => CHANNELS[c].read(samplesBuf[i])
+    ? (c: number, i: number) => CHANNELS[c].read(sbuf[i])
     : (c: number, i: number) => {
         const half = Math.floor(smoothWin / 2);
         const lo = Math.max(0, i - half);
-        const hi = Math.min(n - 1, i + half);
+        const hi = Math.min(total - 1, i + half);
         let sum = 0;
-        for (let k = lo; k <= hi; k++) sum += CHANNELS[c].read(samplesBuf[k]);
+        for (let k = lo; k <= hi; k++) sum += CHANNELS[c].read(sbuf[k]);
         return sum / (hi - lo + 1);
       };
 
   if (n <= maxPts) {
-    return {
-      xs: tBuf.slice(),
-      ys: Array.from({ length: N_CH }, (_, c) => samplesBuf.map((_, i) => smoothed(c, i))),
-    };
+    const xs = tbuf.slice(iStart, iEnd);
+    const ys = Array.from({ length: N_CH }, (_, c) => {
+      const arr = new Array<number>(n);
+      for (let k = 0; k < n; k++) arr[k] = smoothed(c, iStart + k);
+      return arr;
+    });
+    return { xs, ys };
   }
 
   const buckets = Math.max(1, Math.floor(maxPts / 2));
@@ -533,13 +615,9 @@ function decimateAndProject(maxPts: number): { xs: number[]; ys: number[][] } {
   const xs: number[] = [];
   const ys: number[][] = Array.from({ length: N_CH }, () => []);
 
-  // Always use min/max envelope so AC peaks are preserved at any zoom level.
-  // In smooth mode, min/max is computed over the SMOOTHED signal — this shows
-  // the envelope of the fundamental (PWM ripple filtered out) instead of
-  // returning random-phase mid-point samples.
   for (let b = 0; b < buckets; b++) {
-    const i0 = Math.floor(b * bucketSize);
-    const i1 = Math.min(Math.floor((b + 1) * bucketSize), n) - 1;
+    const i0 = iStart + Math.floor(b * bucketSize);
+    const i1 = Math.min(iStart + Math.floor((b + 1) * bucketSize), iEnd) - 1;
     if (i0 > i1) continue;
 
     let minIdx = i0, maxIdx = i0;
@@ -552,15 +630,40 @@ function decimateAndProject(maxPts: number): { xs: number[]; ys: number[][] } {
     }
 
     const [first, second] = minIdx <= maxIdx ? [minIdx, maxIdx] : [maxIdx, minIdx];
-    xs.push(tBuf[first]);
+    xs.push(tbuf[first]);
     for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, first));
     if (first !== second) {
-      xs.push(tBuf[second]);
+      xs.push(tbuf[second]);
       for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, second));
     }
   }
 
   return { xs, ys };
+}
+
+// Route to the overview (downsampled) buffer only when the high-res buffer has
+// actually rolled (tBuf filled to capacity and started dropping old samples) AND
+// the view extends before the surviving high-res window. While the session is
+// younger than MAX_SAMPLES/fs (60 s), tBuf still holds every sample since t=0
+// and the overview is never needed — bypassing this avoids the zigzag artifact
+// that appears when viewStart goes slightly negative on a fresh session.
+function decimateAndProject(
+  maxPts: number,
+  xMin: number | null = null,
+  xMax: number | null = null,
+): { xs: number[]; ys: number[][] } {
+  const hiResRolled = tBuf.length >= MAX_SAMPLES;
+  const hiResStart  = tBuf.length > 0 ? tBuf[0] : null;
+  const useOverview = hiResRolled
+    && ovTBuf.length > 1
+    && hiResStart != null
+    && xMin != null
+    && xMin < hiResStart - 1.0;
+  return decimateFrom(
+    useOverview ? ovTBuf : tBuf,
+    useOverview ? ovSBuf : samplesBuf,
+    maxPts, xMin, xMax,
+  );
 }
 
 // Shared cursor sync key — all subplots show the cursor at the same x position.
@@ -569,15 +672,8 @@ const cursorSync = (uPlot as any).sync("hil");
 // X-axis sync guard — prevents recursive setScale loops when propagating.
 let scaleSyncing = false;
 
-function syncXScale(source: uPlot) {
-  if (scaleSyncing) return;
-  scaleSyncing = true;
-  const { min, max } = source.scales.x;
-  plots.forEach(p => { if (p !== source) p.setScale("x", { min: min ?? null, max: max ?? null }); });
-  // leaving live mode when user zooms/pans
-  if (min != null || max != null) liveMode = false;
-  scaleSyncing = false;
-}
+// All x-scale work is done explicitly in scheduleRender(); we keep the guard
+// flag because cursor.sync still needs to call setScale internally.
 
 // ── Build / rebuild all uPlot instances ───────────────────────────────────────
 function buildPlots() {
@@ -592,7 +688,10 @@ function buildPlots() {
   const h = plotHeight();
 
   const maxPts = Math.max(600, w * 2);
-  const { xs, ys } = decimateAndProject(maxPts);
+  const xScale = plots[0]?.scales?.x;
+  const xMin = xScale?.min ?? null;
+  const xMax = xScale?.max ?? null;
+  const { xs, ys } = decimateAndProject(maxPts, xMin, xMax);
 
   for (let s = 0; s < nSubplots; s++) {
     const chIdx = getChIdx(s);
@@ -612,6 +711,67 @@ function buildPlots() {
 
     const yLabel = chIdx.map(ci => CHANNELS[ci].unit).find(Boolean) ?? "Y";
 
+    // ── Wheel: zoom the time window. Window (zoom) and pause (scroll-or-not)
+    // are intentionally orthogonal — wheeling never touches pause state. If
+    // you're live and zoom out, you see more recent history including the
+    // present; if you're paused, the right edge stays where you left it.
+    wrap.addEventListener("wheel", (e: WheelEvent) => {
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.25 : 0.8;
+      const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
+      const next = clamp(windowSec * factor, WINDOW_MIN_SEC, maxSec);
+      if (next === windowSec) return;
+
+      // Freeze live follow so viewEndSec is stable during zoom
+      if (!paused) {
+        paused = true;
+        viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
+      }
+
+      // Keep the time value under the cursor at the same screen position.
+      // mouseRatio: 0 = left edge, 1 = right edge of the plot.
+      const rect = wrap.getBoundingClientRect();
+      const mouseRatio = (e.clientX - rect.left) / rect.width;
+      const timeCursor = (viewEndSec - windowSec) + mouseRatio * windowSec;
+
+      // After zoom: newViewEnd so timeCursor stays at mouseRatio.
+      viewEndSec = timeCursor + (1 - mouseRatio) * next;
+
+      windowSec = next;
+      updateWindowButtons();
+      scheduleRender();
+    }, { passive: false });
+
+    // ── Drag horizontal: pan in time. Active only while paused (in live
+    // mode a pan would fight the auto-scroll, so we ignore drags there).
+    let dragStartX: number | null = null;
+    let dragStartViewEnd = 0;
+    wrap.addEventListener("mousedown", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      if (!paused) {
+        paused = true;
+        viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
+        scheduleRender();
+      }
+      dragStartX = e.clientX;
+      dragStartViewEnd = viewEndSec;
+      wrap.style.cursor = "grabbing";
+    });
+    const onMove = (e: MouseEvent) => {
+      if (dragStartX == null) return;
+      const dx = e.clientX - dragStartX;
+      const pxPerSec = wrap.clientWidth / windowSec;
+      viewEndSec = dragStartViewEnd - dx / pxPerSec;
+      scheduleRender();
+    };
+    const onUp = () => {
+      if (dragStartX == null) return;
+      dragStartX = null;
+      wrap.style.cursor = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+
     const p = new uPlot(
       {
         width: w,
@@ -619,7 +779,11 @@ function buildPlots() {
         pxAlign: 0,
         cursor: {
           show: true,
-          drag: { x: true, y: false, uni: 50 },
+          // No drag-zoom: window changes come from the explicit Window
+          // buttons or mouse wheel. Click-drag on the plot pans the time
+          // axis (handled by the DOM listeners above). Removing uPlot's
+          // own drag-select avoids the previous "weird zoom" feedback loop.
+          drag: { x: false, y: false, setScale: false },
           sync: { key: cursorSync.key },
         },
         scales: { x: { time: false } },
@@ -633,10 +797,12 @@ function buildPlots() {
           },
         ],
         series,
-        legend: { show: true, live: true },
-        hooks: {
-          setScale: [(u: uPlot, key: string) => { if (key === "x") syncXScale(u); }],
-        },
+        // Internal legend is disabled — the side "PLOTS" panel already lists
+        // every channel with its live numeric value and color dot. Keeping
+        // the per-subplot legend stole height from the canvas (legend lives
+        // BELOW the plot inside the wrap, not accounted for by plotHeight()),
+        // which clipped the last subplot's x-axis when nSubplots=3+.
+        legend: { show: false },
       },
       [xs, ...chIdx.map(ci => ys[ci])] as uPlot.AlignedData,
       wrap,
@@ -666,33 +832,74 @@ function scheduleRender() {
   renderPending = true;
   requestAnimationFrame(() => {
     renderPending = false;
+
+    // Resolve the visible window. While running live we keep the right edge
+    // glued to the most recent sample; while paused viewEndSec is whatever
+    // the pause/pan left behind.
+    if (!paused && tBuf.length > 0) {
+      viewEndSec = tBuf[tBuf.length - 1];
+    }
+    const viewEnd   = viewEndSec;
+    const viewStart = viewEnd - windowSec;
+
     const w = elPlotArea.clientWidth || 800;
     const maxPts = Math.max(600, w * 2);
-    const { xs, ys } = decimateAndProject(maxPts);
+    const { xs, ys } = decimateAndProject(maxPts, viewStart, viewEnd);
 
+    scaleSyncing = true;
     plots.forEach((p, s) => {
       const chIdx = getChIdx(s);
       p.setData([xs, ...chIdx.map(ci => ys[ci])] as uPlot.AlignedData);
+      // Explicit, identical X scale on every plot — no auto-fit, no surprise
+      // range shifts. uPlot's cursor.sync still keeps the crosshair aligned.
+      p.setScale("x", { min: viewStart, max: viewEnd });
     });
-    if (liveMode) {
-      scaleSyncing = true;
-      plots.forEach(p => p.setScale("x", { min: null, max: null }));
-      scaleSyncing = false;
-    }
+    scaleSyncing = false;
 
     elSampleCount.textContent = `${sampleCount.toLocaleString()} samples`;
+    elBtnPause.textContent = paused ? "▶ Resume" : "⏸ Pause";
+    elBtnPause.classList.toggle("active", paused);
+    elBtnLatest.disabled = !paused;
   });
 }
 
 // ── Telemetry events ──────────────────────────────────────────────────────────
 api.onTelemetry((samples: Sample[]) => {
   if (!Array.isArray(samples) || samples.length === 0) return;
-  lastSampleAt = performance.now();
+  const nowMs = performance.now();
+  const nowSec = (nowMs - t0) / 1000;
+  lastSampleAt = nowMs;
+
+  if (lastTelemetryBatchAt === 0) {
+    nextSampleTime = Math.max(0, nowSec - estimatedSamplePeriod * (samples.length - 1));
+  }
+  lastTelemetryBatchAt = nowSec;
 
   for (const s of samples) {
-    const t = (performance.now() - t0) / 1000;
-    tBuf.push(t);
+    tBuf.push(nextSampleTime);
     samplesBuf.push(s);
+    // Track min+max of Iα within the current overview bucket (s.Ia = Iα).
+    const v0 = s.Ia;
+    if (v0 < ovBucketMinV) { ovBucketMinV = v0; ovBucketMinT = nextSampleTime; ovBucketMinS = s; }
+    if (v0 > ovBucketMaxV) { ovBucketMaxV = v0; ovBucketMaxT = nextSampleTime; ovBucketMaxS = s; }
+    if (++ovCounter >= OVERVIEW_EVERY) {
+      ovCounter = 0;
+      if (ovBucketMinS !== null) {
+        // Emit min and max in chronological order (same convention as decimateFrom).
+        const [fT, fS, sT, sS] = ovBucketMinT <= ovBucketMaxT
+          ? [ovBucketMinT, ovBucketMinS, ovBucketMaxT, ovBucketMaxS!]
+          : [ovBucketMaxT, ovBucketMaxS!, ovBucketMinT, ovBucketMinS];
+        ovTBuf.push(fT); ovSBuf.push(fS);
+        if (fT !== sT) { ovTBuf.push(sT); ovSBuf.push(sS); }
+        if (ovTBuf.length > MAX_OVERVIEW_SAMPLES) {
+          const trim = ovTBuf.length - MAX_OVERVIEW_SAMPLES;
+          ovTBuf.splice(0, trim); ovSBuf.splice(0, trim);
+        }
+      }
+      ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
+      ovBucketMinS = null;     ovBucketMaxS = null;
+    }
+    nextSampleTime += estimatedSamplePeriod;
     sampleCount++;
   }
 
@@ -791,10 +998,12 @@ function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
   if (!s) return;
   setStateBadge(s.state);
   applyBoardIP(s.board_ip);
-  // Hydrate form fields only when the board carries a real config (running/paused).
+  // Hydrate form fields only when the board is actively running. A telemetry
+  // attach can put the daemon in paused with freq=0, and copying that back into
+  // the form makes the next Run command start with a zero-speed target.
   // After Stop the board reports zeroed safe-defaults — we don't want those
   // clobbering whatever the user typed in.
-  const hydrate = opts.hydrate ?? (s.state !== "stopped" && s.state !== "idle");
+  const hydrate = opts.hydrate ?? (s.state === "running");
   if (hydrate) {
     const npp = getNpp();
     if (s.freq_hz      != null) elRpm.value       = String(Math.round(s.freq_hz * 60 / npp));
@@ -817,16 +1026,26 @@ function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
 }
 
 function resetPlotBuffer() {
-  liveMode = true;
+  paused = false;
+  viewEndSec = 0;
   tBuf.length = 0;
   samplesBuf.length = 0;
+  ovTBuf.length = 0;
+  ovSBuf.length = 0;
+  ovCounter = 0;
+  ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
+  ovBucketMinS = null;     ovBucketMaxS = null;
   sampleCount = 0;
   t0 = performance.now();
+  nextSampleTime = 0;
+  lastTelemetryBatchAt = 0;
+  estimatedSamplePeriod = 1 / DISPLAY_SAMPLE_RATE_HZ;
   plots.forEach((p, s) => {
     const chIdx = getChIdx(s);
     p.setData([[], ...chIdx.map(() => [])] as uPlot.AlignedData);
   });
   elSampleCount.textContent = "0 samples";
+  scheduleRender();
 }
 
 // ── Button handlers ───────────────────────────────────────────────────────────
@@ -850,7 +1069,7 @@ elBtnConnect.addEventListener("click", () => withButton(elBtnConnect, async () =
   rememberBoardIP(boardIP);
   showConnStatus(`Connected to ${boardIP} — daemon ${s.state}`, true);
   setStatus(`Connected to ${boardIP}`, "ok");
-  applyResponse(s);
+  applyResponse(s, { hydrate: false });
 }));
 
 elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
@@ -864,7 +1083,7 @@ elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
 
 elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
   const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
-  resetPlotBuffer();
+  resetPlotBuffer();   // clears tBuf and re-enters live (paused = false)
   await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
   const s = await api.Run(ip) as HilStatus;
   applyBoardIP(s.board_ip);
@@ -894,32 +1113,10 @@ elBtnStop.addEventListener("click", () => withButton(elBtnStop, async () => {
   applyResponse(s);
 }));
 
-function fitPlots() {
-  liveMode = false;
-  scaleSyncing = true;
-  plots.forEach(p => p.setScale("x", { min: null, max: null }));
-  scaleSyncing = false;
-  setStatus("Plot fitted to buffered data", "ok");
-}
-
-function enableLiveMode() {
-  liveMode = true;
-  scaleSyncing = true;
-  plots.forEach(p => p.setScale("x", { min: null, max: null }));
-  scaleSyncing = false;
-  setStatus("Live mode", "ok");
-}
-
-elBtnFit.addEventListener("click", fitPlots);
-elBtnLive.addEventListener("click", enableLiveMode);
-
-const elBtnSmooth = document.querySelector<HTMLButtonElement>("#btn-smooth")!;
-elBtnSmooth.classList.add("active");  // default on
-elBtnSmooth.addEventListener("click", () => {
-  smoothWin = smoothWin <= 1 ? 10 : 1;
-  elBtnSmooth.classList.toggle("active", smoothWin > 1);
-  scheduleRender();
-});
+// Smoothing (10-sample boxcar ≈ 1 ms ≈ 1 PWM period at 10 kHz) is always on
+// — it cancels residual PWM ripple in min/max envelope rendering. Live mode
+// (auto-follow tail) is also always on; user panning/zooming disables it
+// automatically via the setScale hook.
 
 function detachOnExit() {
   const ip = elIp.value.trim();
@@ -938,6 +1135,65 @@ function detachOnExit() {
 }
 
 window.addEventListener("pagehide", detachOnExit);
+
+// ── Scope-style view controls ────────────────────────────────────────────────
+function clamp(v: number, lo: number, hi: number) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+function updateWindowButtons() {
+  const session = getSessionSec();
+  document.querySelectorAll<HTMLButtonElement>("#window-group button[data-win-ms]")
+    .forEach(b => {
+      const ms = Number(b.dataset.winMs);
+      if (ms === 0) {
+        // "All" is active when the window covers (nearly) the full session.
+        b.classList.toggle("active", session > 0 && windowSec >= session - 0.5);
+      } else {
+        b.classList.toggle("active", Math.abs(ms / 1000 - windowSec) < 1e-6);
+      }
+    });
+}
+
+document.querySelectorAll<HTMLButtonElement>("#window-group button[data-win-ms]")
+  .forEach(b => {
+    b.addEventListener("click", () => {
+      const ms = Number(b.dataset.winMs);
+      if (ms === 0) {
+        // "All" — zoom out to cover the complete session and pause the view.
+        const session = getSessionSec();
+        windowSec = session > 0 ? session + 5 : WINDOW_MAX_SEC;
+        paused = true;
+        const end = ovTBuf.length > 0
+          ? ovTBuf[ovTBuf.length - 1]
+          : (tBuf.length > 0 ? tBuf[tBuf.length - 1] : 0);
+        viewEndSec = end + 2;
+      } else {
+        const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
+        windowSec = clamp(ms / 1000, WINDOW_MIN_SEC, maxSec);
+      }
+      updateWindowButtons();
+      scheduleRender();
+    });
+  });
+updateWindowButtons();
+
+elBtnPause.addEventListener("click", () => {
+  if (paused) {
+    // Resuming → snap to latest so we don't show a stale freeze with
+    // newer samples lurking off-screen on the right.
+    paused = false;
+  } else {
+    paused = true;
+    viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
+  }
+  scheduleRender();
+});
+
+elBtnLatest.addEventListener("click", () => {
+  paused = false;
+  scheduleRender();
+});
 
 elBtnClear.addEventListener("click", resetPlotBuffer);
 
