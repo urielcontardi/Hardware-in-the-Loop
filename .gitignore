@@ -87,6 +87,9 @@ Thumbs.db
 # Claude session files
 .claude/
 
+# Credenciais da placa — NUNCA commitar
+scripts/board.sh
+
 # Build output (binaries)
 build/
 src/ps_app/hil_controller
