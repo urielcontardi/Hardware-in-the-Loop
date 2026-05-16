@@ -33,6 +33,15 @@ static telem_sample_t    burst[TELEM_BURST];
 static int               burst_idx  = 0;
 static uint8_t           last_flags = 0;
 
+static void set_udp_reuse(int sock)
+{
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef SO_REUSEPORT
+    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
+}
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
 int telem_init(const char *dest_ip)
@@ -42,8 +51,7 @@ int telem_init(const char *dest_ip)
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("telem: socket"); return -1; }
 
-    int yes = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    set_udp_reuse(sock);
 
     struct sockaddr_in src_addr;
     memset(&src_addr, 0, sizeof(src_addr));

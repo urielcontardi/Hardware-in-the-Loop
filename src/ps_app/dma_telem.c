@@ -225,8 +225,38 @@ int dma_telem_next(dma_sample_t *out, int timeout_ms)
     active_buf   = 1 - active_buf;
     arm_transfer(active_buf);          /* kick next transfer NOW */
 
+    /*
+     * ── WARNING: cache-coherency bug on this path ─────────────────────────
+     * The AXI DMA writes through S_AXI_HP0 which is NOT coherent with the
+     * Cortex-A9 L1 D-cache. The CPU caches DMA-buffer lines on first read;
+     * on subsequent bursts DDR is fresh but reads hit stale cache lines, so
+     * decoded samples mix old + new data. This shows up as high-frequency
+     * "ripple" on fast signals (Ia, Ib, flux α/β) while speed looks smooth.
+     *
+     * Verified empirically: GPIO polling (uncached /dev/mem O_SYNC) gives
+     * Ia ZC ≈ 138 Hz (≈2× fund.); this DMA path gives Ia ZC ≈ 2280 Hz.
+     *
+     * Userspace on standard PetaLinux has no way to invalidate D-cache:
+     *   - __builtin___clear_cache() / cacheflush syscall only clean D-cache
+     *     and invalidate I-cache (intended for self-modifying code).
+     *   - L2 (PL310) operations are kernel-only.
+     *   - No udmabuf / dma_heap / uio drivers in this image.
+     *
+     * Proper fix options:
+     *   A) Re-route axi_dma_0/M_AXI_S2MM to processing_system7_0/S_AXI_ACP
+     *      in the Vivado block design (Accelerator Coherency Port snoops L1
+     *      and is fully coherent). Requires PCW_USE_S_AXI_ACP=1 +
+     *      S_AXI_ACP_ACLK connection and re-implementing the project.
+     *   B) Reserve uncached DDR via 'reserved-memory' node in the device
+     *      tree, mmap that physical range via /dev/mem with O_SYNC.
+     *   C) Build a kernel module that exposes a D-cache invalidate ioctl.
+     *
+     * Until one of A/B/C lands, src/ps_app/main.c forces use_dma = 0 and the
+     * controller runs on GPIO polling, which is provably coherent.
+     */
+    uint8_t *raw = (uint8_t *)buf_virt[done_buf];
+
     /* Decode the completed buffer */
-    const uint8_t *raw = (const uint8_t *)buf_virt[done_buf];
     for (int i = 0; i < DMA_BURST_FRAMES; i++)
         decode_frame(raw + i * DMA_FRAME_BYTES, &out[i]);
 

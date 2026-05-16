@@ -59,6 +59,15 @@ static void timer_handler(int sig, siginfo_t *si, void *uc)
 
 static timer_t g_timerid;
 
+static void set_udp_reuse(int sock)
+{
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef SO_REUSEPORT
+    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+#endif
+}
+
 static int setup_1khz_timer(void)
 {
     struct sigaction sa = {
@@ -104,8 +113,8 @@ static volatile int telem_active = 0;
  * the legacy GPIO-polling path if DMA init fails.
  *
  * Rate:
- *   DMA burst = 512 frames at ~10 kHz → each transfer takes ~51 ms.
- *   Push 512 samples per burst → 512 × 32 samples/packet → ~16 UDP packets.
+ *   DMA burst = DMA_BURST_FRAMES at ~10 kHz.
+ *   Each DMA sample is forwarded through the existing UDP telemetry path.
  */
 static int use_dma = 0;    /* set to 1 if DMA init succeeds */
 
@@ -120,15 +129,25 @@ static void *telem_thread_fn(void *arg)
     if (use_dma) {
         /* ── DMA double-buffer path ────────────────────────────────── */
         dma_sample_t dma_buf[DMA_BURST_FRAMES];
+        int dma_errors = 0;
 
         while (running && telem_active) {
             /* dma_telem_next: waits for active buffer, re-arms the other,
              * then decodes — DMA is always running with minimal gap. */
             int n = dma_telem_next(dma_buf, 500 /* ms timeout */);
             if (n <= 0) {
+                if (++dma_errors >= 3) {
+                    fprintf(stderr,
+                            "dma_telem: disabling DMA telemetry after errors; "
+                            "falling back to GPIO polling\n");
+                    dma_telem_deinit();
+                    use_dma = 0;
+                    break;
+                }
                 usleep(10000);
                 continue;
             }
+            dma_errors = 0;
 
             vf_params_t p;
             vf_get_params(&p);
@@ -144,12 +163,32 @@ static void *telem_thread_fn(void *arg)
                            flags);
             }
         }
-    } else {
-        /* ── GPIO fallback — 10 kHz polling ────────────────────────── */
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 100000 }; /* 100 µs */
+    }
+
+    if (!use_dma) {
+        /* ── GPIO polling — read TIM_Solver monitors via /dev/mem ──────
+         *
+         * /dev/mem mapping for the AXI GPIO monitors is opened with O_SYNC,
+         * so the mappings are uncached — every load goes to the device and
+         * sees the value the FPGA wrote, no cache coherency issue (unlike
+         * the AXI DMA HP-slave path).
+         *
+         * Pacing: clock_nanosleep(TIMER_ABSTIME) on CLOCK_MONOTONIC keeps
+         * the deadline absolute — drift from one iteration doesn't cascade.
+         * Target period 100 µs (10 kHz). Linux non-RT scheduler will jitter
+         * by tens of µs, but the *average* rate stays at 10 kHz over time.
+         */
+        const long period_ns = 100000L;  /* 100 µs → 10 kHz */
+        struct timespec next;
+        clock_gettime(CLOCK_MONOTONIC, &next);
 
         while (running && telem_active) {
-            nanosleep(&ts, NULL);
+            next.tv_nsec += period_ns;
+            if (next.tv_nsec >= 1000000000L) {
+                next.tv_nsec -= 1000000000L;
+                next.tv_sec  += 1;
+            }
+            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
 
             vf_params_t p;
             vf_get_params(&p);
@@ -511,8 +550,8 @@ static int start_discovery(void)
     disc_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (disc_sock < 0) { perror("disc socket"); return -1; }
 
+    set_udp_reuse(disc_sock);
     int yes = 1;
-    setsockopt(disc_sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     setsockopt(disc_sock, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
 
     struct sockaddr_in addr = {
@@ -556,14 +595,21 @@ int main(void)
     if (vf_init()   < 0)  return 1;
     if (setup_1khz_timer() < 0) return 1;
 
-    /* DMA telemetry disabled: HP port configuration mismatch causes
-     * DMAIntErr (DMASR bit4) on the Zynq AXI HP port — needs block design
-     * investigation. Using GPIO polling at 10 kHz in the meantime. */
+    /* DIAGNOSTIC: forcibly disable DMA to isolate cache-coherency bug.
+     * AXI DMA HP-slave path is NOT cache-coherent with Cortex-A9; userspace
+     * lacks the D-cache invalidate operation needed before each buffer read.
+     * GPIO polling reads via /dev/mem with O_SYNC (uncached) and is provably
+     * coherent. If signals come back clean on this fallback, the bug is in
+     * dma_telem coherency and the proper fix is to re-route AXI DMA to
+     * S_AXI_ACP in the Vivado design (cache-coherent port) or to use a
+     * kernel module that exposes a D-cache invalidate ioctl. */
     use_dma = 0;
-    printf("Telemetry: GPIO polling 10 kHz\n");
+    printf("Telemetry: GPIO polling 10 kHz (DMA disabled for coherency)\n");
+    (void)0; /* dma_telem_init not called */
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return 1; }
+    set_udp_reuse(sock);
 
     struct sockaddr_in addr = {
         .sin_family      = AF_INET,
@@ -576,6 +622,19 @@ int main(void)
 
     struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    /* Drain any stale datagrams that accumulated while the process was stopped
+     * (e.g. from a gateway subnet scan). Without this, old pings queue up and
+     * block real commands for seconds after each restart. */
+    {
+        int fl = fcntl(sock, F_GETFL, 0);
+        fcntl(sock, F_SETFL, fl | O_NONBLOCK);
+        char drain[512];
+        int drained = 0;
+        while (recv(sock, drain, sizeof(drain), 0) > 0) drained++;
+        if (drained) printf("Drained %d stale datagrams from cmd socket.\n", drained);
+        fcntl(sock, F_SETFL, fl);
+    }
 
     if (start_discovery() == 0)
         printf("Discovery responder on UDP port %d\n", DISCOVERY_PORT);
