@@ -52,9 +52,9 @@ O PS (ARM Cortex-A9, Linux/PetaLinux) executa o algoritmo V/F e escreve as refer
 │  └──────┬──────────┘                                     └──────────────┘   │
 │         │ AXI SmartConn (DMA→HP0)                                           │
 │         ▼                                                                   │
-│  ┌──────────────┐  S2MM   ┌───────────┐                                     │
-│  │   AXI DMA    │◄────────│  Stream   │                                     │
-│  │   (S2MM)     │         │  (256b)   │                                     │
+│  ┌──────────────┐  S2MM   ┌──────────────┐   ┌───────────┐                  │
+│  │   AXI DMA    │◄────────│ AXIS DWidth  │◄──│  Stream   │                  │
+│  │   (S2MM 64b) │         │  256b→64b    │   │  (256b)   │                  │
 │  └──────┬───────┘         └───────────┘                                     │
 │         │ M_AXI_S2MM (AXI4, 64b) → HP0 → DDR                                │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -75,7 +75,8 @@ O PS (ARM Cortex-A9, Linux/PetaLinux) executa o algoritmo V/F e escreve as refer
 | `axi_gpio_monitor_1` | AXI GPIO | Ch1=ialpha, Ch2=ibeta (leitura PL→PS) |
 | `axi_gpio_monitor_2` | AXI GPIO | Ch1=flux_alpha, Ch2=flux_beta (leitura PL→PS) |
 | `axi_gpio_monitor_3` | AXI GPIO | Ch1=speed, Ch2=data_valid (leitura PL→PS) |
-| `axi_dma_0` | AXI DMA | S2MM apenas (stream PL → DDR), sem SG, 256-bit |
+| `axis_dwidth_converter_0` | AXI4-Stream Data Width Converter | Reduz stream do solver de 256 bits para 64 bits |
+| `axi_dma_0` | AXI DMA | S2MM apenas (stream PL → DDR), sem SG, S_AXIS/M_AXI em 64 bits |
 | `hil_axi_top_0` | HIL_AXI_Top | Wrapper: NPCManager + TIM_Solver + AXI Stream |
 
 ---
@@ -255,7 +256,7 @@ Portadora triangular (1 kHz, CARRIER_MAX=25000):
           valley   valley
           │        │
           ├──► carrier_tick_o = 1 pulso (1 ciclo de clock)
-          │    → IRQ_F2P[0] → PS acorda ISR
+          │    → irq_concat_0/In0 → IRQ_F2P[0] → PS acorda ISR
           │
           └──► NPCModulator trava va/vb/vc do ciclo anterior
                (referencias escritas pelo PS no ciclo anterior)
@@ -438,7 +439,7 @@ sudo ./flash_sd.sh /dev/sdX
 | Item | Status | Descrição |
 |------|--------|-----------|
 | Fault readback | Ausente | `fault_o`, `fs_fault_o`, `minw_fault_o` do NPCManager não mapeados no PS |
-| DMA interrupt | Polling | `s2mm_introut` não conectado ao IRQ_F2P; PS faz polling em `S2MM_DMASR` |
+| DMA interrupt | PL ligado, PS pendente | `s2mm_introut` ligado em `IRQ_F2P[1]`; PS ainda pode trocar polling de `S2MM_DMASR` por UIO/`poll()` |
 | DDR reservation | Manual | Endereço `0x3E000000` hardcoded; device tree não gerado automaticamente |
 | IRQ-driven VF | ISR Linux | Usar `UIO` ou `signal(SIGIO)` para latência determinística |
 | Escala Q real | TBD | Fator de escala exato das saídas do TIM_Solver a confirmar com parâmetros do motor |

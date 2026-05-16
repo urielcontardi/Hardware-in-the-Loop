@@ -14,11 +14,11 @@
 -- Cutoff frequency (small-α approximation):
 --     fc = 1 / (2π·τ),   τ ≈ Ts · 2^ALPHA_BITS
 --
--- At Ts = 270 ns (3.7 MHz solver step) and ALPHA_BITS = 9:
+-- At Ts = 270 ns (3.704 MHz solver step) and ALPHA_BITS = 9:
 --     τ ≈ 138 µs,   fc ≈ 1.15 kHz
--- This is the anti-aliasing cutoff for a decimator targeting 10 kHz output
--- (Nyquist = 5 kHz; we set fc safely below at ~1 kHz to suppress the 1 kHz
--- PWM ripple and its harmonics before downsampling).
+-- Anti-aliasing for the 3.7 MHz → 10 kHz decimator (Nyquist 5 kHz). PWM ripple
+-- itself is filtered ~45× by the motor inductance in the solver path (confirmed
+-- by the offline cocotb simulation), so a heavier IIR is not needed.
 
 library ieee;
 use ieee.std_logic_1164.all;

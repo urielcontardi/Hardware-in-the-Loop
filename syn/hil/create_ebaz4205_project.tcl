@@ -402,7 +402,11 @@ proc cr_bd_ebaz4205 {} {
     ] $gpio_mon3
 
     # ── AXI DMA : TIM_Solver → DDR via HP0 (somente S2MM) ────────────────────
-    #   Stream de 256 bits: {46'b0, speed, flux_b, flux_a, ibeta, ialpha}
+    #   HIL_AXI_Top gera frames de 256 bits:
+    #       {46'b0, speed, flux_b, flux_a, ibeta, ialpha}
+    #   O DMA fica 64b/64b para casar nativamente com HP0 do Zynq-7
+    #   (AXI3, 64-bit fixo). A redução 256 → 64 fica fora do DMA, em um
+    #   AXI4-Stream Data Width Converter.
     set axi_dma [create_bd_cell -type ip \
                      -vlnv xilinx.com:ip:axi_dma:7.1 axi_dma_0]
     set_property -dict [list \
@@ -410,10 +414,29 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.c_include_mm2s            {0}   \
         CONFIG.c_include_s2mm            {1}   \
         CONFIG.c_s2mm_burst_size         {16}  \
-        CONFIG.c_m_axi_s2mm_data_width   {256} \
-        CONFIG.c_s_axis_s2mm_tdata_width {256} \
+        CONFIG.c_m_axi_s2mm_data_width   {64}  \
+        CONFIG.c_s_axis_s2mm_tdata_width {64}  \
         CONFIG.c_sg_length_width         {26}  \
     ] $axi_dma
+
+    # ── AXI4-Stream width converter : 256b solver stream → 64b DMA stream ───
+    set axis_dwidth_converter [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:axis_dwidth_converter:1.1 axis_dwidth_converter_0]
+    set_property -dict [list \
+        CONFIG.S_TDATA_NUM_BYTES {32} \
+        CONFIG.M_TDATA_NUM_BYTES {8}  \
+        CONFIG.HAS_TLAST         {1}  \
+        CONFIG.HAS_TKEEP         {1}  \
+    ] $axis_dwidth_converter
+
+    # ── IRQ concat : IRQ_F2P[0]=carrier_tick, IRQ_F2P[1]=DMA S2MM ───────────
+    set irq_concat [create_bd_cell -type ip \
+        -vlnv xilinx.com:ip:xlconcat:2.1 irq_concat_0]
+    set_property -dict [list \
+        CONFIG.NUM_PORTS {2} \
+        CONFIG.IN0_WIDTH {1} \
+        CONFIG.IN1_WIDTH {1} \
+    ] $irq_concat
 
     # ── proc_sys_reset : gera reset síncrono ao FCLK0 ────────────────────────
     set psr [create_bd_cell -type ip \
@@ -436,6 +459,7 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins axi_gpio_monitor_3/s_axi_aclk] \
         [get_bd_pins axi_dma_0/s_axi_lite_aclk] \
         [get_bd_pins axi_dma_0/m_axi_s2mm_aclk] \
+        [get_bd_pins axis_dwidth_converter_0/aclk] \
         [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] \
         [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] \
         [get_bd_pins hil_axi_top_0/clk]
@@ -452,6 +476,7 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins axi_gpio_monitor_2/s_axi_aresetn] \
         [get_bd_pins axi_gpio_monitor_3/s_axi_aresetn] \
         [get_bd_pins axi_dma_0/axi_resetn] \
+        [get_bd_pins axis_dwidth_converter_0/aresetn] \
         [get_bd_pins hil_axi_top_0/rst_n]
 
     # ── PS7 GP0 → SmartConnect 0 ──────────────────────────────────────────────
@@ -523,9 +548,15 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_axi_top_0/dbg_dv_latch_o] \
         [get_bd_pins hil_regs_0/dbg_dv_latch_i]
 
-    # ── HIL module → PS7 : interrupção de portadora (1 kHz) ──────────────────
+    # ── PL → PS7 : interrupções fabricadas ───────────────────────────────────
     connect_bd_net \
         [get_bd_pins hil_axi_top_0/carrier_tick_o] \
+        [get_bd_pins irq_concat_0/In0]
+    connect_bd_net \
+        [get_bd_pins axi_dma_0/s2mm_introut] \
+        [get_bd_pins irq_concat_0/In1]
+    connect_bd_net \
+        [get_bd_pins irq_concat_0/dout] \
         [get_bd_pins processing_system7_0/IRQ_F2P]
 
     # ── HIL module → AXI GPIO monitoramento ───────────────────────────────────
@@ -548,9 +579,12 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_axi_top_0/data_valid_mon_o] \
         [get_bd_pins axi_gpio_monitor_3/gpio2_io_i]
 
-    # ── HIL module AXI4-Stream → DMA (interface connection) ──────────────────
+    # ── HIL module AXI4-Stream → width converter → DMA ───────────────────────
     connect_bd_intf_net \
         [get_bd_intf_pins hil_axi_top_0/m_axis] \
+        [get_bd_intf_pins axis_dwidth_converter_0/S_AXIS]
+    connect_bd_intf_net \
+        [get_bd_intf_pins axis_dwidth_converter_0/M_AXIS] \
         [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM]
 
     # ── Atribuição automática de endereços ────────────────────────────────────
@@ -789,7 +823,8 @@ puts "   HIL_AXI_Top    : NPCManager + NPC->Voltage + TIM_Solver"
 puts "   HIL_Regs_AXI    : va/vb/vc, pwm_ctrl, vdc, torque, debug readback"
 puts "   AXI GPIO leitura: axi_gpio_monitor_{1,2,3} (ialpha,ibeta,flux,speed)"
 puts "   IRQ_F2P\[0\]    : carrier_tick_o (1 kHz, 1 pulso/periodo)"
-puts "   AXI DMA S2MM   : axi_dma_0 (256b stream -> HP0 -> DDR)"
+puts "   IRQ_F2P\[1\]    : axi_dma_0/s2mm_introut"
+puts "   AXI DMA S2MM   : 256b stream -> axis_dwidth_converter_0 -> 64b DMA -> HP0"
 puts ""
 puts " Enderecos (confirmar apos sintese no Address Editor)"
 puts " Proximos passos:"

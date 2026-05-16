@@ -219,8 +219,11 @@ Architecture rtl of HIL_AXI_Top is
     --------------------------------------------------------------------------
     -- Registrador AXI4-Stream + Decimador
     --------------------------------------------------------------------------
+    constant AXIS_DMA_BURST_FRAMES_C : natural := 128;
     signal axis_tdata_r   : std_logic_vector(255 downto 0);
     signal axis_tvalid_r  : std_logic;
+    signal axis_tlast_r   : std_logic;
+    signal axis_frame_cnt : unsigned(6 downto 0);
     signal decim_count    : unsigned(29 downto 0);
     signal decim_ratio    : unsigned(29 downto 0);
 
@@ -351,12 +354,14 @@ Begin
     );
 
     --------------------------------------------------------------------------
-    -- Anti-aliasing low-pass for the DECIMATOR path only.
-    --   α = 2^-9  →  τ ≈ 138 µs  →  fc ≈ 1.15 kHz
-    -- A decimação de 3.7 MHz → 10 kHz (decim=375) tem Nyquist em 5 kHz; sem
-    -- este pré-filtro, harmônicos do PWM (1, 2, 3, 4 kHz) sofrem aliasing
-    -- na saída do decimador. Os GPIO monitors abaixo NÃO usam estes sinais —
-    -- preservam o conteúdo bruto do solver para fidelidade HIL.
+    -- Anti-aliasing low-pass para o caminho de DECIMADOR + monitores GPIO.
+    --   α = 2^-9  →  τ ≈ 138 µs  →  fc ≈ 1.15 kHz @ fs = 3.704 MHz
+    --
+    -- Dimensionamento: Nyquist do decimador (3.704 MHz → 10 kHz) é 5 kHz;
+    -- fc=1.15 kHz garante AA sem distorcer o fundamental do motor (≤ ~100 Hz
+    -- elétrico). NÃO precisa ser mais agressivo: a própria indutância do
+    -- motor (|jωL|=19.7 Ω @1kHz vs Rs=0.435 Ω) já filtra o ripple PWM ~45×
+    -- na geração da corrente — confirmado pela simulação offline (cocotb).
     --------------------------------------------------------------------------
     IIR_aa_ialpha : entity work.IIRFilter
         generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
@@ -384,11 +389,10 @@ Begin
                   data_valid => data_valid_s, x_i => speed_s, y_o => speed_aa);
 
     --------------------------------------------------------------------------
-    -- Monitoramento físico (FILTRADO): 32 MSBs do sinal pós-IIR anti-aliasing.
-    --   O polling do PS via /dev/mem é assíncrono (~10 kHz com jitter), que
-    --   é uma forma de amostragem. Sem filtro, o ripple PWM de 1 kHz cria
-    --   aliasing nas leituras. O filtro IIR (fc ≈ 1.15 kHz) deixa o sinal
-    --   coerente com o que o PS consegue amostrar.
+    -- Monitoramento físico (FILTRADO): 32 MSBs do sinal pós-IIR (fc=1.15 kHz).
+    --   O polling do PS via /dev/mem é assíncrono (~10 kHz com jitter); o
+    --   IIR previne aliasing dessa amostragem. Tanto GPIO quanto DMA leem
+    --   este mesmo sinal filtrado.
     --   mark_debug nos ports força preservação pelo link_design (OOC DCP fix)
     --------------------------------------------------------------------------
     ialpha_mon_o     <= ialpha_aa(TIM_DW-1 downto TIM_DW-32);
@@ -476,40 +480,58 @@ Begin
     --------------------------------------------------------------------------
     -- AXI4-Stream com decimador:
     --   Conta pulsos data_valid; a cada decim_ratio pulsos captura uma amostra
-    --   e envia ao DMA. Mantém TVALID até DMA confirmar com TREADY.
+    --   e envia ao DMA. Mantém TVALID até DMA confirmar com TREADY, mas não
+    --   deixa TVALID preso entre amostras; caso contrário o DMA duplica o
+    --   mesmo frame em todos os ciclos com TREADY=1.
     --------------------------------------------------------------------------
     AXI_Stream_Reg : process(clk)
     begin
         if rising_edge(clk) then
             if rst_n = '0' then
                 axis_tvalid_r <= '0';
+                axis_tlast_r  <= '0';
                 axis_tdata_r  <= (others => '0');
+                axis_frame_cnt <= (others => '0');
                 decim_count   <= (others => '0');
-            elsif data_valid_s = '1' then
-                if decim_count >= decim_ratio - 1 then
-                    decim_count <= (others => '0');
-                    axis_tdata_r( 41 downto   0) <= ialpha_aa;
-                    axis_tdata_r( 83 downto  42) <= ibeta_aa;
-                    axis_tdata_r(125 downto  84) <= flux_alpha_aa;
-                    axis_tdata_r(167 downto 126) <= flux_beta_aa;
-                    axis_tdata_r(209 downto 168) <= speed_aa;
-                    axis_tdata_r(255 downto 210) <= (others => '0');
-                    axis_tvalid_r <= '1';
-                else
-                    decim_count <= decim_count + 1;
+            else
+                if m_axis_tready = '1' and axis_tvalid_r = '1' then
+                    axis_tvalid_r <= '0';
+                    axis_tlast_r  <= '0';
                 end if;
-            elsif m_axis_tready = '1' and axis_tvalid_r = '1' then
-                axis_tvalid_r <= '0';
+
+                if data_valid_s = '1' then
+                    if decim_count >= decim_ratio - 1 then
+                        if axis_tvalid_r = '0' or m_axis_tready = '1' then
+                            decim_count <= (others => '0');
+                            axis_tdata_r( 41 downto   0) <= ialpha_aa;
+                            axis_tdata_r( 83 downto  42) <= ibeta_aa;
+                            axis_tdata_r(125 downto  84) <= flux_alpha_aa;
+                            axis_tdata_r(167 downto 126) <= flux_beta_aa;
+                            axis_tdata_r(209 downto 168) <= speed_aa;
+                            axis_tdata_r(255 downto 210) <= (others => '0');
+                            if axis_frame_cnt = to_unsigned(AXIS_DMA_BURST_FRAMES_C - 1,
+                                                            axis_frame_cnt'length) then
+                                axis_tlast_r   <= '1';
+                                axis_frame_cnt <= (others => '0');
+                            else
+                                axis_tlast_r   <= '0';
+                                axis_frame_cnt <= axis_frame_cnt + 1;
+                            end if;
+                            axis_tvalid_r <= '1';
+                        end if;
+                    else
+                        decim_count <= decim_count + 1;
+                    end if;
+                end if;
             end if;
         end if;
     end process AXI_Stream_Reg;
 
     m_axis_tdata  <= axis_tdata_r;
     m_axis_tvalid <= axis_tvalid_r;
-    -- TLAST = '0': DMA modo simples termina quando LENGTH bytes chegarem.
-    -- Se TLAST fosse TVALID, o DMA pararia após cada amostra de 32 bytes
-    -- e exigiria re-armamento constante pelo PS.
-    m_axis_tlast  <= '0';
+    -- AXI DMA S2MM em modo simples espera TLAST no fim do pacote. O PS arma
+    -- DMA_BURST_FRAMES frames de 32 bytes; geramos TLAST no ultimo frame.
+    m_axis_tlast  <= axis_tlast_r;
     m_axis_tkeep  <= (others => '1');  -- todos os 32 bytes do beat são válidos
 
 End Architecture rtl;
