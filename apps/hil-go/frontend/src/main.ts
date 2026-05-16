@@ -296,11 +296,11 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </div>
         <div class="field-inline">
           <label title="Tempo para rampar 0 → velocidade nominal">Accel (s)</label>
-          <input id="accel-time" type="number" value="5" min="0.1" max="300" step="0.5" class="write-input" />
+          <input id="accel-time" type="number" value="1" min="0.1" max="300" step="0.5" class="write-input" />
         </div>
         <div class="field-inline">
           <label title="Tensão do barramento DC do inversor">Vdc (V)</label>
-          <input id="vdc" type="number" value="311" min="0" max="600" step="1" class="write-input" />
+          <input id="vdc" type="number" value="1240" min="0" max="2000" step="1" class="write-input" />
         </div>
         <div class="field-inline">
           <label title="Torque de carga mecânica aplicado ao rotor">Torque (N·m)</label>

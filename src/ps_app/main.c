@@ -271,11 +271,11 @@ static void apply_stop(void)
 
     vf_params_t p = {
         .freq_hz      = 0.0f,
-        .vdc_v        = 300.0f,
+        .vdc_v        = 1240.0f,
         .torque_nm    = 0.0f,
         .base_freq_hz = 60.0f,
         .max_v_pu     = 1.0f,
-        .accel_time_s = 5.0f,
+        .accel_time_s = 1.0f,
         .enable       = 0,
         .decim        = 0,
     };

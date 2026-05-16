@@ -25,11 +25,11 @@
 static pthread_mutex_t  params_mutex = PTHREAD_MUTEX_INITIALIZER;
 static vf_params_t      params = {
     .freq_hz      = 0.0f,
-    .vdc_v        = 300.0f,
+    .vdc_v        = 1240.0f,   /* V_phase_peak = Vdc/2 = 620 V → matches cocotb/PSIM V_PEAK_NOMINAL */
     .torque_nm    = 0.0f,
     .base_freq_hz = FREQ_NOM_HZ,
     .max_v_pu     = V_NOM_PU,
-    .accel_time_s = 5.0f,
+    .accel_time_s = 1.0f,      /* ramp = base_freq/accel = 60/1 = 60 Hz/s → matches cocotb ACC_RAMP_HZ_S */
     .enable       = 0,
     .decim        = 0,
 };
