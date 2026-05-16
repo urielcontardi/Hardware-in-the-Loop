@@ -766,3 +766,40 @@ body {
 .ch-subplot-badge[data-sp="1"] { border-color: #1a6040; color: #81c784; }
 .ch-subplot-badge[data-sp="2"] { border-color: #604010; color: #ffcc80; }
 .ch-subplot-badge[data-sp="3"] { border-color: #4a2060; color: #ce93d8; }
+
+/* ── PLOT TOOLTIP ─────────────────────────────── */
+.plot-tooltip {
+  position: fixed;
+  background: #08111e;
+  border: 1px solid var(--border-hi);
+  border-radius: 6px;
+  padding: 7px 10px;
+  pointer-events: none;
+  z-index: 999;
+  font-size: 11px;
+  min-width: 140px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+}
+.tt-time {
+  color: var(--muted);
+  font-size: 10px;
+  margin-bottom: 5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.tt-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 3px 0;
+}
+.tt-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tt-name { flex: 1; color: var(--muted); }
+.tt-val  { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--fg); }
+.tt-unit { color: var(--muted); font-size: 9px; }

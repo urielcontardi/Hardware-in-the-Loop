@@ -669,6 +669,55 @@ function decimateAndProject(
 // Shared cursor sync key — all subplots show the cursor at the same x position.
 const cursorSync = (uPlot as any).sync("hil");
 
+// ── Tooltip ───────────────────────────────────────────────────────────────────
+const elTooltip = document.createElement("div");
+elTooltip.className = "plot-tooltip";
+elTooltip.style.display = "none";
+document.body.appendChild(elTooltip);
+
+function showTooltip(u: uPlot) {
+  const idx = u.cursor.idx;
+  if (idx == null || idx < 0 || (u.data[0] as number[]).length === 0) {
+    elTooltip.style.display = "none";
+    return;
+  }
+  const t = (u.data[0] as number[])[idx];
+  if (t == null) { elTooltip.style.display = "none"; return; }
+
+  let html = `<div class="tt-time">t = ${t.toFixed(5)} s</div>`;
+
+  // Collect values from all subplots at this cursor index (all share same xs).
+  plots.forEach((p, s) => {
+    const chIdx = getChIdx(s);
+    chIdx.forEach((ci, si) => {
+      if (!visible[ci]) return;
+      const val = (p.data[si + 1] as number[])?.[idx];
+      if (val == null || !isFinite(val)) return;
+      html += `<div class="tt-row">
+        <span class="tt-dot" style="background:${CHANNELS[ci].color}"></span>
+        <span class="tt-name">${CHANNELS[ci].name}</span>
+        <span class="tt-val">${val.toFixed(4)}</span>
+        <span class="tt-unit">${CHANNELS[ci].unit}</span>
+      </div>`;
+    });
+  });
+
+  elTooltip.innerHTML = html;
+  elTooltip.style.display = "block";
+
+  // Position near cursor, avoiding screen edges.
+  const rect = u.root.getBoundingClientRect();
+  const cx = rect.left + (u.cursor.left ?? 0);
+  const cy = rect.top  + (u.cursor.top  ?? 0);
+  const margin = 14;
+  const tw = elTooltip.offsetWidth;
+  const th = elTooltip.offsetHeight;
+  const tx = (cx + margin + tw > window.innerWidth  - 8) ? cx - tw - margin : cx + margin;
+  const ty = (cy + margin + th > window.innerHeight - 8) ? cy - th - margin : cy + margin;
+  elTooltip.style.left = `${tx}px`;
+  elTooltip.style.top  = `${ty}px`;
+}
+
 // X-axis sync guard — prevents recursive setScale loops when propagating.
 let scaleSyncing = false;
 
@@ -771,6 +820,7 @@ function buildPlots() {
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    wrap.addEventListener("mouseleave", () => { elTooltip.style.display = "none"; });
 
     const p = new uPlot(
       {
@@ -779,12 +829,11 @@ function buildPlots() {
         pxAlign: 0,
         cursor: {
           show: true,
-          // No drag-zoom: window changes come from the explicit Window
-          // buttons or mouse wheel. Click-drag on the plot pans the time
-          // axis (handled by the DOM listeners above). Removing uPlot's
-          // own drag-select avoids the previous "weird zoom" feedback loop.
           drag: { x: false, y: false, setScale: false },
           sync: { key: cursorSync.key },
+        },
+        hooks: {
+          setCursor: [showTooltip],
         },
         scales: { x: { time: false } },
         axes: [
