@@ -4,22 +4,26 @@
 #include <stdint.h>
 
 /*
- * V/F open-loop controller
+ * V/F open-loop controller — linear puro, sem boost de baixa frequência.
+ *
+ * Lei aplicada: V_ref = max_v_pu × (f_current / base_freq_hz)
+ *   Em f=0 → V=0; em f=base_freq → V=max_v_pu. Idêntico ao modulador
+ *   escalar do PSIM (fonte de tensão senoidal com razão V/f constante).
  *
  * Parâmetros configuráveis via UDP:
- *   freq_hz   — frequência elétrica de saída [Hz]
- *   vdc_v     — tensão DC do barramento [V]
- *   torque_nm — torque de carga [N·m]  (passa direto ao solver)
- *   base_freq_hz — frequência nominal/base do V/F [Hz]
- *   max_v_pu  — tensão máxima de modulação [pu]
- *   boost_v_pu — boost de baixa frequência [pu]
- *   enable    — 0=desligado, 1=ligado
- *   decim     — decimation ratio (0 = default 375 → 10 kHz DMA output)
+ *   freq_hz      — frequência elétrica alvo [Hz]
+ *   vdc_v        — tensão DC do barramento [V]  (V_fase_pico = Vdc/2)
+ *   torque_nm    — torque de carga [N·m]  (passa direto ao solver)
+ *   base_freq_hz — frequência nominal do V/F [Hz]  (default 60 Hz)
+ *   max_v_pu     — tensão máxima de modulação [pu]  (default 1.0)
+ *   accel_time_s — tempo para rampar 0→base_freq [s]
+ *   enable       — 0=desligado, 1=ligado
+ *   decim        — decimation ratio (0 = default 375 → ~10 kHz DMA output)
  *
- * Escala interna:
- *   V/F ratio : V_ref = V_NOM * (freq_hz / FREQ_NOM)  (com saturação em V_NOM)
- *   vrefs     : escala ±CARRIER_MAX = ±75000 (100% modulação)
- *   vdc/torque: Q31 com escala definida em vf_ctrl.c (ajuste conforme seu sistema)
+ * Escala das referências de tensão enviadas à FPGA:
+ *   vrefs: signed int32 em ±CARRIER_MAX = ±(CLK_FREQ/PWM_FREQ/2)
+ *          Com CLK=100 MHz e PWM=1 kHz: CARRIER_MAX = 50000 (ver gpio.h)
+ *   vdc/torque: Q18.14 signed (FPGA converte para Q14.28 via shift_left 14)
  */
 
 typedef struct {
