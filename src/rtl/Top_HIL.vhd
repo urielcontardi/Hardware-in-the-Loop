@@ -324,6 +324,7 @@ Begin
         -- Mechanical load
         torque_load_i       => torque_load,
         coeff_we_i          => '0',
+        coeff_apply_i       => '0',
         coeff_matrix_i      => (others => '0'),
         coeff_row_i         => (others => '0'),
         coeff_col_i         => (others => '0'),

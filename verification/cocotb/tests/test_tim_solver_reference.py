@@ -76,6 +76,7 @@ async def reset_dut(dut, cycles: int = 20):
     dut.torque_load_i.value = 0
     dut.state_clear_i.value = 0
     dut.coeff_we_i.value = 0
+    dut.coeff_apply_i.value = 0
     dut.coeff_matrix_i.value = 0
     dut.coeff_row_i.value = 0
     dut.coeff_col_i.value = 0

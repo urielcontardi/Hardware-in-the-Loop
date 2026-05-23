@@ -104,6 +104,7 @@ Entity HIL_AXI_Top is
         -- ── Programação dos coeficientes do TIM_Solver (PS → PL) ────────────
         -- coeff_addr_i: [1:0]=matrix A/B/Y, [4:2]=row, [7:5]=col.
         coeff_we_i      : in  std_logic;
+        coeff_apply_i   : in  std_logic;
         coeff_addr_i    : in  std_logic_vector(31 downto 0);
         coeff_data_i    : in  std_logic_vector(41 downto 0);
 
@@ -240,6 +241,8 @@ Architecture rtl of HIL_AXI_Top is
     signal coeff_data_solver    : std_logic_vector(41 downto 0);
     signal coeff_we_meta        : std_logic := '0';
     signal coeff_we_solver      : std_logic := '0';
+    signal coeff_apply_meta     : std_logic := '0';
+    signal coeff_apply_solver   : std_logic := '0';
     signal solver_state_clear_s : std_logic;
     signal solver_reset_n_s     : std_logic;
 
@@ -439,6 +442,8 @@ Begin
                 coeff_data_solver    <= (others => '0');
                 coeff_we_meta        <= '0';
                 coeff_we_solver      <= '0';
+                coeff_apply_meta   <= '0';
+                coeff_apply_solver <= '0';
             else
                 va_motor_solver      <= va_motor;
                 vb_motor_solver      <= vb_motor;
@@ -449,6 +454,8 @@ Begin
                 coeff_data_solver    <= coeff_data_i;
                 coeff_we_meta        <= coeff_we_i;
                 coeff_we_solver      <= coeff_we_meta;
+                coeff_apply_meta   <= coeff_apply_i;
+                coeff_apply_solver <= coeff_apply_meta;
             end if;
         end if;
     end process Solver_Input_CDC;
@@ -493,6 +500,7 @@ Begin
         vc_i                => vc_motor_solver,
         torque_load_i       => torque_solver,
         coeff_we_i          => coeff_we_solver,
+        coeff_apply_i       => coeff_apply_solver,
         coeff_matrix_i      => coeff_addr_solver(1 downto 0),
         coeff_row_i         => coeff_addr_solver(4 downto 2),
         coeff_col_i         => coeff_addr_solver(7 downto 5),

@@ -550,6 +550,9 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_regs_0/coeff_we_o] \
         [get_bd_pins hil_axi_top_0/coeff_we_i]
     connect_bd_net \
+        [get_bd_pins hil_regs_0/coeff_apply_o] \
+        [get_bd_pins hil_axi_top_0/coeff_apply_i]
+    connect_bd_net \
         [get_bd_pins hil_regs_0/coeff_addr_o] \
         [get_bd_pins hil_axi_top_0/coeff_addr_i]
     connect_bd_net \

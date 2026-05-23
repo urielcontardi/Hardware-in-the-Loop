@@ -86,6 +86,7 @@ Entity TIM_Solver is
         -- Runtime coefficient programming. Values are raw Q14.28 words.
         -- matrix: 0=A, 1=B, 2=Y. Writes are applied only while the solver is idle.
         coeff_we_i          : in std_logic;
+        coeff_apply_i       : in std_logic;
         coeff_matrix_i      : in std_logic_vector(1 downto 0);
         coeff_row_i         : in std_logic_vector(2 downto 0);
         coeff_col_i         : in std_logic_vector(2 downto 0);
@@ -233,6 +234,10 @@ Architecture rtl of TIM_Solver is
     signal Amatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Amatrix_init;
     signal Ymatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Ymatrix_init;
     signal Bmatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := Bmatrix_init;
+    signal Amatrix_shadow   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Amatrix_init;
+    signal Ymatrix_shadow   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Ymatrix_init;
+    signal Bmatrix_shadow   : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := Bmatrix_init;
+    signal coeff_apply_pending : std_logic := '0';
     signal Xvec_fp          : vector_fp_t(0 to N_SS - 1);
     signal dXvec_fp         : vector_fp_t(0 to N_SS - 1);
     signal Uvec_fp          : vector_fp_t(0 to N_IN - 1);
@@ -275,7 +280,9 @@ Begin
 
     --------------------------------------------------------------------------
     -- Runtime coefficient registers
-    -- Hold TIM_Solver in reset from software before updating a full matrix set.
+    -- AXI writes update a shadow matrix set. coeff_apply_i requests an atomic
+    -- shadow->active swap; the swap is executed only while the solver is idle,
+    -- and solver_start is blocked during the commit cycle.
     --------------------------------------------------------------------------
     Coeff_Config : process(sysclk, reset_n)
         variable row_v : natural;
@@ -285,27 +292,40 @@ Begin
             Amatrix_fp <= Amatrix_init;
             Ymatrix_fp <= Ymatrix_init;
             Bmatrix_fp <= Bmatrix_init;
+            Amatrix_shadow <= Amatrix_init;
+            Ymatrix_shadow <= Ymatrix_init;
+            Bmatrix_shadow <= Bmatrix_init;
+            coeff_apply_pending <= '0';
         elsif rising_edge(sysclk) then
             row_v := to_integer(unsigned(coeff_row_i));
             col_v := to_integer(unsigned(coeff_col_i));
 
-            if coeff_we_i = '1' and solver_busy = '0' then
+            if coeff_we_i = '1' then
                 case coeff_matrix_i is
                     when "00" =>
                         if row_v < N_SS and col_v < N_SS then
-                            Amatrix_fp(row_v, col_v) <= coeff_data_i;
+                            Amatrix_shadow(row_v, col_v) <= coeff_data_i;
                         end if;
                     when "01" =>
                         if row_v < N_SS and col_v < N_IN then
-                            Bmatrix_fp(row_v, col_v) <= coeff_data_i;
+                            Bmatrix_shadow(row_v, col_v) <= coeff_data_i;
                         end if;
                     when "10" =>
                         if row_v < N_SS and col_v < N_SS then
-                            Ymatrix_fp(row_v, col_v) <= coeff_data_i;
+                            Ymatrix_shadow(row_v, col_v) <= coeff_data_i;
                         end if;
                     when others =>
                         null;
                 end case;
+            end if;
+
+            if coeff_apply_i = '1' then
+                coeff_apply_pending <= '1';
+            elsif coeff_apply_pending = '1' and solver_busy = '0' then
+                Amatrix_fp <= Amatrix_shadow;
+                Ymatrix_fp <= Ymatrix_shadow;
+                Bmatrix_fp <= Bmatrix_shadow;
+                coeff_apply_pending <= '0';
             end if;
         end if;
     end process Coeff_Config;
@@ -356,7 +376,7 @@ Begin
         busy_o              => solver_busy
     );
 
-    solver_start <= timer_tick and not solver_busy and not state_clear_i;
+    solver_start <= timer_tick and not solver_busy and not state_clear_i and not coeff_apply_pending and not coeff_apply_i;
 
     -- Convert input signals to Uvec_fp
     Uvec_fp(0) <= std_logic_vector(valpha);

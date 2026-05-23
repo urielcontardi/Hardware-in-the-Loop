@@ -348,7 +348,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <input id="motor-j" type="number" value="0.4" min="0.0001" step="0.001" class="write-input" />
           </div>
           <div class="btn-row" style="margin-top:8px">
-            <button id="btn-apply-motor" class="btn btn-write" title="Recompute and write TIM matrices. Use while stopped or paused; online atomic model swap needs RTL double-buffer.">Apply Motor</button>
+            <button id="btn-apply-motor" class="btn btn-write" title="Recompute TIM matrices and atomically swap the active motor model at the next solver-safe boundary.">Apply Motor</button>
             <button id="btn-apply" class="btn btn-sm" title="Apply DC link and controller setpoints without changing the motor model">Apply DC/Setpoints</button>
           </div>
         </section>
@@ -1212,7 +1212,7 @@ elBtnApplyMotor.addEventListener("click", () => withButton(elBtnApplyMotor, asyn
   const s = await api.ProgramMotor(ip, motorRs, motorRr, motorLs, motorLr, motorLm, motorJ, npp) as HilStatus;
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
-  setStatus("Motor model applied; use Run to continue", "ok");
+  setStatus("Motor model applied atomically", "ok");
   applyResponse(s);
 }));
 

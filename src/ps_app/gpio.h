@@ -22,7 +22,8 @@
  *   0x30  coeff_addr       write/read — [1:0]=matrix A/B/Y, [4:2]=row, [7:5]=col
  *   0x34  coeff_data_lo    write/read — coefficient[31:0] raw Q14.28
  *   0x38  coeff_data_hi    write/read — coefficient[41:32]
- *   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we
+ *   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we,
+ *                                  bit[1]=1 atomically applies shadow model
  */
 #define ADDR_HIL_REGS        0x43C00000U
 #define REG_VA_REF           0x00U
@@ -62,6 +63,9 @@
 #define TIM_COEFF_MATRIX_Y 2U
 #define TIM_COEFF_ADDR(matrix, row, col)     ((((uint32_t)(matrix)) & 0x3U) | ((((uint32_t)(row)) & 0x7U) << 2) |      ((((uint32_t)(col)) & 0x7U) << 5))
 
+#define TIM_COEFF_WRITE_STROBE  0x1U
+#define TIM_COEFF_APPLY_STROBE  0x2U
+
 /* CARRIER_MAX: 100 MHz / (1 kHz * 2) = 50000 */
 #define CARRIER_MAX  50000
 
@@ -78,6 +82,7 @@ void gpio_set_pwm_ctrl(int enable, int clear_fault, int solver_reset,
 void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word);
 void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
                           int64_t coeff_q14_28);
+void gpio_apply_tim_coeffs(void);
 
 /* Helpers — read from AXI GPIO monitors */
 int32_t  gpio_get_speed(void);

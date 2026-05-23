@@ -360,21 +360,10 @@ static int64_t y_entry(int idx)
     return idx < 0 ? (int64_t)(1ULL << 41) : (int64_t)idx;
 }
 
-static void wait_solver_idle(void)
+static void write_tim_coeff_shadow(uint32_t matrix, uint32_t row, uint32_t col, int64_t value)
 {
-    for (int i = 0; i < 100000; i++) {
-        uint32_t st = gpio_read(ADDR_HIL_REGS, REG_DEBUG_STATUS);
-        if (((st >> 6) & 1U) == 0) return;
-        if ((i & 0x3f) == 0) usleep(1);
-    }
-}
-
-static void write_tim_coeff_when_idle(uint32_t matrix, uint32_t row, uint32_t col, int64_t value)
-{
-    wait_solver_idle();
     gpio_write_tim_coeff(matrix, row, col, value);
 }
-
 
 static int program_motor_coeffs(const motor_params_t *m)
 {
@@ -410,12 +399,13 @@ static int program_motor_coeffs(const motor_params_t *m)
 
     for (uint32_t r = 0; r < 5; r++) {
         for (uint32_t c = 0; c < 5; c++) {
-            write_tim_coeff_when_idle(TIM_COEFF_MATRIX_A, r, c, q14_28(a[r][c]));
-            write_tim_coeff_when_idle(TIM_COEFF_MATRIX_Y, r, c, y_entry(y[r][c]));
+            write_tim_coeff_shadow(TIM_COEFF_MATRIX_A, r, c, q14_28(a[r][c]));
+            write_tim_coeff_shadow(TIM_COEFF_MATRIX_Y, r, c, y_entry(y[r][c]));
         }
         for (uint32_t c = 0; c < 3; c++)
-            write_tim_coeff_when_idle(TIM_COEFF_MATRIX_B, r, c, q14_28(b[r][c]));
+            write_tim_coeff_shadow(TIM_COEFF_MATRIX_B, r, c, q14_28(b[r][c]));
     }
+    gpio_apply_tim_coeffs();
     return 0;
 }
 
@@ -503,11 +493,6 @@ static void handle_packet(int sock, const char *buf,
             ensure_telem_to(ip);
 
     } else if (strstr(buf, "\"cmd\":\"motor\"")) {
-        if (hil_state == HIL_RUNNING) {
-            status_msg = "motor_update_requires_pause";
-            goto send_response;
-        }
-
         motor_params_t m = motor_params;
         char *ptr;
         if ((ptr = strstr(buf, "\"rs\":")))  sscanf(ptr + 5, "%f", &m.rs);
@@ -520,9 +505,9 @@ static void handle_packet(int sock, const char *buf,
 
         if (program_motor_coeffs(&m) == 0) {
             motor_params = m;
-            vf_reset_solver();
             if (hil_state == HIL_IDLE || hil_state == HIL_STOPPED)
                 hil_state = HIL_PAUSED;
+            status_msg = "motor_model_applied_atomic";
             printf("[MOTOR] rs=%.6g rr=%.6g ls=%.6g lr=%.6g lm=%.6g j=%.6g npp=%.3g\n",
                    m.rs, m.rr, m.ls, m.lr, m.lm, m.j, m.npp);
         } else {
@@ -581,7 +566,6 @@ static void handle_packet(int sock, const char *buf,
         status_msg = "unknown_command";
     }
 
-send_response:
     build_status(resp, sizeof(resp), status_msg);
     sendto(sock, resp, strlen(resp), 0, (struct sockaddr *)cli, cli_len);
 }

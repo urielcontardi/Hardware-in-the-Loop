@@ -113,7 +113,12 @@ void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
     gpio_write(ADDR_HIL_REGS, REG_COEFF_ADDR, TIM_COEFF_ADDR(matrix, row, col));
     gpio_write(ADDR_HIL_REGS, REG_COEFF_DATA_LO, (uint32_t)(raw & 0xffffffffULL));
     gpio_write(ADDR_HIL_REGS, REG_COEFF_DATA_HI, (uint32_t)(raw >> 32));
-    gpio_write(ADDR_HIL_REGS, REG_COEFF_COMMIT, 1U);
+    gpio_write(ADDR_HIL_REGS, REG_COEFF_COMMIT, TIM_COEFF_WRITE_STROBE);
+}
+
+void gpio_apply_tim_coeffs(void)
+{
+    gpio_write(ADDR_HIL_REGS, REG_COEFF_COMMIT, TIM_COEFF_APPLY_STROBE);
 }
 
 /* ── Reads from AXI GPIO monitors ────────────────────────────────────── */

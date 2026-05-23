@@ -93,6 +93,13 @@ async def reset_dut(dut, cycles: int = 20) -> None:
     dut.vb_i.value = 0
     dut.vc_i.value = 0
     dut.torque_load_i.value = 0
+    dut.state_clear_i.value = 0
+    dut.coeff_we_i.value = 0
+    dut.coeff_apply_i.value = 0
+    dut.coeff_matrix_i.value = 0
+    dut.coeff_row_i.value = 0
+    dut.coeff_col_i.value = 0
+    dut.coeff_data_i.value = 0
     await ClockCycles(dut.sysclk, cycles)
     dut.reset_n.value = 1
     await ClockCycles(dut.sysclk, 5)
