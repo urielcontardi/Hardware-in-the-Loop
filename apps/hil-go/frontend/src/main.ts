@@ -35,6 +35,7 @@ type HilApi = {
   onTelemetry(cb: (samples: Sample[]) => void): void;
   DiscoverBoard(ip?: string): Promise<DiscoveryResponse>;
   SetParams(ip: string, freqHz: number, vdcV: number, torqueNm: number, baseFreqHz: number, maxVPu: number, accelTimeSec: number, enable: boolean, applyEnable: boolean, attachTelem: boolean): Promise<HilStatus>;
+  ProgramMotor(ip: string, rs: number, rr: number, ls: number, lr: number, lm: number, j: number, npp: number): Promise<HilStatus>;
   GetStatus(ip: string): Promise<HilStatus>;
   Run(ip: string): Promise<HilStatus>;
   Pause(ip: string): Promise<HilStatus>;
@@ -87,6 +88,9 @@ const api: HilApi = isWails ? {
     return WailsApp.DiscoverBoard() as Promise<DiscoveryResponse>;
   },
   SetParams: WailsApp.SetParams as HilApi["SetParams"],
+  ProgramMotor(ip, rs, rr, ls, lr, lm, j, npp) {
+    return (window as any).go.main.App.ProgramMotor(ip, rs, rr, ls, lr, lm, j, npp) as Promise<HilStatus>;
+  },
   GetStatus: WailsApp.GetStatus as HilApi["GetStatus"],
   Run: WailsApp.Run as HilApi["Run"],
   Pause: WailsApp.Pause as HilApi["Pause"],
@@ -113,6 +117,9 @@ const api: HilApi = isWails ? {
   },
   DiscoverBoard(ip) {
     return postJSON<DiscoveryResponse>("/api/discover", { ip });
+  },
+  ProgramMotor(ip, rs, rr, ls, lr, lm, j, npp) {
+    return postJSON<HilStatus>("/api/motor", { ip, rs, rr, ls, lr, lm, j, npp });
   },
   SetParams(ip, freqHz, vdcV, torqueNm, baseFreqHz, maxVPu, accelTimeSec, enable, applyEnable, attachTelem) {
     const body: Record<string, unknown> = {
@@ -288,29 +295,79 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <div id="conn-status" class="ps-status hidden"></div>
       </section>
 
-      <section class="panel">
-        <div class="panel-title">PARAMETERS</div>
-        <div class="field-inline">
-          <label>Speed (RPM)</label>
-          <input id="rpm" type="number" value="1800" min="0" max="12000" step="60" class="write-input" />
-        </div>
-        <div class="field-inline">
-          <label title="Tempo para rampar 0 → velocidade nominal">Accel (s)</label>
-          <input id="accel-time" type="number" value="1" min="0.1" max="300" step="0.5" class="write-input" />
-        </div>
-        <div class="field-inline">
-          <label title="Tensão do barramento DC do inversor">Vdc (V)</label>
-          <input id="vdc" type="number" value="1240" min="0" max="2000" step="1" class="write-input" />
-        </div>
-        <div class="field-inline">
-          <label title="Torque de carga mecânica aplicado ao rotor">Torque (N·m)</label>
-          <input id="torque" type="number" value="0" min="-200" max="200" step="1" class="write-input" />
-        </div>
-        <details class="adv-details">
-          <summary class="adv-summary">▸ Advanced</summary>
-          <div class="field-inline" style="margin-top:6px">
+      <div class="sidebar-tabs" role="tablist" aria-label="HIL panels">
+        <button class="tab-btn active" data-tab="motor" type="button">Motor/DC</button>
+        <button class="tab-btn" data-tab="control" type="button">Control</button>
+        <button class="tab-btn" data-tab="telemetry" type="button">Telemetry</button>
+      </div>
+
+      <div class="tab-pane active" data-tab-panel="motor">
+        <section class="panel">
+          <div class="panel-title">MOTOR MODEL</div>
+          <div class="motor-model" aria-label="Induction motor T equivalent model">
+            <div class="model-node source">Vs</div>
+            <div class="model-part resistor">Rs</div>
+            <div class="model-part inductor">Lsσ</div>
+            <div class="model-junction"></div>
+            <div class="model-part inductor">Lrσ</div>
+            <div class="model-part resistor">Rr</div>
+            <div class="model-node rotor">jωrψr</div>
+            <div class="model-branch"><span>Lm</span></div>
+            <div class="model-return"></div>
+          </div>
+          <div class="field-inline">
+            <label title="Tensão do barramento DC do inversor">DC link (V)</label>
+            <input id="vdc" type="number" value="1240" min="0" max="2000" step="1" class="write-input" />
+          </div>
+          <div class="field-inline">
             <label title="Número de pares de polos do motor">Pole pairs</label>
             <input id="npp" type="number" value="2" min="1" max="8" step="1" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Resistência do estator usada para recalcular as matrizes do solver">Rs (Ω)</label>
+            <input id="motor-rs" type="number" value="0.4396" min="0" step="0.0001" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Resistência do rotor usada para recalcular as matrizes do solver">Rr (Ω)</label>
+            <input id="motor-rr" type="number" value="0.2826" min="0" step="0.0001" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Indutância de dispersão do estator">Ls leak (H)</label>
+            <input id="motor-ls" type="number" value="0.0031364" min="0" step="0.000001" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Indutância de dispersão do rotor">Lr leak (H)</label>
+            <input id="motor-lr" type="number" value="0.0063264" min="0" step="0.000001" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Indutância mútua">Lm (H)</label>
+            <input id="motor-lm" type="number" value="0.1099442" min="0" step="0.000001" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Momento de inércia">J (kg·m²)</label>
+            <input id="motor-j" type="number" value="0.4" min="0.0001" step="0.001" class="write-input" />
+          </div>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-apply-motor" class="btn btn-write" title="Recompute and write TIM matrices. Use while stopped or paused; online atomic model swap needs RTL double-buffer.">Apply Motor</button>
+            <button id="btn-apply" class="btn btn-sm" title="Apply DC link and controller setpoints without changing the motor model">Apply DC/Setpoints</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-pane" data-tab-panel="control">
+        <section class="panel">
+          <div class="panel-title">CONTROLLER SETPOINTS</div>
+          <div class="field-inline">
+            <label>Speed (RPM)</label>
+            <input id="rpm" type="number" value="1800" min="0" max="12000" step="60" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Tempo para rampar 0 -> velocidade nominal">Accel (s)</label>
+            <input id="accel-time" type="number" value="1" min="0.1" max="300" step="0.5" class="write-input" />
+          </div>
+          <div class="field-inline">
+            <label title="Torque de carga mecânica aplicado ao rotor">Torque (N·m)</label>
+            <input id="torque" type="number" value="0" min="-200" max="200" step="1" class="write-input" />
           </div>
           <div class="field-inline">
             <label title="Velocidade síncrona nominal — tensão máxima é aplicada aqui">Rated RPM</label>
@@ -320,71 +377,65 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <label title="Tensão máxima de modulação em pu de Vdc/2">Max V/F (pu)</label>
             <input id="max-vpu" type="number" value="1" min="0" max="1" step="0.01" class="write-input" />
           </div>
-        </details>
-        <div class="btn-row" style="margin-top:8px">
-          <button id="btn-apply" class="btn btn-write">Apply Params</button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">CONTROL</div>
-        <div class="btn-row">
-          <button id="btn-run"   class="btn btn-primary" title="Enable motor with current params (also pulses solver reset)">▶ Run</button>
-          <button id="btn-stop"  class="btn btn-danger" title="Disable motor, reset params (daemon stays alive)">■ Stop</button>
-        </div>
-        <div class="btn-row" style="margin-top:6px">
-          <button id="btn-reset" class="btn btn-sm" title="Pulse FPGA solver reset — clears integrator states (currents/flux/speed) without changing params">⟲ Reset solver</button>
-        </div>
-        <div id="ps-status" class="ps-status hidden"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-title">PLOTS</div>
-
-        <div class="subplot-layout-row">
-          <span class="subplot-layout-label">Frame</span>
-          <div class="subplot-n-group" id="mode-group">
-            <button class="subplot-n-btn" data-mode="ab">αβ</button>
-            <button class="subplot-n-btn" data-mode="abc">abc</button>
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-run"   class="btn btn-primary" title="Enable motor with current params (also pulses solver reset)">Run</button>
+            <button id="btn-stop"  class="btn btn-danger" title="Disable motor, reset params (daemon stays alive)">Stop</button>
           </div>
-        </div>
-
-        <div class="subplot-layout-row">
-          <span class="subplot-layout-label">Subplots</span>
-          <div class="subplot-n-group">
-            <button class="subplot-n-btn" data-n="1">1</button>
-            <button class="subplot-n-btn" data-n="2">2</button>
-            <button class="subplot-n-btn active" data-n="3">3</button>
-            <button class="subplot-n-btn" data-n="4">4</button>
+          <div class="btn-row" style="margin-top:6px">
+            <button id="btn-reset" class="btn btn-sm" title="Pulse FPGA solver reset — clears integrator states without changing params">Reset solver</button>
           </div>
-        </div>
+          <div id="ps-status" class="ps-status hidden"></div>
+        </section>
+      </div>
 
-        <div class="subplot-layout-row">
-          <span class="subplot-layout-label">Window</span>
-          <div class="subplot-n-group" id="window-group">
-            <button class="subplot-n-btn" data-win-ms="500">500ms</button>
-            <button class="subplot-n-btn active" data-win-ms="1000">1s</button>
-            <button class="subplot-n-btn" data-win-ms="5000">5s</button>
-            <button class="subplot-n-btn" data-win-ms="30000">30s</button>
-            <button class="subplot-n-btn" data-win-ms="0">All</button>
+      <div class="tab-pane" data-tab-panel="telemetry">
+        <section class="panel">
+          <div class="panel-title">PLOTS</div>
+
+          <div class="subplot-layout-row">
+            <span class="subplot-layout-label">Frame</span>
+            <div class="subplot-n-group" id="mode-group">
+              <button class="subplot-n-btn" data-mode="ab">αβ</button>
+              <button class="subplot-n-btn" data-mode="abc">abc</button>
+            </div>
           </div>
-        </div>
 
-        <div class="btn-row" style="margin-top:6px">
-          <button id="btn-pause" class="btn btn-sm" title="Pause the live view (or use mouse wheel on plot)">⏸ Pause</button>
-          <button id="btn-latest" class="btn btn-sm" title="Snap to the latest sample and resume live follow">↻ Latest</button>
-        </div>
+          <div class="subplot-layout-row">
+            <span class="subplot-layout-label">Subplots</span>
+            <div class="subplot-n-group">
+              <button class="subplot-n-btn" data-n="1">1</button>
+              <button class="subplot-n-btn" data-n="2">2</button>
+              <button class="subplot-n-btn active" data-n="3">3</button>
+              <button class="subplot-n-btn" data-n="4">4</button>
+            </div>
+          </div>
 
-        <div id="ch-list" class="channel-list"></div>
+          <div class="subplot-layout-row">
+            <span class="subplot-layout-label">Window</span>
+            <div class="subplot-n-group" id="window-group">
+              <button class="subplot-n-btn" data-win-ms="500">500ms</button>
+              <button class="subplot-n-btn active" data-win-ms="1000">1s</button>
+              <button class="subplot-n-btn" data-win-ms="5000">5s</button>
+              <button class="subplot-n-btn" data-win-ms="30000">30s</button>
+              <button class="subplot-n-btn" data-win-ms="0">All</button>
+            </div>
+          </div>
 
-        <div class="btn-row" style="margin-top:8px">
-          <button id="btn-clear" class="btn btn-sm">Clear</button>
-        </div>
-        <span id="sample-count" class="plot-info">0 samples</span>
-      </section>
+          <div class="btn-row" style="margin-top:6px">
+            <button id="btn-pause" class="btn btn-sm" title="Pause the live view (or use mouse wheel on plot)">Pause</button>
+            <button id="btn-latest" class="btn btn-sm" title="Snap to the latest sample and resume live follow">Latest</button>
+          </div>
 
-      <section class="panel">
-        <div class="panel-title">STATS</div>
+          <div id="ch-list" class="channel-list"></div>
+
+          <div class="btn-row" style="margin-top:8px">
+            <button id="btn-clear" class="btn btn-sm">Clear</button>
+          </div>
+          <span id="sample-count" class="plot-info">0 samples</span>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">STATS</div>
         <div class="ps-telemetry">
           <div class="ps-telem-row"><span class="ps-telem-label">Fs</span>      <span id="st-fs">—</span>     <span class="ps-telem-unit">Hz</span></div>
           <div class="ps-telem-row"><span class="ps-telem-label">Rx</span>      <span id="st-rx">—</span>     <span class="ps-telem-unit">samples</span></div>
@@ -394,6 +445,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="ps-telem-row"><span class="ps-telem-label">Seq miss</span><span id="st-seq">—</span></div>
         </div>
       </section>
+      </div>
 
       <div id="status" class="status-bar">● Idle</div>
     </aside>
@@ -411,9 +463,16 @@ const elTorque      = document.querySelector<HTMLInputElement>("#torque")!;
 const elNpp         = document.querySelector<HTMLInputElement>("#npp")!;
 const elRatedRpm    = document.querySelector<HTMLInputElement>("#rated-rpm")!;
 const elMaxVPu      = document.querySelector<HTMLInputElement>("#max-vpu")!;
+const elMotorRs     = document.querySelector<HTMLInputElement>("#motor-rs")!;
+const elMotorRr     = document.querySelector<HTMLInputElement>("#motor-rr")!;
+const elMotorLs     = document.querySelector<HTMLInputElement>("#motor-ls")!;
+const elMotorLr     = document.querySelector<HTMLInputElement>("#motor-lr")!;
+const elMotorLm     = document.querySelector<HTMLInputElement>("#motor-lm")!;
+const elMotorJ      = document.querySelector<HTMLInputElement>("#motor-j")!;
 const elBtnConnect  = document.querySelector<HTMLButtonElement>("#btn-connect")!;
 const elBtnDiscover = document.querySelector<HTMLButtonElement>("#btn-discover")!;
 const elBtnApply    = document.querySelector<HTMLButtonElement>("#btn-apply")!;
+const elBtnApplyMotor = document.querySelector<HTMLButtonElement>("#btn-apply-motor")!;
 const elBtnRun      = document.querySelector<HTMLButtonElement>("#btn-run")!;
 const elBtnStop     = document.querySelector<HTMLButtonElement>("#btn-stop")!;
 const elBtnReset    = document.querySelector<HTMLButtonElement>("#btn-reset")!;
@@ -432,6 +491,26 @@ const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
 
 const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
+
+const tabButtons = Array.from(document.querySelectorAll<HTMLButtonElement>(".tab-btn"));
+const tabPanes = Array.from(document.querySelectorAll<HTMLDivElement>(".tab-pane"));
+
+function setActiveTab(tab: string) {
+  tabButtons.forEach(btn => {
+    const active = btn.dataset.tab === tab;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  tabPanes.forEach(pane => {
+    pane.classList.toggle("active", pane.dataset.tabPanel === tab);
+  });
+}
+
+tabButtons.forEach(btn => {
+  btn.setAttribute("role", "tab");
+  btn.setAttribute("aria-selected", btn.classList.contains("active") ? "true" : "false");
+  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab || "motor"));
+});
 
 // ── Subplot count selector ────────────────────────────────────────────────────
 document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-n]").forEach(btn => {
@@ -1016,6 +1095,13 @@ function readParams() {
     torque:    Number(elTorque.value),
     maxVPu:    Number(elMaxVPu.value),
     accelTime: Number(elAccelTime.value),
+    motorRs:   Number(elMotorRs.value),
+    motorRr:   Number(elMotorRr.value),
+    motorLs:   Number(elMotorLs.value),
+    motorLr:   Number(elMotorLr.value),
+    motorLm:   Number(elMotorLm.value),
+    motorJ:    Number(elMotorJ.value),
+    npp,
   };
 }
 
@@ -1120,6 +1206,16 @@ elBtnConnect.addEventListener("click", () => withButton(elBtnConnect, async () =
   setStatus(`Connected to ${boardIP}`, "ok");
   applyResponse(s, { hydrate: false });
 }));
+
+elBtnApplyMotor.addEventListener("click", () => withButton(elBtnApplyMotor, async () => {
+  const { ip, motorRs, motorRr, motorLs, motorLr, motorLm, motorJ, npp } = readParams();
+  const s = await api.ProgramMotor(ip, motorRs, motorRr, motorLs, motorLr, motorLm, motorJ, npp) as HilStatus;
+  applyBoardIP(s.board_ip);
+  rememberBoardIP(s.board_ip || ip);
+  setStatus("Motor model applied; use Run to continue", "ok");
+  applyResponse(s);
+}));
+
 
 elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
   const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
