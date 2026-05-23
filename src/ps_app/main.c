@@ -378,7 +378,7 @@ static void write_tim_coeff_when_idle(uint32_t matrix, uint32_t row, uint32_t co
 
 static int program_motor_coeffs(const motor_params_t *m)
 {
-    const double ts = 27.0 / 100000000.0;
+    const double ts = 26.0 / 200000000.0;
     const double ls_total = (double)m->ls + (double)m->lm;
     const double lr_total = (double)m->lr + (double)m->lm;
     const double denom = (double)m->lm * (double)m->lm - ls_total * lr_total;

@@ -49,6 +49,10 @@ if {[llength $ooc_runs] > 0} {
         reset_run $ooc_run
     }
 
+    foreach ooc_run $ooc_runs {
+        catch { set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs $ooc_run] }
+    }
+
     puts "Launching OOC synthesis run(s)..."
     launch_runs $ooc_runs -jobs 4
     foreach ooc_run $ooc_runs {
@@ -61,6 +65,7 @@ if {[llength $ooc_runs] > 0} {
 
 # Síntese top-level. Os OOC DCPs acima já foram gerados e validados.
 set_property STEPS.SYNTH_DESIGN.ARGS.FLATTEN_HIERARCHY full [get_runs synth_1]
+set_property STEPS.SYNTH_DESIGN.ARGS.RETIMING true [get_runs synth_1]
 reset_run synth_1
 launch_runs synth_1 -jobs 4
 wait_on_run synth_1
@@ -69,6 +74,16 @@ if {[get_property PROGRESS [get_runs synth_1]] != "100%"} {
 }
 
 # Implementação + bitstream
+# The 200 MHz solver clock is now the limiting path. Use the more aggressive
+# implementation strategy and enable post-route physical optimization so Vivado
+# spends effort on route-heavy DSP/operand-select paths.
+set_property strategy Performance_ExplorePostRoutePhysOpt [get_runs impl_1]
+catch { set_property STEPS.PLACE_DESIGN.ARGS.DIRECTIVE Explore [get_runs impl_1] }
+catch { set_property STEPS.PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1] }
+catch { set_property STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1] }
+catch { set_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1] }
+catch { set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.IS_ENABLED true [get_runs impl_1] }
+catch { set_property STEPS.POST_ROUTE_PHYS_OPT_DESIGN.ARGS.DIRECTIVE AggressiveExplore [get_runs impl_1] }
 reset_run impl_1
 launch_runs impl_1 -to_step write_bitstream -jobs 4
 wait_on_run impl_1

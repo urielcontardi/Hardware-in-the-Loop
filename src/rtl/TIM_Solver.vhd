@@ -58,8 +58,8 @@ Entity TIM_Solver is
     Generic (
         DATA_WIDTH          : natural := 42;  -- Data width for fixed-point representation
         -- Discretization parameters
-        CLOCK_FREQUENCY     : natural := 150_000_000;   -- Clock frequency (150 MHz: closes timing on Zynq-7010 -1)
-        Ts                  : real    := 40.0 / 150_000_000.0;  -- Discretization step: 40 cycles/150 MHz = 266.67 ns
+        CLOCK_FREQUENCY     : natural := 200_000_000;   -- Solver clock frequency
+        SOLVER_STEP_CYCLES  : natural := 26;             -- 26 cycles/200 MHz = 130 ns
         -- Motor parameters (leakage inductances — total = leakage + mutual)
         rs            : real    := 0.4396;        -- Stator resistance
         rr            : real    := 0.2826;        -- Rotor resistance
@@ -122,7 +122,8 @@ Architecture rtl of TIM_Solver is
     --------------------------------------------------------------------------
     -- Timer Signals
     --------------------------------------------------------------------------
-    constant TIMER_STEPS       : natural := natural(real(CLOCK_FREQUENCY)*Ts);
+    constant TIMER_STEPS       : natural := SOLVER_STEP_CYCLES;
+    constant Ts                : real    := real(SOLVER_STEP_CYCLES) / real(CLOCK_FREQUENCY);
     signal timer_tick          : std_logic;
     
     --------------------------------------------------------------------------
@@ -248,9 +249,8 @@ Begin
         report "DATA_WIDTH must be equal to FP_TOTAL_BITS"
         severity FAILURE;
 
-    -- Ensure CLOCK_FREQUENCY * Ts is an integer
-    assert real(TIMER_STEPS) = real(CLOCK_FREQUENCY) * Ts
-        report "CLOCK_FREQUENCY * Ts must be an integer value"
+    assert TIMER_STEPS > 0
+        report "SOLVER_STEP_CYCLES must be greater than zero"
         severity FAILURE;
 
     --------------------------------------------------------------------------
@@ -321,7 +321,7 @@ Begin
     Port map(
         sysclk          => sysclk,
         reset_n         => reset_n,
-        data_valid_i    => timer_tick,
+        data_valid_i    => '1',
         a_in            => va,
         b_in            => vb,
         c_in            => vc,
@@ -356,7 +356,7 @@ Begin
         busy_o              => solver_busy
     );
 
-    solver_start <= clarke_valid and not solver_busy and not state_clear_i;
+    solver_start <= timer_tick and not solver_busy and not state_clear_i;
 
     -- Convert input signals to Uvec_fp
     Uvec_fp(0) <= std_logic_vector(valpha);

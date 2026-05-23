@@ -54,15 +54,16 @@ def get_vhdl_sources(top: str) -> list[Path]:
     """Return VHDL source files in dependency order for a selected top-level."""
     project_root = Path(__file__).resolve().parent.parent.parent
     common = project_root / "common" / "modules"
+    tb_hdl = Path(__file__).resolve().parent / "hdl"
 
     if top == "clarke_transform":
         sources = [
+            tb_hdl / "ClarkeMultiplier_DSP.vhd",
             common / "clarke_transform" / "src" / "ClarkeTransform.vhd",
         ]
 
     elif top == "bilinear_solver":
         # BilinearSolverUnitTB wraps the DUT to expose scalar ports for VPI.
-        tb_hdl = Path(__file__).resolve().parent / "hdl"
         sources = [
             common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
             common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
@@ -78,6 +79,7 @@ def get_vhdl_sources(top: str) -> list[Path]:
             common / "uart"            / "src" / "UartTX.vhd",
             common / "uart"            / "src" / "UartRX.vhd",
             common / "edge_detector"   / "src" / "EdgeDetector.vhd",
+            tb_hdl / "ClarkeMultiplier_DSP.vhd",
             common / "clarke_transform"/ "src" / "ClarkeTransform.vhd",
             common / "uart"            / "src" / "UartFull.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
@@ -95,6 +97,7 @@ def get_vhdl_sources(top: str) -> list[Path]:
             common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
             common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
             common / "edge_detector"   / "src" / "EdgeDetector.vhd",
+            tb_hdl / "ClarkeMultiplier_DSP.vhd",
             common / "clarke_transform"/ "src" / "ClarkeTransform.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
             common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
@@ -215,11 +218,10 @@ Examples:
             "vf":        "tests.test_tim_solver_vf",
             "sine":      "tests.test_tim_solver_sine",
         }[test_suite]
-        # 150 MHz × Ts=266.67ns (40 cycles) > solver pipeline latency (~30 cy).
-        # 150 MHz closes timing on Zynq-7010 -1 (critical path ~6.3 ns < 6.67 ns).
-        # Ts default in TIM_Solver.vhd = 40.0/150_000_000.0 (VHDL elaboration expr).
-        # Do NOT pass Ts here — GHDL-mcode can't override real generics with e-notation.
-        sim_parameters = {"CLOCK_FREQUENCY": 150_000_000}
+        # Hardware target: 200 MHz solver clock, 26 clocks per motor step.
+        # Ts is passed as a decimal string because some simulators reject real
+        # generic overrides in exponential notation.
+        sim_parameters = {"CLOCK_FREQUENCY": 200_000_000}
 
     # ── Waveform setup ───────────────────────────────────────────────────
     # Wave flags are simulator runtime args → go in test_args, NOT plusargs.

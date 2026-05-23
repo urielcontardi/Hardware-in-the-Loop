@@ -94,7 +94,7 @@ Begin
     uut: Entity WORK.TIM_Solver
     Generic map(
         CLOCK_FREQUENCY     => CLK_FREQUENCY,
-        Ts                  => DISCRETIZATION_STEP,
+        SOLVER_STEP_CYCLES => natural(real(CLK_FREQUENCY) * DISCRETIZATION_STEP),
         rs                  => rs,           
         rr                  => rr,           
         ls                  => ls,           

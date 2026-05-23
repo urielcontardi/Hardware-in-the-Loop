@@ -25,14 +25,13 @@ from models.sim_benchmark import save_benchmark
 
 DATA_WIDTH       = 42
 FP_FRACTION_BITS = 28
-CLK_PERIOD_PS    = 6667  # 150 MHz → period = 6.667 ns = 6667 ps
+CLK_PERIOD_PS    = 5000  # 200 MHz -> period = 5 ns = 5000 ps
 
 SIM_STEPS    = 500
 WARMUP_STEPS = 100
 
-# CLOCK_FREQUENCY generic = 150 MHz, Ts = 40/150MHz = 266.67 ns → TIMER_STEPS = 40.
-# 150 MHz closes timing on Zynq-7010 -1 (critical path ~6.3 ns < 6.67 ns period).
-TIMER_STEPS = 40   # = int(150e6 * 266.67e-9)
+# CLOCK_FREQUENCY generic = 200 MHz, Ts = 26/200MHz = 130 ns -> TIMER_STEPS = 26.
+TIMER_STEPS = 26
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 CSV_PATH    = REPORTS_DIR / "ref_vhdl_vs_ref.csv"
@@ -75,16 +74,29 @@ async def reset_dut(dut, cycles: int = 20):
     dut.vb_i.value = 0
     dut.vc_i.value = 0
     dut.torque_load_i.value = 0
+    dut.state_clear_i.value = 0
+    dut.coeff_we_i.value = 0
+    dut.coeff_matrix_i.value = 0
+    dut.coeff_row_i.value = 0
+    dut.coeff_col_i.value = 0
+    dut.coeff_data_i.value = 0
     await ClockCycles(dut.sysclk, cycles)
     dut.reset_n.value = 1
     await ClockCycles(dut.sysclk, 5)
 
 
-async def wait_data_valid(dut):
-    while True:
+async def wait_data_valid(dut, max_cycles: int = 2000):
+    for cycle in range(max_cycles):
         await RisingEdge(dut.sysclk)
         if int(dut.data_valid_o.value) == 1:
             return
+    dbg = {
+        "timer": str(dut.timer_tick_dbg_o.value),
+        "busy": str(dut.solver_busy_dbg_o.value),
+        "done": str(dut.solver_done_dbg_o.value),
+        "clarke": str(dut.clarke_valid_dbg_o.value),
+    }
+    raise AssertionError(f"data_valid_o did not assert within {max_cycles} cycles; debug={dbg}")
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +145,7 @@ async def test_tim_solver_matches_reference_model(dut):
             dut.vc_i.value        = signed_to_slv(real_to_fp(vc),    DATA_WIDTH)
             dut.torque_load_i.value = signed_to_slv(real_to_fp(tload), DATA_WIDTH)
 
-        if step == 0:
-            await wait_data_valid(dut)   # initial sync
-        else:
-            await ClockCycles(dut.sysclk, TIMER_STEPS)
+        await wait_data_valid(dut)
 
         vhdl_i_alpha    = signal_fp_to_real(dut.ialpha_o)
         vhdl_i_beta     = signal_fp_to_real(dut.ibeta_o)

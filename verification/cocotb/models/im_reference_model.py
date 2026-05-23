@@ -43,7 +43,7 @@ class IMPhysicalParams:
             lr=6.3264e-3,
             j=0.4,
             npp=2.0,
-            ts=40.0/150_000_000,  # 266.67 ns — matches TIMER_STEPS=40 @ 150 MHz
+            ts=26.0/200_000_000,  # 130 ns - matches TIMER_STEPS=26 @ 200 MHz
         )
 
 

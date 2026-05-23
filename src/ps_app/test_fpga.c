@@ -130,7 +130,7 @@ static void read_debug_monitors(uint32_t *free_run,
     *free_run         = gpio_read(ADDR_HIL_REGS, REG_DEBUG_FREE_RUN);
     *carrier          = gpio_read(ADDR_HIL_REGS, REG_DEBUG_CARRIER);
     *timer            = gpio_read(ADDR_HIL_REGS, REG_DEBUG_TIMER);
-    *data_valid_latch = gpio_read(ADDR_HIL_REGS, REG_DEBUG_DV_LATCH) & 1U;
+    *data_valid_latch = gpio_read(ADDR_HIL_REGS, REG_DEBUG_DV_LATCH);
     *solver_done      = 0;
 }
 
@@ -158,7 +158,10 @@ static void print_debug_snapshot(const char *tag)
     printf("    free_run_ctr     = %10u\n", free_run);
     printf("    carrier_tick_ctr = %10u\n", carrier);
     printf("    timer_tick_ctr   = %10u\n", timer);
-    printf("    data_valid_latch = %10u\n", dv_latch);
+    printf("    debug_aux_raw   = 0x%08X\n", dv_latch);
+    printf("    data_valid_latch = %10u\n", dv_latch & 1U);
+    printf("    solver_rst_n     = %10u\n", (dv_latch >> 1) & 1U);
+    printf("    solver_clk_alive = %10u\n", dv_latch >> 2);
     print_debug_status(status);
 }
 
@@ -190,18 +193,26 @@ static int test_solver(void)
 
     read_debug_monitors(&free0, &carrier0, &timer0, &done0, &status0, &dv0);
     (void)status0;
-    (void)dv0;
+    uint32_t solver_alive0 = dv0 >> 2;
+    uint32_t solver_rst0 = (dv0 >> 1) & 1U;
+    (void)solver_rst0;
     (void)done0;
     printf("\n  Aguardando 1000 ms para medir deltas...\n");
     ms_sleep(1000);
     read_debug_monitors(&free1, &carrier1, &timer1, &done1, &status1, &dv1);
     (void)done1;
+    uint32_t solver_alive1 = dv1 >> 2;
+    uint32_t solver_alive_delta = solver_alive1 - solver_alive0;
+    uint32_t solver_rst1 = (dv1 >> 1) & 1U;
 
     printf("\n  Debug monitors (apos enable):\n");
     printf("    free_run_ctr     = %10u  delta=%10u\n", free1,    free1 - free0);
     printf("    carrier_tick_ctr = %10u  delta=%10u\n", carrier1, carrier1 - carrier0);
     printf("    timer_tick_ctr   = %10u  delta=%10u\n", timer1,   timer1 - timer0);
-    printf("    data_valid_latch = %10u\n", dv1);
+    printf("    debug_aux_raw   = 0x%08X\n", dv1);
+    printf("    data_valid_latch = %10u\n", dv1 & 1U);
+    printf("    solver_rst_n     = %10u\n", solver_rst1);
+    printf("    solver_clk_alive = %10u  delta=%10u\n", solver_alive1, solver_alive_delta);
     print_debug_status(status1);
 
     printf("\n  Diagnostico:\n");
@@ -223,13 +234,25 @@ static int test_solver(void)
         return -1;
     }
 
-    if (timer1 == timer0) {
-        printf("  [!] NPC roda, mas timer_tick do TIM_Solver nao incrementa.\n"
-               "      Foque no generic Ts/CLOCK_FREQUENCY ou sintese do timer.\n");
+    if (solver_alive_delta == 0U) {
+        printf("  [!] Dominio do solver nao esta vivo: solver_clk_alive nao incrementa.\n"
+               "      Foque em FCLK1/solver_clk, conexao do BD ou clock enable do PS7.\n");
         return -1;
     }
 
-    if (dv1 == 0U) {
+    if (solver_rst1 == 0U) {
+        printf("  [!] Dominio do solver tem clock, mas solver_rst_n esta baixo.\n"
+               "      Foque em proc_sys_reset_solver/peripheral_aresetn e FCLK_RESET.\n");
+        return -1;
+    }
+
+    if (timer1 == timer0) {
+        printf("  [!] Dominio do solver tem clock e reset, mas timer_tick nao incrementa.\n"
+               "      Foque no TIM_Solver/SOLVER_STEP_CYCLES/enable interno.\n");
+        return -1;
+    }
+
+    if ((dv1 & 1U) == 0U) {
         printf("  [!] Timer do TIM_Solver roda, mas data_valid nao aparece.\n"
                "      Se solver_busy=1, o BilinearSolverHandler ficou preso.\n"
                "      Se solver_busy=0, o start/clarke_valid nao esta iniciando o handler.\n");

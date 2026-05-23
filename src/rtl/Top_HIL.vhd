@@ -72,7 +72,7 @@ Entity Top_HIL is
         
         -- TIM Solver parameters
         TIM_DATA_WIDTH      : natural := 42;            -- Fixed-point width for motor model
-        DISCRETIZATION_STEP : real    := 100.0e-9;      -- Motor model discretization step (s)
+        SOLVER_STEP_CYCLES  : natural := 20;            -- Motor model step in clock cycles
         
         -- Motor parameters (default values - can be overridden)
         MOTOR_RS            : real    := 0.4396;        -- Stator resistance (Ohm)
@@ -303,8 +303,8 @@ Begin
     TIM_Solver_Inst : entity work.TIM_Solver
     generic map (
         DATA_WIDTH       => TIM_DATA_WIDTH,
-        CLOCK_FREQUENCY  => CLK_FREQUENCY,
-        Ts               => DISCRETIZATION_STEP,
+        CLOCK_FREQUENCY     => CLK_FREQUENCY,
+        SOLVER_STEP_CYCLES => SOLVER_STEP_CYCLES,
         rs               => MOTOR_RS,
         rr               => MOTOR_RR,
         ls               => MOTOR_LS,

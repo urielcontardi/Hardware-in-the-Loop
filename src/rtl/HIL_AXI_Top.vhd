@@ -46,6 +46,9 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
+library unisim;
+use unisim.vcomponents.all;
+
 use work.BilinearSolverPkg.all;
 
 -- =============================================================================
@@ -54,7 +57,8 @@ use work.BilinearSolverPkg.all;
 Entity HIL_AXI_Top is
     Generic (
         -- Clock
-        CLK_FREQ         : natural := 100_000_000;   -- FCLK0 da EBAZ4205 (100 MHz — fecha timing)
+        CLK_FREQ         : natural := 100_000_000;   -- FCLK0 da EBAZ4205 (100 MHz — AXI/PWM)
+        SOLVER_CLK_FREQ  : natural := 200_000_000;   -- FCLK1 dedicado ao TIM_Solver/DSP
 
         -- Portadora NPC — 1 kHz gera IRQ confortável para Linux sem RT
         -- CARRIER_MAX = CLK_FREQ / PWM_FREQ / 2 = 50000
@@ -78,7 +82,9 @@ Entity HIL_AXI_Top is
     );
     Port (
         clk              : in  std_logic;
+        solver_clk       : in  std_logic;
         rst_n            : in  std_logic;
+        solver_rst_n     : in  std_logic;
 
         -- ── Referências de tensão (escritas pelo PS na ISR) ──────────────────
         -- Unidade: integer signed em ±CARRIER_MAX = ±(CLK_FREQ/PWM_FREQ/2)
@@ -151,7 +157,6 @@ Architecture rtl of HIL_AXI_Top is
     -- com o bit[2] do pwm_ctrl (software-pulsable). PS pulsa esse bit para
     -- limpar estados derivados entre
     -- runs sem precisar de reload do bitstream. O TIM_Solver preserva coeficientes e usa state_clear_i.
-    signal solver_rst_n_s      : std_logic;
 
     --------------------------------------------------------------------------
     -- Barramento DC (42 bits)
@@ -184,14 +189,6 @@ Architecture rtl of HIL_AXI_Top is
     signal flux_alpha_s  : std_logic_vector(TIM_DW-1 downto 0);
     signal flux_beta_s   : std_logic_vector(TIM_DW-1 downto 0);
     signal speed_s       : std_logic_vector(TIM_DW-1 downto 0);
-    -- Anti-aliased versions for the AXI Stream / DMA decimator path only.
-    -- GPIO monitors below keep the RAW signals so HIL fidelity is preserved
-    -- on the visualization path.
-    signal ialpha_aa     : std_logic_vector(TIM_DW-1 downto 0);
-    signal ibeta_aa      : std_logic_vector(TIM_DW-1 downto 0);
-    signal flux_alpha_aa : std_logic_vector(TIM_DW-1 downto 0);
-    signal flux_beta_aa  : std_logic_vector(TIM_DW-1 downto 0);
-    signal speed_aa      : std_logic_vector(TIM_DW-1 downto 0);
     signal data_valid_s      : std_logic;
     -- Sticky latch: fica '1' após o primeiro pulso data_valid; limpa com rst_n.
     signal data_valid_latch  : std_logic;
@@ -201,10 +198,76 @@ Architecture rtl of HIL_AXI_Top is
     signal clarke_valid_dbg_s : std_logic;
     signal solver_busy_dbg_s  : std_logic;
     signal solver_done_dbg_s  : std_logic;
+    signal timer_tick_toggle    : std_logic := '0';
+    signal clarke_valid_toggle  : std_logic := '0';
+    signal solver_done_toggle   : std_logic := '0';
+    signal timer_tick_toggle_m1 : std_logic := '0';
+    signal timer_tick_toggle_m2 : std_logic := '0';
+    signal timer_tick_toggle_d  : std_logic := '0';
+    signal clarke_valid_toggle_m1 : std_logic := '0';
+    signal clarke_valid_toggle_m2 : std_logic := '0';
+    signal clarke_valid_toggle_d  : std_logic := '0';
+    signal solver_done_toggle_m1 : std_logic := '0';
+    signal solver_done_toggle_m2 : std_logic := '0';
+    signal solver_done_toggle_d  : std_logic := '0';
+    signal timer_tick_ctr_solver  : unsigned(31 downto 0) := (others => '0');
+    signal solver_done_ctr_solver : unsigned(31 downto 0) := (others => '0');
+    signal solver_clk_div          : unsigned(7 downto 0) := (others => '0');
+    signal solver_clk_alive_toggle : std_logic := '0';
+    signal solver_clk_alive_m1     : std_logic := '0';
+    signal solver_clk_alive_m2     : std_logic := '0';
+    signal solver_clk_alive_d      : std_logic := '0';
+    signal solver_rst_n_m1         : std_logic := '0';
+    signal solver_rst_n_m2         : std_logic := '0';
+    signal solver_clk_alive_ctr    : unsigned(29 downto 0) := (others => '0');
+    signal solver_rst_sync1        : std_logic := '0';
+    signal solver_rst_sync2        : std_logic := '0';
+    signal solver_rst_sync_n       : std_logic := '0';
+    signal solver_mmcm_rst        : std_logic;
+    signal solver_clk_fb          : std_logic;
+    signal solver_clk_fb_buf      : std_logic;
+    signal solver_clk_mmcm        : std_logic;
+    signal solver_clk_200         : std_logic;
+    signal solver_clk_locked      : std_logic;
 
-    -- Keep Ts internal. Vivado module_ref rounds real generics in BD wrappers to
-    -- zero, which makes TIM_Solver's timer never tick in hardware.
-    constant DISC_STEP_C       : real := 27.0 / 100_000_000.0;
+    -- Sinais sincronizados para o dominio rapido do solver (200 MHz).
+    signal va_motor_solver      : std_logic_vector(TIM_DW-1 downto 0);
+    signal vb_motor_solver      : std_logic_vector(TIM_DW-1 downto 0);
+    signal vc_motor_solver      : std_logic_vector(TIM_DW-1 downto 0);
+    signal torque_solver        : std_logic_vector(TIM_DW-1 downto 0);
+    signal pwm_ctrl_solver      : std_logic_vector(31 downto 0);
+    signal coeff_addr_solver    : std_logic_vector(31 downto 0);
+    signal coeff_data_solver    : std_logic_vector(41 downto 0);
+    signal coeff_we_meta        : std_logic := '0';
+    signal coeff_we_solver      : std_logic := '0';
+    signal solver_state_clear_s : std_logic;
+    signal solver_reset_n_s     : std_logic;
+
+    -- Snapshot do solver 200 MHz para o dominio AXI/PWM 100 MHz.
+    signal solver_sample_toggle     : std_logic := '0';
+    signal solver_sample_toggle_m1  : std_logic := '0';
+    signal solver_sample_toggle_m2  : std_logic := '0';
+    signal solver_sample_toggle_d   : std_logic := '0';
+    signal solver_sample_pulse      : std_logic := '0';
+    signal ialpha_raw_axi           : std_logic_vector(TIM_DW-1 downto 0);
+    signal ibeta_raw_axi            : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_alpha_raw_axi       : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_beta_raw_axi        : std_logic_vector(TIM_DW-1 downto 0);
+    signal speed_raw_axi            : std_logic_vector(TIM_DW-1 downto 0);
+    signal ialpha_aa_axi            : std_logic_vector(TIM_DW-1 downto 0);
+    signal ibeta_aa_axi             : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_alpha_aa_axi        : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_beta_aa_axi         : std_logic_vector(TIM_DW-1 downto 0);
+    signal speed_aa_axi             : std_logic_vector(TIM_DW-1 downto 0);
+    signal timer_tick_dbg_axi       : std_logic := '0';
+    signal clarke_valid_dbg_axi     : std_logic := '0';
+    signal solver_busy_dbg_axi      : std_logic := '0';
+    signal solver_done_dbg_axi      : std_logic := '0';
+    signal data_valid_axi           : std_logic := '0';
+
+    -- Use an integer step at the synthesizable boundary. Vivado BD/module_ref
+    -- can mishandle real generics and turn the solver timer into a constant zero.
+    constant SOLVER_STEP_CYCLES : natural := 26;
     signal free_run_ctr       : unsigned(31 downto 0) := (others => '0');
     signal carrier_tick_ctr   : unsigned(31 downto 0) := (others => '0');
     signal timer_tick_ctr     : unsigned(31 downto 0) := (others => '0');
@@ -214,11 +277,6 @@ Architecture rtl of HIL_AXI_Top is
     -- mark_debug: força o Vivado a preservar sinais internos que alimentam os
     -- outputs do módulo através do boundary OOC de link_design.
     attribute mark_debug : string;
-    attribute mark_debug of ialpha_aa        : signal is "true";
-    attribute mark_debug of ibeta_aa         : signal is "true";
-    attribute mark_debug of flux_alpha_aa    : signal is "true";
-    attribute mark_debug of flux_beta_aa     : signal is "true";
-    attribute mark_debug of speed_aa         : signal is "true";
     attribute mark_debug of data_valid_latch : signal is "true";
     attribute mark_debug of carrier_tick_s   : signal is "true";
 
@@ -235,6 +293,48 @@ Architecture rtl of HIL_AXI_Top is
 
 Begin
 
+    --------------------------------------------------------------------------
+    -- Clock do solver: 200 MHz gerado na PL a partir do FCLK0 de 100 MHz.
+    -- O FCLK1 do PS7 não fica vivo na EBAZ atual após fpgautil.
+    --------------------------------------------------------------------------
+    solver_mmcm_rst <= not rst_n;
+
+    Solver_MMCM : MMCME2_BASE
+    generic map (
+        BANDWIDTH          => "OPTIMIZED",
+        CLKFBOUT_MULT_F    => 10.0,
+        CLKFBOUT_PHASE     => 0.0,
+        CLKIN1_PERIOD      => 10.0,
+        CLKOUT0_DIVIDE_F   => 5.0,
+        CLKOUT0_DUTY_CYCLE => 0.5,
+        CLKOUT0_PHASE      => 0.0,
+        DIVCLK_DIVIDE      => 1,
+        STARTUP_WAIT       => false
+    )
+    port map (
+        CLKIN1      => clk,
+        CLKFBIN     => solver_clk_fb_buf,
+        CLKFBOUT    => solver_clk_fb,
+        CLKFBOUTB   => open,
+        CLKOUT0     => solver_clk_mmcm,
+        CLKOUT0B    => open,
+        CLKOUT1     => open,
+        CLKOUT1B    => open,
+        CLKOUT2     => open,
+        CLKOUT2B    => open,
+        CLKOUT3     => open,
+        CLKOUT3B    => open,
+        CLKOUT4     => open,
+        CLKOUT5     => open,
+        CLKOUT6     => open,
+        LOCKED      => solver_clk_locked,
+        PWRDWN      => '0',
+        RST         => solver_mmcm_rst
+    );
+
+    Solver_CLKFB_BUFG : BUFG port map (I => solver_clk_fb, O => solver_clk_fb_buf);
+    Solver_CLK_BUFG   : BUFG port map (I => solver_clk_mmcm, O => solver_clk_200);
+
     carrier_tick_o <= carrier_tick_s;
 
     --------------------------------------------------------------------------
@@ -245,7 +345,6 @@ Begin
     pwm_solver_reset_s <= pwm_ctrl_i(2);
     -- Active-low reset para o TIM_Solver: assertado quando rst_n global cai
     -- OU quando o PS escreve bit[2]=1 no pwm_ctrl.
-    solver_rst_n_s     <= rst_n and not pwm_solver_reset_s;
 
     --------------------------------------------------------------------------
     -- Conversão Q18.14 (32 bits do PS) → Q14.28 (42 bits interno do solver)
@@ -325,13 +424,58 @@ Begin
     end process NPC_to_Voltage;
 
     --------------------------------------------------------------------------
+    -- CDC 100 MHz -> 200 MHz para entradas lentas do solver.
+    --------------------------------------------------------------------------
+    Solver_Input_CDC : process(solver_clk_200)
+    begin
+        if rising_edge(solver_clk_200) then
+            if solver_rst_sync_n = '0' then
+                va_motor_solver      <= (others => '0');
+                vb_motor_solver      <= (others => '0');
+                vc_motor_solver      <= (others => '0');
+                torque_solver        <= (others => '0');
+                pwm_ctrl_solver      <= (others => '0');
+                coeff_addr_solver    <= (others => '0');
+                coeff_data_solver    <= (others => '0');
+                coeff_we_meta        <= '0';
+                coeff_we_solver      <= '0';
+            else
+                va_motor_solver      <= va_motor;
+                vb_motor_solver      <= vb_motor;
+                vc_motor_solver      <= vc_motor;
+                torque_solver        <= torque_42;
+                pwm_ctrl_solver      <= pwm_ctrl_i;
+                coeff_addr_solver    <= coeff_addr_i;
+                coeff_data_solver    <= coeff_data_i;
+                coeff_we_meta        <= coeff_we_i;
+                coeff_we_solver      <= coeff_we_meta;
+            end if;
+        end if;
+    end process Solver_Input_CDC;
+
+    Solver_Reset_Sync : process(solver_clk_200, rst_n, solver_clk_locked)
+    begin
+        if rst_n = '0' or solver_clk_locked = '0' then
+            solver_rst_sync1 <= '0';
+            solver_rst_sync2 <= '0';
+        elsif rising_edge(solver_clk_200) then
+            solver_rst_sync1 <= '1';
+            solver_rst_sync2 <= solver_rst_sync1;
+        end if;
+    end process Solver_Reset_Sync;
+
+    solver_rst_sync_n   <= solver_rst_sync2;
+    solver_state_clear_s <= pwm_ctrl_solver(2);
+    solver_reset_n_s     <= solver_rst_sync_n and not solver_state_clear_s;
+
+    --------------------------------------------------------------------------
     -- TIM_Solver — modelo de motor de indução trifásico
     --------------------------------------------------------------------------
     TIM_Solver_Inst : entity work.TIM_Solver
     generic map (
         DATA_WIDTH       => TIM_DW,
-        CLOCK_FREQUENCY  => CLK_FREQ,
-        Ts               => DISC_STEP_C,
+        CLOCK_FREQUENCY     => SOLVER_CLK_FREQ,
+        SOLVER_STEP_CYCLES => SOLVER_STEP_CYCLES,
         rs               => MOTOR_RS,
         rr               => MOTOR_RR,
         ls               => MOTOR_LS,
@@ -341,18 +485,18 @@ Begin
         npp              => MOTOR_NPP
     )
     port map (
-        sysclk              => clk,
-        reset_n             => rst_n,
-        state_clear_i       => pwm_solver_reset_s,
-        va_i                => va_motor,
-        vb_i                => vb_motor,
-        vc_i                => vc_motor,
-        torque_load_i       => torque_42,
-        coeff_we_i          => coeff_we_i,
-        coeff_matrix_i      => coeff_addr_i(1 downto 0),
-        coeff_row_i         => coeff_addr_i(4 downto 2),
-        coeff_col_i         => coeff_addr_i(7 downto 5),
-        coeff_data_i        => coeff_data_i,
+        sysclk              => solver_clk_200,
+        reset_n             => solver_reset_n_s,
+        state_clear_i       => solver_state_clear_s,
+        va_i                => va_motor_solver,
+        vb_i                => vb_motor_solver,
+        vc_i                => vc_motor_solver,
+        torque_load_i       => torque_solver,
+        coeff_we_i          => coeff_we_solver,
+        coeff_matrix_i      => coeff_addr_solver(1 downto 0),
+        coeff_row_i         => coeff_addr_solver(4 downto 2),
+        coeff_col_i         => coeff_addr_solver(7 downto 5),
+        coeff_data_i        => coeff_data_solver,
         ialpha_o            => ialpha_s,
         ibeta_o             => ibeta_s,
         flux_rotor_alpha_o  => flux_alpha_s,
@@ -377,28 +521,131 @@ Begin
     --------------------------------------------------------------------------
     IIR_aa_ialpha : entity work.IIRFilter
         generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
-        port map (clk => clk, reset_n => solver_rst_n_s,
-                  data_valid => data_valid_s, x_i => ialpha_s, y_o => ialpha_aa);
+        port map (clk => clk, reset_n => rst_n,
+                  data_valid => data_valid_axi, x_i => ialpha_raw_axi, y_o => ialpha_aa_axi);
 
     IIR_aa_ibeta : entity work.IIRFilter
         generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
-        port map (clk => clk, reset_n => solver_rst_n_s,
-                  data_valid => data_valid_s, x_i => ibeta_s, y_o => ibeta_aa);
+        port map (clk => clk, reset_n => rst_n,
+                  data_valid => data_valid_axi, x_i => ibeta_raw_axi, y_o => ibeta_aa_axi);
 
     IIR_aa_flux_alpha : entity work.IIRFilter
         generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
-        port map (clk => clk, reset_n => solver_rst_n_s,
-                  data_valid => data_valid_s, x_i => flux_alpha_s, y_o => flux_alpha_aa);
+        port map (clk => clk, reset_n => rst_n,
+                  data_valid => data_valid_axi, x_i => flux_alpha_raw_axi, y_o => flux_alpha_aa_axi);
 
     IIR_aa_flux_beta : entity work.IIRFilter
         generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
-        port map (clk => clk, reset_n => solver_rst_n_s,
-                  data_valid => data_valid_s, x_i => flux_beta_s, y_o => flux_beta_aa);
+        port map (clk => clk, reset_n => rst_n,
+                  data_valid => data_valid_axi, x_i => flux_beta_raw_axi, y_o => flux_beta_aa_axi);
 
     IIR_aa_speed : entity work.IIRFilter
         generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
-        port map (clk => clk, reset_n => solver_rst_n_s,
-                  data_valid => data_valid_s, x_i => speed_s, y_o => speed_aa);
+        port map (clk => clk, reset_n => rst_n,
+                  data_valid => data_valid_axi, x_i => speed_raw_axi, y_o => speed_aa_axi);
+
+    --------------------------------------------------------------------------
+    -- CDC 200 MHz -> 100 MHz: publica uma amostra filtrada por toggle.
+    --------------------------------------------------------------------------
+    Solver_Output_Snapshot : process(solver_clk_200)
+    begin
+        if rising_edge(solver_clk_200) then
+            solver_clk_div <= solver_clk_div + 1;
+            if solver_clk_div = x"FF" then
+                solver_clk_alive_toggle <= not solver_clk_alive_toggle;
+            end if;
+            if solver_rst_sync_n = '0' then
+                solver_sample_toggle  <= '0';
+                timer_tick_toggle     <= '0';
+                clarke_valid_toggle   <= '0';
+                solver_done_toggle    <= '0';
+                timer_tick_ctr_solver <= (others => '0');
+                solver_done_ctr_solver <= (others => '0');
+            else
+                if data_valid_s = '1' then
+                    solver_sample_toggle <= not solver_sample_toggle;
+                end if;
+                if timer_tick_dbg_s = '1' then
+                    timer_tick_toggle <= not timer_tick_toggle;
+                    timer_tick_ctr_solver <= timer_tick_ctr_solver + 1;
+                end if;
+                if clarke_valid_dbg_s = '1' then
+                    clarke_valid_toggle <= not clarke_valid_toggle;
+                end if;
+                if solver_done_dbg_s = '1' then
+                    solver_done_toggle <= not solver_done_toggle;
+                    solver_done_ctr_solver <= solver_done_ctr_solver + 1;
+                end if;
+            end if;
+        end if;
+    end process Solver_Output_Snapshot;
+
+    Solver_Output_CDC : process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst_n = '0' then
+                solver_sample_toggle_m1 <= '0';
+                solver_sample_toggle_m2 <= '0';
+                solver_sample_toggle_d  <= '0';
+                solver_sample_pulse     <= '0';
+                timer_tick_toggle_m1  <= '0';
+                timer_tick_toggle_m2  <= '0';
+                timer_tick_toggle_d   <= '0';
+                clarke_valid_toggle_m1 <= '0';
+                clarke_valid_toggle_m2 <= '0';
+                clarke_valid_toggle_d  <= '0';
+                solver_done_toggle_m1 <= '0';
+                solver_done_toggle_m2 <= '0';
+                solver_done_toggle_d  <= '0';
+                solver_clk_alive_m1 <= '0';
+                solver_clk_alive_m2 <= '0';
+                solver_clk_alive_d  <= '0';
+                solver_rst_n_m1     <= '0';
+                solver_rst_n_m2     <= '0';
+                ialpha_raw_axi          <= (others => '0');
+                ibeta_raw_axi           <= (others => '0');
+                flux_alpha_raw_axi      <= (others => '0');
+                flux_beta_raw_axi       <= (others => '0');
+                speed_raw_axi           <= (others => '0');
+                timer_tick_dbg_axi      <= '0';
+                clarke_valid_dbg_axi    <= '0';
+                solver_busy_dbg_axi     <= '0';
+                solver_done_dbg_axi     <= '0';
+                data_valid_axi          <= '0';
+            else
+                solver_sample_toggle_m1 <= solver_sample_toggle;
+                solver_sample_toggle_m2 <= solver_sample_toggle_m1;
+                solver_sample_toggle_d  <= solver_sample_toggle_m2;
+                solver_sample_pulse     <= solver_sample_toggle_m2 xor solver_sample_toggle_d;
+                timer_tick_toggle_m1    <= timer_tick_toggle;
+                timer_tick_toggle_m2    <= timer_tick_toggle_m1;
+                timer_tick_toggle_d     <= timer_tick_toggle_m2;
+                clarke_valid_toggle_m1  <= clarke_valid_toggle;
+                clarke_valid_toggle_m2  <= clarke_valid_toggle_m1;
+                clarke_valid_toggle_d   <= clarke_valid_toggle_m2;
+                solver_done_toggle_m1   <= solver_done_toggle;
+                solver_done_toggle_m2   <= solver_done_toggle_m1;
+                solver_done_toggle_d    <= solver_done_toggle_m2;
+                solver_clk_alive_m1 <= solver_clk_alive_toggle;
+                solver_clk_alive_m2 <= solver_clk_alive_m1;
+                solver_clk_alive_d  <= solver_clk_alive_m2;
+                solver_rst_n_m1     <= solver_rst_sync_n;
+                solver_rst_n_m2     <= solver_rst_n_m1;
+                timer_tick_dbg_axi      <= timer_tick_toggle_m2 xor timer_tick_toggle_d;
+                clarke_valid_dbg_axi    <= clarke_valid_toggle_m2 xor clarke_valid_toggle_d;
+                solver_busy_dbg_axi     <= solver_busy_dbg_s;
+                solver_done_dbg_axi     <= solver_done_toggle_m2 xor solver_done_toggle_d;
+                data_valid_axi          <= solver_sample_toggle_m2 xor solver_sample_toggle_d;
+                if (solver_sample_toggle_m2 xor solver_sample_toggle_d) = '1' then
+                    ialpha_raw_axi     <= ialpha_s;
+                    ibeta_raw_axi      <= ibeta_s;
+                    flux_alpha_raw_axi <= flux_alpha_s;
+                    flux_beta_raw_axi  <= flux_beta_s;
+                    speed_raw_axi      <= speed_s;
+                end if;
+            end if;
+        end if;
+    end process Solver_Output_CDC;
 
     --------------------------------------------------------------------------
     -- Monitoramento físico (FILTRADO): 32 MSBs do sinal pós-IIR (fc=1.15 kHz).
@@ -407,11 +654,11 @@ Begin
     --   este mesmo sinal filtrado.
     --   mark_debug nos ports força preservação pelo link_design (OOC DCP fix)
     --------------------------------------------------------------------------
-    ialpha_mon_o     <= ialpha_aa(TIM_DW-1 downto TIM_DW-32);
-    ibeta_mon_o      <= ibeta_aa(TIM_DW-1 downto TIM_DW-32);
-    flux_alpha_mon_o <= flux_alpha_aa(TIM_DW-1 downto TIM_DW-32);
-    flux_beta_mon_o  <= flux_beta_aa(TIM_DW-1 downto TIM_DW-32);
-    speed_mon_o      <= speed_aa(TIM_DW-1 downto TIM_DW-32);
+    ialpha_mon_o     <= ialpha_aa_axi(TIM_DW-1 downto TIM_DW-32);
+    ibeta_mon_o      <= ibeta_aa_axi(TIM_DW-1 downto TIM_DW-32);
+    flux_alpha_mon_o <= flux_alpha_aa_axi(TIM_DW-1 downto TIM_DW-32);
+    flux_beta_mon_o  <= flux_beta_aa_axi(TIM_DW-1 downto TIM_DW-32);
+    speed_mon_o      <= speed_aa_axi(TIM_DW-1 downto TIM_DW-32);
     data_valid_mon_o <= data_valid_latch;
 
     --------------------------------------------------------------------------
@@ -421,11 +668,11 @@ Begin
     dbg_free_run_o <= std_logic_vector(free_run_ctr);
     dbg_carrier_o  <= std_logic_vector(carrier_tick_ctr);
     dbg_timer_o    <= std_logic_vector(timer_tick_ctr);
-    dbg_dv_latch_o <= (0 => data_valid_latch, others => '0');
+    dbg_dv_latch_o <= std_logic_vector(solver_clk_alive_ctr) & solver_rst_n_m2 & data_valid_latch;
 
     Debug_Status : process(rst_n, pwm_enable_s, pwm_clear_s, carrier_tick_s,
-                           timer_tick_dbg_s, clarke_valid_dbg_s, solver_busy_dbg_s,
-                           solver_done_dbg_s, data_valid_s, data_valid_latch,
+                           timer_tick_dbg_axi, clarke_valid_dbg_axi, solver_busy_dbg_axi,
+                           solver_done_dbg_axi, data_valid_axi, data_valid_latch,
                            m_axis_tready, axis_tvalid_r, pwm_a, pwm_b, pwm_c,
                            pwm_ctrl_i)
         variable s : std_logic_vector(31 downto 0);
@@ -435,11 +682,11 @@ Begin
         s(1)            := pwm_enable_s;
         s(2)            := pwm_clear_s;
         s(3)            := carrier_tick_s;
-        s(4)            := timer_tick_dbg_s;
-        s(5)            := clarke_valid_dbg_s;
-        s(6)            := solver_busy_dbg_s;
-        s(7)            := solver_done_dbg_s;
-        s(8)            := data_valid_s;
+        s(4)            := timer_tick_dbg_axi;
+        s(5)            := clarke_valid_dbg_axi;
+        s(6)            := solver_busy_dbg_axi;
+        s(7)            := solver_done_dbg_axi;
+        s(8)            := data_valid_axi;
         s(9)            := data_valid_latch;
         s(10)           := m_axis_tready;
         s(11)           := axis_tvalid_r;
@@ -460,17 +707,17 @@ Begin
                 carrier_tick_ctr  <= (others => '0');
                 timer_tick_ctr    <= (others => '0');
                 solver_done_ctr   <= (others => '0');
+                solver_clk_alive_ctr <= (others => '0');
             else
                 if carrier_tick_s = '1' then
                     carrier_tick_ctr <= carrier_tick_ctr + 1;
                 end if;
-                if timer_tick_dbg_s = '1' then
-                    timer_tick_ctr <= timer_tick_ctr + 1;
+                if (solver_clk_alive_m2 xor solver_clk_alive_d) = '1' then
+                    solver_clk_alive_ctr <= solver_clk_alive_ctr + 1;
                 end if;
-                if solver_done_dbg_s = '1' then
-                    solver_done_ctr <= solver_done_ctr + 1;
-                end if;
-                if data_valid_s = '1' then
+                timer_tick_ctr  <= timer_tick_ctr_solver;
+                solver_done_ctr <= solver_done_ctr_solver;
+                if solver_sample_pulse = '1' then
                     data_valid_latch <= '1';
                     solver_step_ctr  <= solver_step_ctr + 1;
                 end if;
@@ -481,13 +728,13 @@ Begin
 
     --------------------------------------------------------------------------
     -- Ratio do decimador: bits[31:3] do pwm_ctrl; 0 = default 375
-    -- 375 → 3.75 MHz / 375 = 10 kHz de saída para o DMA
+    -- 750 → 7.69 MHz / 750 ≈ 10.26 kHz de saída para o DMA
     -- (bit[2] foi realocado para solver_reset; decim agora tem 29 bits,
     --  ainda muito mais do que o necessário — uso típico < 16 bits.)
     --------------------------------------------------------------------------
     decim_ratio <= resize(unsigned(pwm_ctrl_i(31 downto 3)), 30) when
                    unsigned(pwm_ctrl_i(31 downto 3)) /= 0 else
-                   to_unsigned(375, 30);
+                   to_unsigned(750, 30);
 
     --------------------------------------------------------------------------
     -- AXI4-Stream com decimador:
@@ -511,15 +758,15 @@ Begin
                     axis_tlast_r  <= '0';
                 end if;
 
-                if data_valid_s = '1' then
+                if solver_sample_pulse = '1' then
                     if decim_count >= decim_ratio - 1 then
                         if axis_tvalid_r = '0' or m_axis_tready = '1' then
                             decim_count <= (others => '0');
-                            axis_tdata_r( 41 downto   0) <= ialpha_aa;
-                            axis_tdata_r( 83 downto  42) <= ibeta_aa;
-                            axis_tdata_r(125 downto  84) <= flux_alpha_aa;
-                            axis_tdata_r(167 downto 126) <= flux_beta_aa;
-                            axis_tdata_r(209 downto 168) <= speed_aa;
+                            axis_tdata_r( 41 downto   0) <= ialpha_aa_axi;
+                            axis_tdata_r( 83 downto  42) <= ibeta_aa_axi;
+                            axis_tdata_r(125 downto  84) <= flux_alpha_aa_axi;
+                            axis_tdata_r(167 downto 126) <= flux_beta_aa_axi;
+                            axis_tdata_r(209 downto 168) <= speed_aa_axi;
                             axis_tdata_r(255 downto 210) <= (others => '0');
                             if axis_frame_cnt = to_unsigned(AXIS_DMA_BURST_FRAMES_C - 1,
                                                             axis_frame_cnt'length) then

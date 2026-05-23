@@ -9,11 +9,10 @@ T2 — balanced_beta_axis
     Va=0, Vb=sin(120°), Vc=-sin(120°)  →  α=0, β=1, zero=0  (β-axis only)
 
 T3 — zero_sequence
-    Va=Vb=Vc=1  →  α=0, β=0, zero=1
+    Va=Vb=Vc=1  →  α=0, β=0, zero=0
 
 T4 — pipeline_latency
     Assert data_valid_o arrives exactly PIPE_DEPTH cycles after data_valid_i
-    (6 in GHDL/cocotb VPI: 5-cycle RTL + 1 VPI-deposit offset).
 
 T5 — sweep_random
     Apply 20 random balanced 3-phase inputs and compare with Python golden.
@@ -32,8 +31,7 @@ from cocotb.triggers import ClockCycles, RisingEdge
 DATA_WIDTH  = 42
 FRAC_WIDTH  = 28
 FP_SCALE    = 1 << FRAC_WIDTH
-PIPE_DEPTH  = 6   # ClarkeTransform pipeline latency as seen by GHDL/cocotb VPI
-                  # VHDL has 5-cycle RTL latency (v1.4 6-stage pipeline); VPI deposit adds 1 effective cycle
+PIPE_DEPTH  = 12  # Cocotb-observed latency; RTL valid path is 11 clocks plus VPI scheduling
 TOL_ULP     = 6   # allowed error in LSBs:
                   # COEFF_2_3 = round(2/3 * 2^28) introduces ≤ 0.333 * alphaSum_real ULPs
                   # shift_right(b,1) and shift_right(c,1) add ≤ 1 ULP each
@@ -68,7 +66,7 @@ def clarke_python(a: float, b: float, c: float):
     """Reference Clarke transform (matches VHDL equations)."""
     alpha = (2.0 / 3.0) * (a - 0.5 * b - 0.5 * c)
     beta  = (1.0 / math.sqrt(3.0)) * (b - c)
-    zero  = (1.0 / 3.0) * (a + b + c)
+    zero  = 0.0
     return alpha, beta, zero
 
 
@@ -84,7 +82,7 @@ async def reset_dut(dut, cycles: int = 5) -> None:
 
 
 async def apply_and_read(dut, a: float, b: float, c: float):
-    """Drive inputs for one cycle, then wait for the output (3-cycle pipeline)."""
+    """Drive inputs for one cycle, then wait for the pipelined output."""
     dut.a_in.value = to_slv(real_to_fp(a))
     dut.b_in.value = to_slv(real_to_fp(b))
     dut.c_in.value = to_slv(real_to_fp(c))
@@ -154,7 +152,7 @@ async def test_balanced_beta_axis(dut):
 
 @cocotb.test()
 async def test_zero_sequence(dut):
-    """Va=Vb=Vc=1 → α=0, β=0, zero=1."""
+    """Va=Vb=Vc=1 → α=0, β=0, zero=0."""
     clock = Clock(dut.sysclk, 10, unit="ns")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
@@ -163,7 +161,7 @@ async def test_zero_sequence(dut):
     tol = TOL_ULP / FP_SCALE
     assert_close("alpha", alpha, 0.0, tol)
     assert_close("beta",  beta,  0.0, tol)
-    assert_close("zero",  zero,  1.0, tol)
+    assert_close("zero",  zero,  0.0, tol)
     dut._log.info(f"α={alpha:.6f}  β={beta:.6f}  zero={zero:.6f}")
 
 

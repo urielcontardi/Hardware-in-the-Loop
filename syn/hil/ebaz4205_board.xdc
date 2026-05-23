@@ -58,3 +58,6 @@ set_property IOSTANDARD LVCMOS33 [get_ports MDIO_ETHERNET_0_0_mdio_io]
 set_false_path -to   [get_ports {LED[*]}]
 set_false_path -to   [get_ports {enet0_gmii_txd[*] ENET0_GMII_TX_EN_0 FCLK_CLK3_0 MDIO_ETHERNET_0_0_mdc}]
 set_false_path -from [get_ports {enet0_gmii_rxd[*] ENET0_GMII_RX_DV_0 ENET0_GMII_RX_CLK_0 ENET0_GMII_TX_CLK_0 MDIO_ETHERNET_0_0_mdio_io}]
+
+# FCLK0 (AXI/PWM 100 MHz) e FCLK1 (solver 200 MHz) se comunicam por CDC explicito.
+set_clock_groups -asynchronous -group [get_clocks clk_fpga_0] -group [get_clocks clk_fpga_1]

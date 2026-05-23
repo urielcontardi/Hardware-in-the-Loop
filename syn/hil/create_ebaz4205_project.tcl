@@ -93,7 +93,8 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_CAN_PERIPHERAL_DIVISOR1       {1} \
         CONFIG.PCW_CLK0_FREQ   {100000000} \
         CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ      {100} \
-        CONFIG.PCW_CLK1_FREQ   {10000000} \
+        CONFIG.PCW_FPGA1_PERIPHERAL_FREQMHZ      {200} \
+        CONFIG.PCW_CLK1_FREQ   {200000000} \
         CONFIG.PCW_CLK2_FREQ   {10000000} \
         CONFIG.PCW_CLK3_FREQ   {25000000} \
         CONFIG.PCW_CPU_CPU_PLL_FREQMHZ           {1333.333} \
@@ -118,6 +119,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_ENET1_RESET_ENABLE            {0} \
         CONFIG.PCW_ENET_RESET_ENABLE             {1} \
         CONFIG.PCW_ENET_RESET_SELECT             {Share reset pin} \
+        CONFIG.PCW_EN_CLK1_PORT                  {1} \
         CONFIG.PCW_EN_CLK3_PORT                  {1} \
         CONFIG.PCW_EN_EMIO_CD_SDIO0              {0} \
         CONFIG.PCW_EN_EMIO_ENET0                 {1} \
@@ -130,7 +132,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_FCLK0_PERIPHERAL_DIVISOR0     {2} \
         CONFIG.PCW_FCLK0_PERIPHERAL_DIVISOR1     {5} \
         CONFIG.PCW_FCLK1_PERIPHERAL_DIVISOR0     {1} \
-        CONFIG.PCW_FCLK1_PERIPHERAL_DIVISOR1     {1} \
+        CONFIG.PCW_FCLK1_PERIPHERAL_DIVISOR1     {5} \
         CONFIG.PCW_FCLK2_PERIPHERAL_DIVISOR0     {1} \
         CONFIG.PCW_FCLK2_PERIPHERAL_DIVISOR1     {1} \
         CONFIG.PCW_FCLK3_PERIPHERAL_DIVISOR0     {8} \
@@ -138,7 +140,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_FCLK_CLK3_BUF                 {TRUE} \
         CONFIG.PCW_FPGA3_PERIPHERAL_FREQMHZ      {25} \
         CONFIG.PCW_FPGA_FCLK0_ENABLE             {1} \
-        CONFIG.PCW_FPGA_FCLK1_ENABLE             {0} \
+        CONFIG.PCW_FPGA_FCLK1_ENABLE             {1} \
         CONFIG.PCW_FPGA_FCLK2_ENABLE             {0} \
         CONFIG.PCW_FPGA_FCLK3_ENABLE             {1} \
         CONFIG.PCW_GPIO_EMIO_GPIO_ENABLE         {1} \
@@ -441,12 +443,20 @@ proc cr_bd_ebaz4205 {} {
     # ── proc_sys_reset : gera reset síncrono ao FCLK0 ────────────────────────
     set psr [create_bd_cell -type ip \
                  -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_0]
+    set psr_solver [create_bd_cell -type ip \
+                 -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_solver]
     connect_bd_net \
         [get_bd_pins processing_system7_0/FCLK_CLK0] \
         [get_bd_pins proc_sys_reset_0/slowest_sync_clk]
     connect_bd_net \
         [get_bd_pins processing_system7_0/FCLK_RESET0_N] \
         [get_bd_pins proc_sys_reset_0/ext_reset_in]
+    connect_bd_net \
+        [get_bd_pins processing_system7_0/FCLK_CLK1] \
+        [get_bd_pins proc_sys_reset_solver/slowest_sync_clk]
+    connect_bd_net \
+        [get_bd_pins processing_system7_0/FCLK_RESET0_N] \
+        [get_bd_pins proc_sys_reset_solver/ext_reset_in]
 
     # ── Clocks : FCLK0 (150 MHz) para todo o path HIL ────────────────────────
     connect_bd_net \
@@ -463,6 +473,9 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] \
         [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] \
         [get_bd_pins hil_axi_top_0/clk]
+    connect_bd_net \
+        [get_bd_pins processing_system7_0/FCLK_CLK1] \
+        [get_bd_pins hil_axi_top_0/solver_clk]
 
     # ── Resets : via proc_sys_reset (síncronos ao FCLK0) ─────────────────────
     connect_bd_net \
@@ -478,6 +491,9 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins axi_dma_0/axi_resetn] \
         [get_bd_pins axis_dwidth_converter_0/aresetn] \
         [get_bd_pins hil_axi_top_0/rst_n]
+    connect_bd_net \
+        [get_bd_pins proc_sys_reset_solver/peripheral_aresetn] \
+        [get_bd_pins hil_axi_top_0/solver_rst_n]
 
     # ── PS7 GP0 → SmartConnect 0 ──────────────────────────────────────────────
     connect_bd_intf_net \
@@ -762,6 +778,29 @@ generate_target {simulation instantiation_template} \
     [get_files BilienarSolverUnit_DSP.xci]
 
 puts "  IP BilienarSolverUnit_DSP criado com DSP48E1 (5 DSPs por instância)."
+
+puts ""
+puts "=== Criando IP ClarkeMultiplier_DSP (43x29, pipelineado) ==="
+
+create_ip -name mult_gen -vendor xilinx.com -library ip -version 12.0 \
+    -module_name ClarkeMultiplier_DSP
+
+set_property -dict [list \
+    CONFIG.PortAWidth              {43}                   \
+    CONFIG.PortBWidth              {29}                   \
+    CONFIG.MultType                {Parallel_Multiplier}  \
+    CONFIG.PortAType               {Signed}               \
+    CONFIG.PortBType               {Signed}               \
+    CONFIG.Multiplier_Construction {Use_Mults}            \
+    CONFIG.OptGoal                 {Speed}                \
+    CONFIG.PipeStages              {7}                    \
+] [get_ips ClarkeMultiplier_DSP]
+
+generate_target all [get_files ClarkeMultiplier_DSP.xci]
+catch { export_ip_user_files -of_objects [get_files ClarkeMultiplier_DSP.xci] -no_script -sync -force -quiet }
+upgrade_ip [get_ips ClarkeMultiplier_DSP] -quiet
+generate_target all [get_files ClarkeMultiplier_DSP.xci]
+puts "  IP ClarkeMultiplier_DSP criado para a transformada de Clarke."
 
 # ── 5b. Fileset sim_compare (tb_DSP_StubVsIP) ────────────────────────────────
 puts ""

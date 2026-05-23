@@ -42,10 +42,9 @@ FP_SCALE         = 1 << FP_FRACTION_BITS
 SIM_STEPS    = 3000   # × Ts = 300 µs total motor time
 WARMUP_STEPS = 50     # discard initial reset artefacts
 
-# 200 MHz × 200 ns = 40 clock cycles per motor step
-CLOCK_FREQUENCY = 150_000_000
-TS_S            = 40.0/150_000_000              # 266.67 ns — 40 cycles @ 150 MHz
-TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)   # 40
+CLOCK_FREQUENCY = 200_000_000
+TS_S            = 26.0/200_000_000              # 130 ns - 26 cycles @ 200 MHz
+TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)   # 26
 
 # Sine parameters — full-amplitude 60 Hz from t = 0
 FREQUENCY_HZ   = 60.0
@@ -113,7 +112,7 @@ async def wait_data_valid(dut) -> None:
 async def test_tim_solver_sine_stimulus(dut):
     """Drive TIM_Solver with 60 Hz pure sine and compare against C reference model."""
 
-    clock = Clock(dut.sysclk, 6667, unit="ps")  # 150 MHz (6.667 ns) — matches CLOCK_FREQUENCY generic
+    clock = Clock(dut.sysclk, 5000, unit="ps")  # 200 MHz (5 ns) - matches CLOCK_FREQUENCY generic
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
