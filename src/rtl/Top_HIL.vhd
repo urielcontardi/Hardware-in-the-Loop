@@ -316,12 +316,18 @@ Begin
     port map (
         sysclk              => sysclk,
         reset_n             => reset_n,
+        state_clear_i       => '0',
         -- Input voltages (from NPC converter)
         va_i                => va_motor,
         vb_i                => vb_motor,
         vc_i                => vc_motor,
         -- Mechanical load
         torque_load_i       => torque_load,
+        coeff_we_i          => '0',
+        coeff_matrix_i      => (others => '0'),
+        coeff_row_i         => (others => '0'),
+        coeff_col_i         => (others => '0'),
+        coeff_data_i        => (others => '0'),
         -- Output currents (alpha-beta)
         ialpha_o            => ialpha_int,
         ibeta_o             => ibeta_int,

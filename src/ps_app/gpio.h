@@ -19,6 +19,10 @@
  *   0x24  carrier_tick_ctr read  — ticks do NPC carrier
  *   0x28  timer_tick_ctr   read  — ticks do timer do TIM_Solver
  *   0x2C  data_valid_latch read  — bit[0]=1: solver produziu saída
+ *   0x30  coeff_addr       write/read — [1:0]=matrix A/B/Y, [4:2]=row, [7:5]=col
+ *   0x34  coeff_data_lo    write/read — coefficient[31:0] raw Q14.28
+ *   0x38  coeff_data_hi    write/read — coefficient[41:32]
+ *   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we
  */
 #define ADDR_HIL_REGS        0x43C00000U
 #define REG_VA_REF           0x00U
@@ -33,6 +37,10 @@
 #define REG_DEBUG_CARRIER    0x24U
 #define REG_DEBUG_TIMER      0x28U
 #define REG_DEBUG_DV_LATCH   0x2CU
+#define REG_COEFF_ADDR       0x30U
+#define REG_COEFF_DATA_LO    0x34U
+#define REG_COEFF_DATA_HI    0x38U
+#define REG_COEFF_COMMIT     0x3CU
 
 /* ── AXI GPIO — monitor (PL writes, PS reads) ─────────────────────────── */
 #define ADDR_GPIO_MONITOR_1   0x41200000U  /* ch1=ialpha_mon,     ch2=ibeta_mon      */
@@ -49,6 +57,11 @@
 #define PWM_CTRL_SOLVER_RESET (1 << 2)
 #define PWM_CTRL_DECIM_SHIFT  3
 
+#define TIM_COEFF_MATRIX_A 0U
+#define TIM_COEFF_MATRIX_B 1U
+#define TIM_COEFF_MATRIX_Y 2U
+#define TIM_COEFF_ADDR(matrix, row, col)     ((((uint32_t)(matrix)) & 0x3U) | ((((uint32_t)(row)) & 0x7U) << 2) |      ((((uint32_t)(col)) & 0x7U) << 5))
+
 /* CARRIER_MAX: 100 MHz / (1 kHz * 2) = 50000 */
 #define CARRIER_MAX  50000
 
@@ -63,6 +76,8 @@ void gpio_set_vref(int32_t va, int32_t vb, int32_t vc);
 void gpio_set_pwm_ctrl(int enable, int clear_fault, int solver_reset,
                        uint32_t decim_ratio);
 void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word);
+void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
+                          int64_t coeff_q14_28);
 
 /* Helpers — read from AXI GPIO monitors */
 int32_t  gpio_get_speed(void);

@@ -45,6 +45,17 @@ type server struct {
 	lastScanAt  time.Time
 }
 
+type motorRequest struct {
+	IP  string   `json:"ip"`
+	Rs  *float32 `json:"rs,omitempty"`
+	Rr  *float32 `json:"rr,omitempty"`
+	Ls  *float32 `json:"ls,omitempty"`
+	Lr  *float32 `json:"lr,omitempty"`
+	Lm  *float32 `json:"lm,omitempty"`
+	J   *float32 `json:"j,omitempty"`
+	Npp *float32 `json:"npp,omitempty"`
+}
+
 type setRequest struct {
 	IP           string   `json:"ip"`
 	FreqHz       *float32 `json:"freq_hz,omitempty"`
@@ -92,6 +103,7 @@ func main() {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/attach", s.handleAttach)
 	mux.HandleFunc("/api/detach", s.handleDetach)
+	mux.HandleFunc("/api/motor", s.handleMotor)
 	mux.HandleFunc("/api/set", s.handleSet)
 	mux.HandleFunc("/api/run", s.handleRun)
 	mux.HandleFunc("/api/pause", s.handlePause)
@@ -413,6 +425,27 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setTelemetryTarget("")
 	s.ring.Clear()
+	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
+}
+
+func (s *server) handleMotor(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeJSON[motorRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ip, err := s.resolveIP(req.IP)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	status, err := hiludp.ProgramMotor(ip, hiludp.MotorParams{
+		Rs: req.Rs, Rr: req.Rr, Ls: req.Ls, Lr: req.Lr, Lm: req.Lm, J: req.J, Npp: req.Npp,
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 

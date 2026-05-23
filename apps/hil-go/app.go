@@ -79,6 +79,14 @@ func (a *App) broadcastLoop() {
 	}
 }
 
+// ProgramMotor computes TIM matrices on the PS and writes them to the FPGA.
+func (a *App) ProgramMotor(ip string, rs, rr, ls, lr, lm, j, npp float32) (*hilUDP.HilStatus, error) {
+	p := hilUDP.MotorParams{
+		Rs: &rs, Rr: &rr, Ls: &ls, Lr: &lr, Lm: &lm, J: &j, Npp: &npp,
+	}
+	return hilUDP.ProgramMotor(ip, p)
+}
+
 // SetParams sends control parameters to the PS board.
 // Empty/zero "do not change" semantics are encoded via the includeXxx flags
 // so the user can update just a subset of params.

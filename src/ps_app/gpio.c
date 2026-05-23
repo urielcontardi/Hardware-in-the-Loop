@@ -106,6 +106,16 @@ void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word)
     gpio_write(ADDR_HIL_REGS, REG_TORQUE_WORD, (uint32_t)torque_word);
 }
 
+void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
+                          int64_t coeff_q14_28)
+{
+    uint64_t raw = (uint64_t)coeff_q14_28 & ((1ULL << 42) - 1ULL);
+    gpio_write(ADDR_HIL_REGS, REG_COEFF_ADDR, TIM_COEFF_ADDR(matrix, row, col));
+    gpio_write(ADDR_HIL_REGS, REG_COEFF_DATA_LO, (uint32_t)(raw & 0xffffffffULL));
+    gpio_write(ADDR_HIL_REGS, REG_COEFF_DATA_HI, (uint32_t)(raw >> 32));
+    gpio_write(ADDR_HIL_REGS, REG_COEFF_COMMIT, 1U);
+}
+
 /* ── Reads from AXI GPIO monitors ────────────────────────────────────── */
 
 int32_t gpio_get_speed(void)      { return (int32_t)gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH1_OFFSET); }

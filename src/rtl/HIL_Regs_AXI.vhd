@@ -20,6 +20,10 @@
 --   0x24  carrier_tick_ctr read  — ticks do NPC carrier
 --   0x28  timer_tick_ctr   read  — ticks do timer do TIM_Solver
 --   0x2C  data_valid_latch read  — bit[0]=1 indica solver produziu saída
+--   0x30  coeff_addr       write/read — [1:0]=matrix A/B/Y, [4:2]=row, [7:5]=col
+--   0x34  coeff_data_lo    write/read — coefficient[31:0] raw Q14.28
+--   0x38  coeff_data_hi    write/read — coefficient[41:32]
+--   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we_o
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -65,6 +69,11 @@ entity HIL_Regs_AXI is
         vdc_word_o    : out std_logic_vector(31 downto 0);
         torque_word_o : out std_logic_vector(31 downto 0);
 
+        -- Runtime solver coefficient write port.
+        coeff_we_o     : out std_logic;
+        coeff_addr_o   : out std_logic_vector(31 downto 0);
+        coeff_data_o   : out std_logic_vector(41 downto 0);
+
         -- Read-only debug bus from HIL_AXI_Top.
         dbg_status_i     : in  std_logic_vector(31 downto 0);
         dbg_free_run_i   : in  std_logic_vector(31 downto 0);
@@ -93,6 +102,10 @@ architecture rtl of HIL_Regs_AXI is
     signal reg_pwm_ctrl    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_vdc_word    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_torque_word : std_logic_vector(31 downto 0) := (others => '0');
+    signal reg_coeff_addr  : std_logic_vector(31 downto 0) := (others => '0');
+    signal reg_coeff_lo    : std_logic_vector(31 downto 0) := (others => '0');
+    signal reg_coeff_hi    : std_logic_vector(31 downto 0) := (others => '0');
+    signal coeff_we_r      : std_logic := '0';
 
     constant DEBUG_MAGIC : std_logic_vector(31 downto 0) := x"48494C52"; -- "HILR"
 
@@ -106,12 +119,9 @@ architecture rtl of HIL_Regs_AXI is
     attribute dont_touch of reg_pwm_ctrl    : signal is "true";
     attribute dont_touch of reg_vdc_word    : signal is "true";
     attribute dont_touch of reg_torque_word : signal is "true";
-    attribute dont_touch of va_ref_o        : signal is "true";
-    attribute dont_touch of vb_ref_o        : signal is "true";
-    attribute dont_touch of vc_ref_o        : signal is "true";
-    attribute dont_touch of pwm_ctrl_o      : signal is "true";
-    attribute dont_touch of vdc_word_o      : signal is "true";
-    attribute dont_touch of torque_word_o   : signal is "true";
+    attribute dont_touch of reg_coeff_addr  : signal is "true";
+    attribute dont_touch of reg_coeff_lo    : signal is "true";
+    attribute dont_touch of reg_coeff_hi    : signal is "true";
 
 begin
 
@@ -122,6 +132,9 @@ begin
     pwm_ctrl_o    <= reg_pwm_ctrl;
     vdc_word_o    <= reg_vdc_word;
     torque_word_o <= reg_torque_word;
+    coeff_we_o     <= coeff_we_r;
+    coeff_addr_o   <= reg_coeff_addr;
+    coeff_data_o   <= reg_coeff_hi(9 downto 0) & reg_coeff_lo;
 
     S_AXI_AWREADY <= awready;
     S_AXI_WREADY  <= wready;
@@ -146,7 +159,13 @@ begin
                 reg_pwm_ctrl    <= (others => '0');
                 reg_vdc_word    <= (others => '0');
                 reg_torque_word <= (others => '0');
+                reg_coeff_addr  <= (others => '0');
+                reg_coeff_lo    <= (others => '0');
+                reg_coeff_hi    <= (others => '0');
+                coeff_we_r      <= '0';
             else
+                coeff_we_r <= '0';
+
                 -- AWREADY: accept address
                 if awready = '0' and S_AXI_AWVALID = '1' then
                     awready <= '1';
@@ -172,7 +191,11 @@ begin
                         when "0011" => reg_pwm_ctrl    <= S_AXI_WDATA;
                         when "0100" => reg_vdc_word    <= S_AXI_WDATA;
                         when "0101" => reg_torque_word <= S_AXI_WDATA;
-                        when others => null;  -- 0x18..0x3C são read-only
+                        when "1100" => reg_coeff_addr  <= S_AXI_WDATA;
+                        when "1101" => reg_coeff_lo    <= S_AXI_WDATA;
+                        when "1110" => reg_coeff_hi    <= S_AXI_WDATA;
+                        when "1111" => coeff_we_r      <= S_AXI_WDATA(0);
+                        when others => null;  -- 0x18..0x2C são read-only
                     end case;
                     bvalid <= '1';
                 elsif bvalid = '1' and S_AXI_BREADY = '1' then
@@ -206,6 +229,10 @@ begin
                         when "1001" => rdata <= dbg_carrier_i;   -- 0x24
                         when "1010" => rdata <= dbg_timer_i;     -- 0x28
                         when "1011" => rdata <= dbg_dv_latch_i;  -- 0x2C
+                        when "1100" => rdata <= reg_coeff_addr;   -- 0x30
+                        when "1101" => rdata <= reg_coeff_lo;     -- 0x34
+                        when "1110" => rdata <= reg_coeff_hi;     -- 0x38
+                        when "1111" => rdata <= (others => '0');  -- 0x3C commit strobe
                         when others => rdata <= (others => '0');
                     end case;
                     rvalid <= '1';

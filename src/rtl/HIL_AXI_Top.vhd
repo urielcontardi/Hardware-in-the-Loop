@@ -95,6 +95,12 @@ Entity HIL_AXI_Top is
         vdc_word_i       : in  std_logic_vector(31 downto 0);
         torque_word_i    : in  std_logic_vector(31 downto 0);
 
+        -- ── Programação dos coeficientes do TIM_Solver (PS → PL) ────────────
+        -- coeff_addr_i: [1:0]=matrix A/B/Y, [4:2]=row, [7:5]=col.
+        coeff_we_i      : in  std_logic;
+        coeff_addr_i    : in  std_logic_vector(31 downto 0);
+        coeff_data_i    : in  std_logic_vector(41 downto 0);
+
         -- ── Interrupção para o PS (1 pulso por período de portadora) ─────────
         -- Conectar a IRQ_F2P[0] no Block Design
         carrier_tick_o   : out std_logic;
@@ -141,10 +147,10 @@ Architecture rtl of HIL_AXI_Top is
     signal pwm_enable_s        : std_logic;
     signal pwm_clear_s         : std_logic;
     signal pwm_solver_reset_s  : std_logic;
-    -- Reset síncrono efetivo do TIM_Solver: combina rst_n global do sistema
+    -- Reset auxiliar para filtros e caminhos derivados: combina rst_n global do sistema
     -- com o bit[2] do pwm_ctrl (software-pulsable). PS pulsa esse bit para
-    -- zerar os estados integradores (correntes, fluxos, velocidade) entre
-    -- runs sem precisar de reload do bitstream.
+    -- limpar estados derivados entre
+    -- runs sem precisar de reload do bitstream. O TIM_Solver preserva coeficientes e usa state_clear_i.
     signal solver_rst_n_s      : std_logic;
 
     --------------------------------------------------------------------------
@@ -205,16 +211,16 @@ Architecture rtl of HIL_AXI_Top is
     signal solver_done_ctr    : unsigned(31 downto 0) := (others => '0');
     signal debug_status_word  : std_logic_vector(31 downto 0) := x"D0000000";
 
-    -- mark_debug: força o Vivado a preservar os outputs do módulo através do
-    -- boundary OOC de link_design. Sem isso, os outputs ficam como GND (bug Vivado).
+    -- mark_debug: força o Vivado a preservar sinais internos que alimentam os
+    -- outputs do módulo através do boundary OOC de link_design.
     attribute mark_debug : string;
-    attribute mark_debug of ialpha_mon_o     : signal is "true";
-    attribute mark_debug of ibeta_mon_o      : signal is "true";
-    attribute mark_debug of flux_alpha_mon_o : signal is "true";
-    attribute mark_debug of flux_beta_mon_o  : signal is "true";
-    attribute mark_debug of speed_mon_o      : signal is "true";
-    attribute mark_debug of data_valid_mon_o : signal is "true";
-    attribute mark_debug of carrier_tick_o   : signal is "true";
+    attribute mark_debug of ialpha_aa        : signal is "true";
+    attribute mark_debug of ibeta_aa         : signal is "true";
+    attribute mark_debug of flux_alpha_aa    : signal is "true";
+    attribute mark_debug of flux_beta_aa     : signal is "true";
+    attribute mark_debug of speed_aa         : signal is "true";
+    attribute mark_debug of data_valid_latch : signal is "true";
+    attribute mark_debug of carrier_tick_s   : signal is "true";
 
     --------------------------------------------------------------------------
     -- Registrador AXI4-Stream + Decimador
@@ -336,11 +342,17 @@ Begin
     )
     port map (
         sysclk              => clk,
-        reset_n             => solver_rst_n_s,
+        reset_n             => rst_n,
+        state_clear_i       => pwm_solver_reset_s,
         va_i                => va_motor,
         vb_i                => vb_motor,
         vc_i                => vc_motor,
         torque_load_i       => torque_42,
+        coeff_we_i          => coeff_we_i,
+        coeff_matrix_i      => coeff_addr_i(1 downto 0),
+        coeff_row_i         => coeff_addr_i(4 downto 2),
+        coeff_col_i         => coeff_addr_i(7 downto 5),
+        coeff_data_i        => coeff_data_i,
         ialpha_o            => ialpha_s,
         ibeta_o             => ibeta_s,
         flux_rotor_alpha_o  => flux_alpha_s,

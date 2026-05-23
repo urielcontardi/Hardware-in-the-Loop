@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -16,6 +17,25 @@
 #include <net/if.h>
 #include <ifaddrs.h>
 #include <math.h>
+typedef struct {
+    float rs;
+    float rr;
+    float ls;
+    float lr;
+    float lm;
+    float j;
+    float npp;
+} motor_params_t;
+
+static motor_params_t motor_params = {
+    .rs = 0.4396f,
+    .rr = 0.2826f,
+    .ls = 3.1364e-3f,
+    .lr = 6.3264e-3f,
+    .lm = 109.9442e-3f,
+    .j = 0.4f,
+    .npp = 2.0f,
+};
 
 /* UDP command port */
 #define UDP_PORT        5005
@@ -295,6 +315,8 @@ static void apply_stop(void)
  *               "enable":0|1,"telem_dst":"<ip>"}
  *               ↳ all fields optional. "enable" forces state RUNNING/PAUSED.
  *               ↳ "telem_dst" configures/retargets telemetry push.
+ *   MOTOR:    {"cmd":"motor","rs":..,"rr":..,"ls":..,"lr":..,"lm":..,"j":..,"npp":..}
+ *               ↳ computes TIM matrices on PS and writes A/B/Y coefficients.
  *   GET:      {"cmd":"get"}
  *   RUN:      {"cmd":"run"}    — enable motor with current params
  *   PAUSE:    {"cmd":"pause"}  — disable motor, keep params
@@ -321,6 +343,80 @@ static int json_get_string(const char *buf, const char *key, char *out, size_t o
     memcpy(out, p + 1, len);
     out[len] = '\0';
     return 1;
+}
+
+static int64_t q14_28(double v)
+{
+    const double scale = 268435456.0;
+    const double max_v = (double)((1LL << 41) - 1) / scale;
+    const double min_v = -(double)(1LL << 41) / scale;
+    if (v > max_v) v = max_v;
+    if (v < min_v) v = min_v;
+    return (int64_t)llround(v * scale);
+}
+
+static int64_t y_entry(int idx)
+{
+    return idx < 0 ? (int64_t)(1ULL << 41) : (int64_t)idx;
+}
+
+static void wait_solver_idle(void)
+{
+    for (int i = 0; i < 100000; i++) {
+        uint32_t st = gpio_read(ADDR_HIL_REGS, REG_DEBUG_STATUS);
+        if (((st >> 6) & 1U) == 0) return;
+        if ((i & 0x3f) == 0) usleep(1);
+    }
+}
+
+static void write_tim_coeff_when_idle(uint32_t matrix, uint32_t row, uint32_t col, int64_t value)
+{
+    wait_solver_idle();
+    gpio_write_tim_coeff(matrix, row, col, value);
+}
+
+
+static int program_motor_coeffs(const motor_params_t *m)
+{
+    const double ts = 27.0 / 100000000.0;
+    const double ls_total = (double)m->ls + (double)m->lm;
+    const double lr_total = (double)m->lr + (double)m->lm;
+    const double denom = (double)m->lm * (double)m->lm - ls_total * lr_total;
+    if (fabs(denom) < 1e-12 || fabs(lr_total) < 1e-12 || fabs(m->j) < 1e-12)
+        return -1;
+
+    const double k = 1.0 / denom;
+    const double a[5][5] = {
+        { -ts*m->rr/lr_total, -ts*m->npp, ts*m->lm*m->rr/lr_total, 0.0, 0.0 },
+        {  ts*m->npp, -ts*m->rr/lr_total, 0.0, ts*m->lm*m->rr/lr_total, 0.0 },
+        { -ts*m->lm*m->rr*k/lr_total, -ts*m->lm*m->npp*k, ts*(m->lm*m->lm*m->rr*k/lr_total + lr_total*m->rs*k), 0.0, 0.0 },
+        {  ts*m->lm*m->npp*k, -ts*m->lm*m->rr*k/lr_total, 0.0, ts*(m->lm*m->lm*m->rr*k/lr_total + lr_total*m->rs*k), 0.0 },
+        {  ts*(3.0*m->npp*m->lm)/(2.0*m->j*lr_total), ts*(-3.0*m->npp*m->lm)/(2.0*m->j*lr_total), 0.0, 0.0, 0.0 },
+    };
+    const int y[5][5] = {
+        { -1,  4, -1, -1, -1 },
+        {  4, -1, -1, -1, -1 },
+        { -1,  4, -1, -1, -1 },
+        {  4, -1, -1, -1, -1 },
+        {  3,  2, -1, -1, -1 },
+    };
+    const double b[5][3] = {
+        { 0.0, 0.0, 0.0 },
+        { 0.0, 0.0, 0.0 },
+        { -ts*lr_total*k, 0.0, 0.0 },
+        { 0.0, -ts*lr_total*k, 0.0 },
+        { 0.0, 0.0, -ts/m->j },
+    };
+
+    for (uint32_t r = 0; r < 5; r++) {
+        for (uint32_t c = 0; c < 5; c++) {
+            write_tim_coeff_when_idle(TIM_COEFF_MATRIX_A, r, c, q14_28(a[r][c]));
+            write_tim_coeff_when_idle(TIM_COEFF_MATRIX_Y, r, c, y_entry(y[r][c]));
+        }
+        for (uint32_t c = 0; c < 3; c++)
+            write_tim_coeff_when_idle(TIM_COEFF_MATRIX_B, r, c, q14_28(b[r][c]));
+    }
+    return 0;
 }
 
 static void build_status(char *resp, size_t sz, const char *status_msg)
@@ -406,6 +502,34 @@ static void handle_packet(int sock, const char *buf,
         if (json_get_string(buf, "telem_dst", ip, sizeof(ip)))
             ensure_telem_to(ip);
 
+    } else if (strstr(buf, "\"cmd\":\"motor\"")) {
+        if (hil_state == HIL_RUNNING) {
+            status_msg = "motor_update_requires_pause";
+            goto send_response;
+        }
+
+        motor_params_t m = motor_params;
+        char *ptr;
+        if ((ptr = strstr(buf, "\"rs\":")))  sscanf(ptr + 5, "%f", &m.rs);
+        if ((ptr = strstr(buf, "\"rr\":")))  sscanf(ptr + 5, "%f", &m.rr);
+        if ((ptr = strstr(buf, "\"ls\":")))  sscanf(ptr + 5, "%f", &m.ls);
+        if ((ptr = strstr(buf, "\"lr\":")))  sscanf(ptr + 5, "%f", &m.lr);
+        if ((ptr = strstr(buf, "\"lm\":")))  sscanf(ptr + 5, "%f", &m.lm);
+        if ((ptr = strstr(buf, "\"j\":")))   sscanf(ptr + 4, "%f", &m.j);
+        if ((ptr = strstr(buf, "\"npp\":"))) sscanf(ptr + 6, "%f", &m.npp);
+
+        if (program_motor_coeffs(&m) == 0) {
+            motor_params = m;
+            vf_reset_solver();
+            if (hil_state == HIL_IDLE || hil_state == HIL_STOPPED)
+                hil_state = HIL_PAUSED;
+            printf("[MOTOR] rs=%.6g rr=%.6g ls=%.6g lr=%.6g lm=%.6g j=%.6g npp=%.3g\n",
+                   m.rs, m.rr, m.ls, m.lr, m.lm, m.j, m.npp);
+        } else {
+            status_msg = "invalid_motor_params";
+        }
+
+
     } else if (strstr(buf, "\"cmd\":\"get\"")) {
         /* fall through to send status */
 
@@ -423,8 +547,8 @@ static void handle_packet(int sock, const char *buf,
 
     } else if (strstr(buf, "\"cmd\":\"reset\"")) {
         vf_reset_solver();
-        /* Reset leaves params intact but motor disabled — same posture as Pause. */
-        if (hil_state == HIL_RUNNING) hil_state = HIL_PAUSED;
+        hil_state = HIL_PAUSED;
+        /* Reset leaves params intact but motor disabled - same posture as Pause. */
         printf("[RESET] solver states cleared, state=%s\n", state_name(hil_state));
 
     } else if (strstr(buf, "\"cmd\":\"telem\"")) {
@@ -457,6 +581,7 @@ static void handle_packet(int sock, const char *buf,
         status_msg = "unknown_command";
     }
 
+send_response:
     build_status(resp, sizeof(resp), status_msg);
     sendto(sock, resp, strlen(resp), 0, (struct sockaddr *)cli, cli_len);
 }

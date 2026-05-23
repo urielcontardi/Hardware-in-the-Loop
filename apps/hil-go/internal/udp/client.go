@@ -81,6 +81,16 @@ type DiscoveryResponse struct {
 
 // SetParams: fields sent with {"cmd":"set"}. Pointers so we can omit fields
 // the user did not touch (and let the board keep the previous value).
+type MotorParams struct {
+	Rs  *float32 `json:"rs,omitempty"`
+	Rr  *float32 `json:"rr,omitempty"`
+	Ls  *float32 `json:"ls,omitempty"`
+	Lr  *float32 `json:"lr,omitempty"`
+	Lm  *float32 `json:"lm,omitempty"`
+	J   *float32 `json:"j,omitempty"`
+	Npp *float32 `json:"npp,omitempty"`
+}
+
 type SetParams struct {
 	FreqHz       *float32 `json:"freq_hz,omitempty"`
 	VdcV         *float32 `json:"vdc_v,omitempty"`
@@ -228,6 +238,33 @@ func Discover(timeout time.Duration) (*DiscoveryResponse, error) {
 
 // Set sends a "set" command. Any field left nil/empty is omitted, so the
 // board keeps its previous value.
+func ProgramMotor(ip string, p MotorParams) (*HilStatus, error) {
+	payload := map[string]any{"cmd": "motor"}
+	if p.Rs != nil {
+		payload["rs"] = *p.Rs
+	}
+	if p.Rr != nil {
+		payload["rr"] = *p.Rr
+	}
+	if p.Ls != nil {
+		payload["ls"] = *p.Ls
+	}
+	if p.Lr != nil {
+		payload["lr"] = *p.Lr
+	}
+	if p.Lm != nil {
+		payload["lm"] = *p.Lm
+	}
+	if p.J != nil {
+		payload["j"] = *p.J
+	}
+	if p.Npp != nil {
+		payload["npp"] = *p.Npp
+	}
+	b, _ := json.Marshal(payload)
+	return sendRecv(ip, b)
+}
+
 func Set(ip string, p SetParams) (*HilStatus, error) {
 	payload := map[string]any{"cmd": "set"}
 	if p.FreqHz != nil {

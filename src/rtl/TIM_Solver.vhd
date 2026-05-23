@@ -73,6 +73,7 @@ Entity TIM_Solver is
         -- Clock and reset
         sysclk              : in std_logic;
         reset_n             : in std_logic;
+        state_clear_i       : in std_logic;
         
         -- Input voltages (3-phase ABC)
         va_i                : in std_logic_vector(DATA_WIDTH-1 downto 0);
@@ -81,6 +82,14 @@ Entity TIM_Solver is
         
         -- Mechanical load torque input
         torque_load_i       : in std_logic_vector(DATA_WIDTH-1 downto 0);
+
+        -- Runtime coefficient programming. Values are raw Q14.28 words.
+        -- matrix: 0=A, 1=B, 2=Y. Writes are applied only while the solver is idle.
+        coeff_we_i          : in std_logic;
+        coeff_matrix_i      : in std_logic_vector(1 downto 0);
+        coeff_row_i         : in std_logic_vector(2 downto 0);
+        coeff_col_i         : in std_logic_vector(2 downto 0);
+        coeff_data_i        : in std_logic_vector(DATA_WIDTH-1 downto 0);
         
         -- Output currents (3-phase ABC)
         ialpha_o            : out std_logic_vector(DATA_WIDTH-1 downto 0);
@@ -129,7 +138,7 @@ Architecture rtl of TIM_Solver is
 
     --------------------------------------------------------------------------
     -- TIM Constants
-    --------------------------------------------------------------------------m
+    --------------------------------------------------------------------------
     constant N_SS              : natural := 5;
     constant N_IN              : natural := 3;
 
@@ -217,14 +226,18 @@ Architecture rtl of TIM_Solver is
     --------------------------------------------------------------------------
     -- TIM Signals
     --------------------------------------------------------------------------
-    constant Amatrix_fp     : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := matrix_to_fp(AMATRIX);
-    constant Ymatrix_fp     : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := matrix_Y_to_fp(YMATRIX);
-    constant Bmatrix_fp     : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := matrix_to_fp(BMATRIX);
+    constant Amatrix_init   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := matrix_to_fp(AMATRIX);
+    constant Ymatrix_init   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := matrix_Y_to_fp(YMATRIX);
+    constant Bmatrix_init   : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := matrix_to_fp(BMATRIX);
+    signal Amatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Amatrix_init;
+    signal Ymatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Ymatrix_init;
+    signal Bmatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := Bmatrix_init;
     signal Xvec_fp          : vector_fp_t(0 to N_SS - 1);
     signal dXvec_fp         : vector_fp_t(0 to N_SS - 1);
     signal Uvec_fp          : vector_fp_t(0 to N_IN - 1);
     signal solver_busy      : std_logic;
     signal solver_done      : std_logic;
+    signal solver_start     : std_logic;
 
 Begin
 
@@ -259,6 +272,43 @@ Begin
             end if;
         end if;
     end process;
+
+    --------------------------------------------------------------------------
+    -- Runtime coefficient registers
+    -- Hold TIM_Solver in reset from software before updating a full matrix set.
+    --------------------------------------------------------------------------
+    Coeff_Config : process(sysclk, reset_n)
+        variable row_v : natural;
+        variable col_v : natural;
+    begin
+        if reset_n = '0' then
+            Amatrix_fp <= Amatrix_init;
+            Ymatrix_fp <= Ymatrix_init;
+            Bmatrix_fp <= Bmatrix_init;
+        elsif rising_edge(sysclk) then
+            row_v := to_integer(unsigned(coeff_row_i));
+            col_v := to_integer(unsigned(coeff_col_i));
+
+            if coeff_we_i = '1' and solver_busy = '0' then
+                case coeff_matrix_i is
+                    when "00" =>
+                        if row_v < N_SS and col_v < N_SS then
+                            Amatrix_fp(row_v, col_v) <= coeff_data_i;
+                        end if;
+                    when "01" =>
+                        if row_v < N_SS and col_v < N_IN then
+                            Bmatrix_fp(row_v, col_v) <= coeff_data_i;
+                        end if;
+                    when "10" =>
+                        if row_v < N_SS and col_v < N_SS then
+                            Ymatrix_fp(row_v, col_v) <= coeff_data_i;
+                        end if;
+                    when others =>
+                        null;
+                end case;
+            end if;
+        end if;
+    end process Coeff_Config;
 
     --------------------------------------------------------------------------
     -- Clarke Transform Instance
@@ -296,7 +346,7 @@ Begin
     )
     Port map(
         sysclk              => sysclk,
-        start_i             => clarke_valid and not solver_busy,
+        start_i             => solver_start,
         Amatrix_i           => Amatrix_fp,
         Xvec_i              => Xvec_fp,
         Ymatrix_i           => Ymatrix_fp,
@@ -305,6 +355,8 @@ Begin
         stateResultVec_o    => dXvec_fp,
         busy_o              => solver_busy
     );
+
+    solver_start <= clarke_valid and not solver_busy and not state_clear_i;
 
     -- Convert input signals to Uvec_fp
     Uvec_fp(0) <= std_logic_vector(valpha);
@@ -334,7 +386,9 @@ Begin
         elsif rising_edge(sysclk) then
 
             data_valid_o <= '0';
-            if solver_done = '1' then
+            if state_clear_i = '1' then
+                Xvec_fp <= (others => (others => '0'));
+            elsif solver_done = '1' then
                 data_valid_o <= '1';
                 for i in 0 to N_SS - 1 loop
                     Xvec_fp(i) <= std_logic_vector(signed(Xvec_fp(i)) + signed(dXvec_fp(i)));

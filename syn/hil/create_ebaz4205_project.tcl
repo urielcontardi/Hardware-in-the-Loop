@@ -529,6 +529,17 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_regs_0/torque_word_o] \
         [get_bd_pins hil_axi_top_0/torque_word_i]
 
+    # Coeficientes runtime do TIM_Solver: PS escreve HIL_Regs_AXI e pulsa commit.
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/coeff_we_o] \
+        [get_bd_pins hil_axi_top_0/coeff_we_i]
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/coeff_addr_o] \
+        [get_bd_pins hil_axi_top_0/coeff_addr_i]
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/coeff_data_o] \
+        [get_bd_pins hil_axi_top_0/coeff_data_i]
+
     # Debug bus do HIL_AXI_Top → HIL_Regs_AXI (offsets 0x1C..0x2C).
     # Permite ler contadores e status word via PS sem ocupar os AXI GPIOs,
     # que ficam dedicados às grandezas físicas (ialpha, ibeta, flux, speed).
@@ -820,7 +831,7 @@ puts "   sim_bsu_compare: tb_BSU_StubVsIP"
 puts ""
 puts " Infraestrutura HIL PS<->PL:"
 puts "   HIL_AXI_Top    : NPCManager + NPC->Voltage + TIM_Solver"
-puts "   HIL_Regs_AXI    : va/vb/vc, pwm_ctrl, vdc, torque, debug readback"
+puts "   HIL_Regs_AXI    : va/vb/vc, pwm_ctrl, vdc, torque, coeffs, debug readback"
 puts "   AXI GPIO leitura: axi_gpio_monitor_{1,2,3} (ialpha,ibeta,flux,speed)"
 puts "   IRQ_F2P\[0\]    : carrier_tick_o (1 kHz, 1 pulso/periodo)"
 puts "   IRQ_F2P\[1\]    : axi_dma_0/s2mm_introut"
