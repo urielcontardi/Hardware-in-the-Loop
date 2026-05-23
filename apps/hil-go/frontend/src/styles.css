@@ -807,7 +807,7 @@ body {
 /* -- Sidebar tabs ---------------------------------------------------------- */
 .sidebar-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 8px;
   background: #09111c;
@@ -824,9 +824,9 @@ body {
   border-radius: var(--r);
   background: #0a1422;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
   cursor: pointer;
 }
@@ -934,6 +934,65 @@ body {
   bottom: 30px;
   height: 2px;
   background: #36516b;
+}
+
+.scenario-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+
+.scenario-table {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.scenario-head,
+.scenario-row {
+  display: grid;
+  grid-template-columns: 45px minmax(0, 1fr) minmax(0, 1fr) 54px 20px;
+  gap: 5px;
+  align-items: center;
+}
+
+.scenario-head {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0 2px;
+}
+
+.scenario-row .write-input {
+  width: 100%;
+  min-width: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  font-size: 10px;
+}
+
+.scenario-remove {
+  width: 20px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid #562036;
+  background: #1a0710;
+  color: var(--danger);
+  cursor: pointer;
+}
+
+.scenario-remove:hover {
+  border-color: var(--danger);
+  background: #2a0010;
+}
+
+.scenario-add {
+  width: 100%;
+  margin-top: 8px;
 }
 
 @media (max-width: 900px) {

@@ -296,12 +296,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
 
       <div class="sidebar-tabs" role="tablist" aria-label="HIL panels">
-        <button class="tab-btn active" data-tab="motor" type="button">Motor/DC</button>
+        <button class="tab-btn active" data-tab="plant" type="button">Plant</button>
         <button class="tab-btn" data-tab="control" type="button">Control</button>
+        <button class="tab-btn" data-tab="scenario" type="button">Scenarios</button>
         <button class="tab-btn" data-tab="telemetry" type="button">Telemetry</button>
       </div>
 
-      <div class="tab-pane active" data-tab-panel="motor">
+      <div class="tab-pane active" data-tab-panel="plant">
         <section class="panel">
           <div class="panel-title">MOTOR MODEL</div>
           <div class="motor-model" aria-label="Induction motor T equivalent model">
@@ -314,10 +315,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="model-node rotor">jωrψr</div>
             <div class="model-branch"><span>Lm</span></div>
             <div class="model-return"></div>
-          </div>
-          <div class="field-inline">
-            <label title="Tensão do barramento DC do inversor">DC link (V)</label>
-            <input id="vdc" type="number" value="1240" min="0" max="2000" step="1" class="write-input" />
           </div>
           <div class="field-inline">
             <label title="Número de pares de polos do motor">Pole pairs</label>
@@ -349,7 +346,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="btn-row" style="margin-top:8px">
             <button id="btn-apply-motor" class="btn btn-write" title="Recompute TIM matrices and atomically swap the active motor model at the next solver-safe boundary.">Apply Motor</button>
-            <button id="btn-apply" class="btn btn-sm" title="Apply DC link and controller setpoints without changing the motor model">Apply DC/Setpoints</button>
           </div>
         </section>
       </div>
@@ -357,6 +353,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="tab-pane" data-tab-panel="control">
         <section class="panel">
           <div class="panel-title">CONTROLLER SETPOINTS</div>
+          <div class="field-inline">
+            <label title="Tensão do barramento DC usada pelo inversor/controlador">DC link (V)</label>
+            <input id="vdc" type="number" value="1240" min="0" max="2000" step="1" class="write-input" />
+          </div>
           <div class="field-inline">
             <label>Speed (RPM)</label>
             <input id="rpm" type="number" value="1800" min="0" max="12000" step="60" class="write-input" />
@@ -382,9 +382,69 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="btn-stop"  class="btn btn-danger" title="Disable motor, reset params (daemon stays alive)">Stop</button>
           </div>
           <div class="btn-row" style="margin-top:6px">
+            <button id="btn-apply" class="btn btn-sm" title="Apply controller/DC setpoints without changing the motor model">Apply Setpoints</button>
             <button id="btn-reset" class="btn btn-sm" title="Pulse FPGA solver reset — clears integrator states without changing params">Reset solver</button>
           </div>
           <div id="ps-status" class="ps-status hidden"></div>
+        </section>
+      </div>
+
+      <div class="tab-pane" data-tab-panel="scenario">
+        <section class="panel">
+          <div class="panel-title">SCENARIO RECIPE</div>
+          <div class="field-inline">
+            <label>Name</label>
+            <input id="scenario-name" type="text" value="motor_fault_step" class="write-input" />
+          </div>
+          <div class="scenario-toolbar">
+            <button class="btn btn-sm" type="button" disabled>Load</button>
+            <button class="btn btn-sm" type="button" disabled>Save</button>
+            <button class="btn btn-sm" type="button" disabled>Run recipe</button>
+          </div>
+          <div id="scenario-table" class="scenario-table" aria-label="Scenario event editor">
+            <div class="scenario-head">
+              <span>t [s]</span>
+              <span>Target</span>
+              <span>Param</span>
+              <span>Value</span>
+              <span></span>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="0.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>control</option>
+                <option>motor</option>
+                <option>load</option>
+              </select>
+              <select class="write-input">
+                <option>speed_rpm</option>
+                <option>torque_nm</option>
+                <option>rs</option>
+                <option>rr</option>
+                <option>vdc_v</option>
+              </select>
+              <input type="number" value="1800" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="2.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>motor</option>
+                <option>control</option>
+                <option>load</option>
+              </select>
+              <select class="write-input">
+                <option>rs</option>
+                <option>rr</option>
+                <option>lm</option>
+                <option>torque_nm</option>
+                <option>speed_rpm</option>
+              </select>
+              <input type="number" value="0.9" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+          </div>
+          <button id="btn-add-scenario-event" class="btn btn-sm scenario-add" type="button">Add event</button>
         </section>
       </div>
 
@@ -488,6 +548,8 @@ const elStatus      = document.querySelector<HTMLDivElement>("#status")!;
 const elSampleCount = document.querySelector<HTMLSpanElement>("#sample-count")!;
 const elChList      = document.querySelector<HTMLDivElement>("#ch-list")!;
 const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
+const elScenarioTable = document.querySelector<HTMLDivElement>("#scenario-table")!;
+const elBtnAddScenarioEvent = document.querySelector<HTMLButtonElement>("#btn-add-scenario-event")!;
 
 const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
@@ -509,7 +571,36 @@ function setActiveTab(tab: string) {
 tabButtons.forEach(btn => {
   btn.setAttribute("role", "tab");
   btn.setAttribute("aria-selected", btn.classList.contains("active") ? "true" : "false");
-  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab || "motor"));
+  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab || "plant"));
+});
+
+function bindScenarioRemove(row: Element) {
+  row.querySelector<HTMLButtonElement>(".scenario-remove")?.addEventListener("click", () => row.remove());
+}
+
+document.querySelectorAll(".scenario-row").forEach(bindScenarioRemove);
+elBtnAddScenarioEvent.addEventListener("click", () => {
+  const row = document.createElement("div");
+  row.className = "scenario-row";
+  row.innerHTML = `
+    <input type="number" value="0.0" min="0" step="0.001" class="write-input" />
+    <select class="write-input">
+      <option>control</option>
+      <option>motor</option>
+      <option>load</option>
+    </select>
+    <select class="write-input">
+      <option>speed_rpm</option>
+      <option>torque_nm</option>
+      <option>rs</option>
+      <option>rr</option>
+      <option>vdc_v</option>
+    </select>
+    <input type="number" value="0" step="0.001" class="write-input" />
+    <button class="scenario-remove" type="button" title="Remove event">x</button>
+  `;
+  elScenarioTable.appendChild(row);
+  bindScenarioRemove(row);
 });
 
 // ── Subplot count selector ────────────────────────────────────────────────────
