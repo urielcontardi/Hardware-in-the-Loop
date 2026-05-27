@@ -741,17 +741,19 @@ async function dispatchScenarioEvent(ev: { target: string; param: string; value:
   try {
     const p = readParams();
     if (ev.target === "control" || ev.target === "load") {
-      let freq = p.freq, vdc = p.vdc, torque = p.torque;
-      let baseFreq = p.baseFreq, maxVPu = p.maxVPu, accelTime = p.accelTime;
+      // Send only the changed field — never include `enable` so the motor
+      // keeps running. api.SetParams always sends enable:false (bool) which
+      // causes a 400 from the gateway (expects *int). Use postJSON directly.
+      const body: Record<string, unknown> = { ip };
       switch (ev.param) {
-        case "speed_rpm":    freq      = ev.value * p.npp / 60; break;
-        case "torque_nm":    torque    = ev.value;              break;
-        case "vdc_v":        vdc       = ev.value;              break;
-        case "accel_time_s": accelTime = ev.value;              break;
-        case "max_v_pu":     maxVPu    = ev.value;              break;
-        case "base_freq_hz": baseFreq  = ev.value;              break;
+        case "speed_rpm":    body.freq_hz      = ev.value * p.npp / 60; break;
+        case "torque_nm":    body.torque_nm    = ev.value;              break;
+        case "vdc_v":        body.vdc_v        = ev.value;              break;
+        case "accel_time_s": body.accel_time_s = ev.value;              break;
+        case "max_v_pu":     body.max_v_pu     = ev.value;              break;
+        case "base_freq_hz": body.base_freq_hz = ev.value;              break;
       }
-      await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, false);
+      await postJSON<HilStatus>("/api/set", body);
     } else if (ev.target === "motor") {
       const m: Record<string, number> = {
         rs: p.motorRs, rr: p.motorRr, ls: p.motorLs,
