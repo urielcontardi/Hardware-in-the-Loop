@@ -597,13 +597,6 @@ const elTorque      = document.querySelector<HTMLInputElement>("#torque")!;
 const elNpp         = document.querySelector<HTMLInputElement>("#npp")!;
 motorNpp = Math.max(1, Number(elNpp.value) || 2);
 elNpp.addEventListener("input", () => { motorNpp = Math.max(1, Number(elNpp.value) || 2); });
-// Keep Lm and Lr_total in sync so the Te formula (Lm/Lr) stays correct.
-const syncMotorLmLr = () => {
-  motorLm = Math.max(1e-9, Number(elMotorLm.value) || motorLm);
-  motorLr = motorLm + Math.max(0, Number(elMotorLr.value) || 0);
-};
-elMotorLm.addEventListener("input", syncMotorLmLr);
-elMotorLr.addEventListener("input", syncMotorLmLr);
 const elRatedRpm    = document.querySelector<HTMLInputElement>("#rated-rpm")!;
 const elMaxVPu      = document.querySelector<HTMLInputElement>("#max-vpu")!;
 const elMotorRs     = document.querySelector<HTMLInputElement>("#motor-rs")!;
@@ -612,6 +605,15 @@ const elMotorLs     = document.querySelector<HTMLInputElement>("#motor-ls")!;
 const elMotorLr     = document.querySelector<HTMLInputElement>("#motor-lr")!;
 const elMotorLm     = document.querySelector<HTMLInputElement>("#motor-lm")!;
 const elMotorJ      = document.querySelector<HTMLInputElement>("#motor-j")!;
+// Keep Lm and Lr_total in sync so the Te formula (Lm/Lr) stays correct.
+// Must be placed after elMotorLm/elMotorLr declarations (const is not hoisted).
+const syncMotorLmLr = () => {
+  motorLm = Math.max(1e-9, Number(elMotorLm.value) || motorLm);
+  motorLr = motorLm + Math.max(0, Number(elMotorLr.value) || 0);
+};
+syncMotorLmLr();  // initialise from current input values
+elMotorLm.addEventListener("input", syncMotorLmLr);
+elMotorLr.addEventListener("input", syncMotorLmLr);
 const elBtnConnect  = document.querySelector<HTMLButtonElement>("#btn-connect")!;
 const elBtnDiscover = document.querySelector<HTMLButtonElement>("#btn-discover")!;
 const elBtnApply    = document.querySelector<HTMLButtonElement>("#btn-apply")!;
