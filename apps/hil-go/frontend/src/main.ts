@@ -1612,20 +1612,11 @@ function scheduleRender() {
       p.setScale("x", { min: viewStart, max: viewEnd });
     });
     if (pwmPlot) {
-      // PWM window in hardware time (see pwmViewEndSec note). Live: glue to the
-      // newest PWM event and remember its offset from the telemetry edge.
-      // Paused: ride that offset so panning/zooming the telemetry view carries
-      // the PWM view along by the same amount.
-      if (!paused && pwmEvents.length > 0) {
-        pwmViewEndSec = pwmEvents[pwmEvents.length - 1].t_sec;
-        pwmTelemOffset = pwmViewEndSec - viewEnd;
-      } else {
-        pwmViewEndSec = viewEnd + pwmTelemOffset;
-      }
-      const pwmStart = pwmViewEndSec - windowSec;
-      const [px, pa, pb, pc] = pwmStepData(pwmStart, pwmViewEndSec);
+      // Both telemetry and PWM events use the same FPGA run-local counter, so
+      // the shared [viewStart, viewEnd] window applies to both without offset.
+      const [px, pa, pb, pc] = pwmStepData(viewStart, viewEnd);
       pwmPlot.setData([px, pa, pb, pc] as uPlot.AlignedData);
-      pwmPlot.setScale("x", { min: pwmStart, max: pwmViewEndSec });
+      pwmPlot.setScale("x", { min: viewStart, max: viewEnd });
       pwmPlot.setScale("y", { min: -1.25, max: 1.25 });
     }
     scaleSyncing = false;
