@@ -197,7 +197,11 @@ type ChDef = {
 
 // Pole pairs cached from the motor-model input — used to compute electromagnetic
 // torque from telemetry without a DOM read per decimated point.
+// FluxA/FluxB are *rotor* fluxes (flux_rotor_alpha/beta_o from the TIM
+// solver), so Te = 1.5·npp·(Lm/Lr_total)·(Φrα·Iβ − Φrβ·Iα).
 let motorNpp = 2;
+let motorLm  = 0.1099442;   // defaults match firmware motor_params
+let motorLr  = 0.1099442 + 0.0063264;  // lm + lr_leak
 
 const SQRT3_2 = Math.sqrt(3) / 2;
 // Inverse Clarke (amplitude-invariant, matches FPGA convention):
@@ -212,7 +216,7 @@ const CHANNELS_AB: ChDef[] = [
   { name: "Φα",    unit: "Wb",    color: "#81c784", read: s => s.FluxA, defaultSubplot: 1 },
   { name: "Φβ",    unit: "Wb",    color: "#ce93d8", read: s => s.FluxB, defaultSubplot: 1 },
   { name: "Speed", unit: "RPM",   color: "#ffcc80", read: s => s.Speed * 60 / (2 * Math.PI), defaultSubplot: 2 },
-  { name: "Te",    unit: "N·m",   color: "#ffb74d", read: s => 1.5 * motorNpp * (s.FluxA * s.Ib - s.FluxB * s.Ia), defaultSubplot: 3 },
+  { name: "Te",    unit: "N·m",   color: "#ffb74d", read: s => 1.5 * motorNpp * (motorLm / motorLr) * (s.FluxA * s.Ib - s.FluxB * s.Ia), defaultSubplot: 3 },
   { name: "TL",    unit: "N·m",   color: "#b0bec5", read: s => s.TL ?? 0, defaultSubplot: 3, dash: [6, 4] },
 ];
 
@@ -224,7 +228,7 @@ const CHANNELS_ABC: ChDef[] = [
   { name: "Φb",    unit: "Wb",    color: "#ce93d8", read: s => xb(s.FluxA, s.FluxB), defaultSubplot: 1 },
   { name: "Φc",    unit: "Wb",    color: "#a5d6a7", read: s => xc(s.FluxA, s.FluxB), defaultSubplot: 1 },
   { name: "Speed", unit: "RPM",   color: "#ffcc80", read: s => s.Speed * 60 / (2 * Math.PI), defaultSubplot: 2 },
-  { name: "Te",    unit: "N·m",   color: "#ffb74d", read: s => 1.5 * motorNpp * (s.FluxA * s.Ib - s.FluxB * s.Ia), defaultSubplot: 3 },
+  { name: "Te",    unit: "N·m",   color: "#ffb74d", read: s => 1.5 * motorNpp * (motorLm / motorLr) * (s.FluxA * s.Ib - s.FluxB * s.Ia), defaultSubplot: 3 },
   { name: "TL",    unit: "N·m",   color: "#b0bec5", read: s => s.TL ?? 0, defaultSubplot: 3, dash: [6, 4] },
 ];
 
@@ -593,6 +597,13 @@ const elTorque      = document.querySelector<HTMLInputElement>("#torque")!;
 const elNpp         = document.querySelector<HTMLInputElement>("#npp")!;
 motorNpp = Math.max(1, Number(elNpp.value) || 2);
 elNpp.addEventListener("input", () => { motorNpp = Math.max(1, Number(elNpp.value) || 2); });
+// Keep Lm and Lr_total in sync so the Te formula (Lm/Lr) stays correct.
+const syncMotorLmLr = () => {
+  motorLm = Math.max(1e-9, Number(elMotorLm.value) || motorLm);
+  motorLr = motorLm + Math.max(0, Number(elMotorLr.value) || 0);
+};
+elMotorLm.addEventListener("input", syncMotorLmLr);
+elMotorLr.addEventListener("input", syncMotorLmLr);
 const elRatedRpm    = document.querySelector<HTMLInputElement>("#rated-rpm")!;
 const elMaxVPu      = document.querySelector<HTMLInputElement>("#max-vpu")!;
 const elMotorRs     = document.querySelector<HTMLInputElement>("#motor-rs")!;
