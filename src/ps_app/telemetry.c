@@ -21,7 +21,7 @@ static uint16_t crc16(const uint8_t *data, size_t len)
 
 /* ── Internal state ──────────────────────────────────────────────────────── */
 #define HDR_SIZE    10u
-#define SAMPLE_BYTES 20u   /* 5 × float32 */
+#define SAMPLE_BYTES 26u   /* uint32 timestamp + uint16 epoch + 5 × float32 */
 #define MAX_FRAME   (HDR_SIZE + TELEM_BURST * SAMPLE_BYTES + 2u)
 
 static int               sock       = -1;
@@ -80,12 +80,15 @@ int telem_init(const char *dest_ip)
     return 0;
 }
 
-void telem_push(float ia, float ib, float flux_a, float flux_b,
+void telem_push(uint32_t t_cycles, uint16_t epoch,
+                float ia, float ib, float flux_a, float flux_b,
                 float speed, uint8_t flags)
 {
     if (sock < 0) return;
 
     last_flags              = flags;
+    burst[burst_idx].t_cycles = t_cycles;
+    burst[burst_idx].epoch    = epoch;
     burst[burst_idx].ia     = ia;
     burst[burst_idx].ib     = ib;
     burst[burst_idx].flux_a = flux_a;
@@ -115,8 +118,10 @@ void telem_push(float ia, float ib, float flux_a, float flux_b,
     frame[pos++] = last_flags;
     frame[pos++] = (uint8_t)TELEM_BURST;
 
-    /* samples — 5 × float32 LE each */
+    /* samples — timestamp + epoch + 5 × float32 LE each */
     for (int i = 0; i < TELEM_BURST; i++) {
+        memcpy(frame + pos, &burst[i].t_cycles, sizeof(uint32_t)); pos += 4;
+        memcpy(frame + pos, &burst[i].epoch,    sizeof(uint16_t)); pos += 2;
         memcpy(frame + pos, &burst[i].ia,     sizeof(float)); pos += 4;
         memcpy(frame + pos, &burst[i].ib,     sizeof(float)); pos += 4;
         memcpy(frame + pos, &burst[i].flux_a, sizeof(float)); pos += 4;

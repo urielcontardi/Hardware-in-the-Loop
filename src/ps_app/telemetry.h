@@ -11,7 +11,8 @@
  *  [4..7]   SEQ   uint32 LE  (increments per burst)
  *  [8]      FLAGS uint8  (bit0=enable, bit1=fault)
  *  [9]      N     uint8  (samples in this burst)
- *  [10 .. 10+N*20-1]  samples: ia ib flux_a flux_b speed (float32 LE each)
+ *  [10 .. 10+N*26-1]  samples: t_cycles(uint32), epoch(uint16),
+ *                         ia ib flux_a flux_b speed (float32 LE each)
  *  [last-1..last]     CRC16/CCITT-FALSE LE
  *
  * Total for burst of 32: 4+4+1+1+(32×20)+2 = 652 bytes
@@ -26,6 +27,8 @@
 #define TELEM_BURST   32     /* samples per UDP packet */
 
 typedef struct {
+    uint32_t t_cycles;
+    uint16_t epoch;
     float ia;
     float ib;
     float flux_a;
@@ -45,7 +48,8 @@ typedef struct {
  * telem_deinit— close socket
  */
 int  telem_init  (const char *dest_ip);
-void telem_push  (float ia, float ib, float flux_a, float flux_b,
+void telem_push  (uint32_t t_cycles, uint16_t epoch,
+                  float ia, float ib, float flux_a, float flux_b,
                   float speed, uint8_t flags);
 void telem_stats (telem_stats_t *out);
 void telem_deinit(void);

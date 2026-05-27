@@ -121,6 +121,69 @@ void gpio_apply_tim_coeffs(void)
     gpio_write(ADDR_HIL_REGS, REG_COEFF_COMMIT, TIM_COEFF_APPLY_STROBE);
 }
 
+/* ── PWM event capture readout ──────────────────────────────────────── */
+
+void gpio_pwmcap_clear(void)
+{
+    gpio_write(ADDR_HIL_REGS, REG_PWM_CAP_CTRL, PWM_CAP_CTRL_CLEAR);
+}
+
+void gpio_pwmcap_start(void)
+{
+    gpio_write(ADDR_HIL_REGS, REG_PWM_CAP_CTRL, PWM_CAP_CTRL_START);
+}
+
+void gpio_pwmcap_stop(void)
+{
+    gpio_write(ADDR_HIL_REGS, REG_PWM_CAP_CTRL, PWM_CAP_CTRL_STOP);
+}
+
+void gpio_pwmcap_set_window(uint32_t cycles)
+{
+    gpio_write(ADDR_HIL_REGS, REG_PWM_CAP_WINDOW, cycles);
+}
+
+uint32_t gpio_pwmcap_status(void)
+{
+    return gpio_read(ADDR_HIL_REGS, REG_PWM_CAP_STATUS);
+}
+
+uint16_t gpio_pwmcap_count(void)
+{
+    return (uint16_t)(gpio_pwmcap_status() >> 16);
+}
+
+uint64_t gpio_pwmcap_peek(void)
+{
+    uint32_t lo = gpio_read(ADDR_HIL_REGS, REG_PWM_CAP_DATA_LO);
+    uint32_t hi = gpio_read(ADDR_HIL_REGS, REG_PWM_CAP_DATA_HI);
+    return ((uint64_t)hi << 32) | lo;
+}
+
+void gpio_pwmcap_pop(void)
+{
+    gpio_write(ADDR_HIL_REGS, REG_PWM_CAP_POP, 1U);
+}
+
+int gpio_pwmcap_read(uint64_t *event_out)
+{
+    if (!event_out) return 0;
+    if (gpio_pwmcap_status() & PWM_CAP_STATUS_EMPTY) return 0;
+    *event_out = gpio_pwmcap_peek();
+    gpio_pwmcap_pop();
+    return 1;
+}
+
+uint32_t gpio_hil_time(void)
+{
+    return gpio_read(ADDR_HIL_REGS, REG_HIL_TIME);
+}
+
+uint16_t gpio_hil_epoch(void)
+{
+    return (uint16_t)(gpio_read(ADDR_HIL_REGS, REG_HIL_EPOCH) & 0xffffU);
+}
+
 /* ── Reads from AXI GPIO monitors ────────────────────────────────────── */
 
 int32_t gpio_get_speed(void)      { return (int32_t)gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH1_OFFSET); }

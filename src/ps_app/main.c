@@ -2,6 +2,7 @@
 #include "vf_ctrl.h"
 #include "telemetry.h"
 #include "dma_telem.h"
+#include "pwm_events.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -175,12 +176,14 @@ static void *telem_thread_fn(void *arg)
                            | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
 
             for (int i = 0; i < n && telem_active; i++) {
-                telem_push(dma_buf[i].ialpha,
+                telem_push(gpio_hil_time(), gpio_hil_epoch(),
+                           dma_buf[i].ialpha,
                            dma_buf[i].ibeta,
                            dma_buf[i].flux_alpha,
                            dma_buf[i].flux_beta,
                            dma_buf[i].speed,
                            flags);
+                pwm_events_poll();
             }
         }
     }
@@ -216,6 +219,7 @@ static void *telem_thread_fn(void *arg)
                            | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
 
             telem_push(
+                gpio_hil_time(), gpio_hil_epoch(),
                 (float)gpio_get_ialpha()     * MON_SCALE,
                 (float)gpio_get_ibeta()      * MON_SCALE,
                 (float)gpio_get_flux_alpha() * MON_SCALE,
@@ -223,6 +227,7 @@ static void *telem_thread_fn(void *arg)
                 (float)gpio_get_speed()      * MON_SCALE,
                 flags
             );
+            pwm_events_poll();
         }
     }
     return NULL;
@@ -233,6 +238,7 @@ static void start_telem_thread(void)
     if (telem_active) return;
     telem_active = 1;
     pthread_create(&telem_tid, NULL, telem_thread_fn, NULL);
+    pwm_events_start();
 }
 
 static void stop_telem_thread(void)
@@ -241,6 +247,7 @@ static void stop_telem_thread(void)
     telem_active = 0;
     pthread_join(telem_tid, NULL);
     telem_deinit();
+    pwm_events_deinit();
 }
 
 /* Ensure telemetry is sending to the given IP (idempotent). */
@@ -252,6 +259,8 @@ static void ensure_telem_to(const char *ip)
 
     stop_telem_thread();
     if (telem_init(ip) == 0) {
+        if (pwm_events_init(ip) != 0)
+            fprintf(stderr, "pwm_events: disabled for %s\n", ip);
         strncpy(telem_dst_ip, ip, sizeof(telem_dst_ip) - 1);
         telem_dst_ip[sizeof(telem_dst_ip) - 1] = '\0';
         start_telem_thread();
@@ -266,6 +275,7 @@ static void apply_run(void)
      * contrário fluxos/correntes do run anterior podem mascarar a nova
      * excitação (constantes de tempo do rotor podem ser de segundos). */
     vf_reset_solver();
+    gpio_pwmcap_clear();
 
     vf_params_t p;
     vf_get_params(&p);

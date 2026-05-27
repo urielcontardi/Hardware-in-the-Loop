@@ -24,6 +24,15 @@
  *   0x38  coeff_data_hi    write/read — coefficient[41:32]
  *   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we,
  *                                  bit[1]=1 atomically applies shadow model
+ *   0x40  pwm_cap_ctrl     write      — bit0=start, bit1=stop, bit2=clear
+ *   0x44  pwm_cap_status   read       — bit0=active, bit1=overflow,
+ *                                  bit2=empty, bit3=full, bits[31:16]=count
+ *   0x48  pwm_cap_window   write/read — capture window cycles, 0=continuous
+ *   0x4C  pwm_cap_data_lo  read       — current event[31:0]
+ *   0x50  pwm_cap_data_hi  read       — current event[63:32]
+ *   0x54  pwm_cap_pop      write      — bit0 pops current event
+ *   0x58  hil_time          read       — current run-local time[31:0]
+ *   0x5C  hil_epoch         read       — current run epoch[15:0]
  */
 #define ADDR_HIL_REGS        0x43C00000U
 #define REG_VA_REF           0x00U
@@ -42,6 +51,14 @@
 #define REG_COEFF_DATA_LO    0x34U
 #define REG_COEFF_DATA_HI    0x38U
 #define REG_COEFF_COMMIT     0x3CU
+#define REG_PWM_CAP_CTRL     0x40U
+#define REG_PWM_CAP_STATUS   0x44U
+#define REG_PWM_CAP_WINDOW   0x48U
+#define REG_PWM_CAP_DATA_LO  0x4CU
+#define REG_PWM_CAP_DATA_HI  0x50U
+#define REG_PWM_CAP_POP      0x54U
+#define REG_HIL_TIME         0x58U
+#define REG_HIL_EPOCH        0x5CU
 
 /* ── AXI GPIO — monitor (PL writes, PS reads) ─────────────────────────── */
 #define ADDR_GPIO_MONITOR_1   0x41200000U  /* ch1=ialpha_mon,     ch2=ibeta_mon      */
@@ -66,6 +83,14 @@
 #define TIM_COEFF_WRITE_STROBE  0x1U
 #define TIM_COEFF_APPLY_STROBE  0x2U
 
+#define PWM_CAP_CTRL_START 0x1U
+#define PWM_CAP_CTRL_STOP  0x2U
+#define PWM_CAP_CTRL_CLEAR 0x4U
+#define PWM_CAP_STATUS_ACTIVE   (1U << 0)
+#define PWM_CAP_STATUS_OVERFLOW (1U << 1)
+#define PWM_CAP_STATUS_EMPTY    (1U << 2)
+#define PWM_CAP_STATUS_FULL     (1U << 3)
+
 /* CARRIER_MAX: 100 MHz / (1 kHz * 2) = 50000 */
 #define CARRIER_MAX  50000
 
@@ -83,6 +108,19 @@ void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word);
 void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
                           int64_t coeff_q14_28);
 void gpio_apply_tim_coeffs(void);
+
+/* Helpers — PWM event capture readout */
+void     gpio_pwmcap_clear(void);
+void     gpio_pwmcap_start(void);
+void     gpio_pwmcap_stop(void);
+void     gpio_pwmcap_set_window(uint32_t cycles);
+uint32_t gpio_pwmcap_status(void);
+uint16_t gpio_pwmcap_count(void);
+uint64_t gpio_pwmcap_peek(void);
+void     gpio_pwmcap_pop(void);
+int      gpio_pwmcap_read(uint64_t *event_out);
+uint32_t gpio_hil_time(void);
+uint16_t gpio_hil_epoch(void);
 
 /* Helpers — read from AXI GPIO monitors */
 int32_t  gpio_get_speed(void);

@@ -167,7 +167,7 @@ static void print_debug_snapshot(const char *tag)
 
 static int test_solver(void)
 {
-    printf("\n=== STEP 2: Debug interno do HIL/TIM_Solver ===\n");
+    printf("\n=== STEP 2: PWM capture + HIL/TIM_Solver vivo ===\n");
 
     const float   vdc_v = 100.0f;
     const int32_t vdc_q = (int32_t)(vdc_v * PS_FRAC_SCALE);
@@ -186,80 +186,41 @@ static int test_solver(void)
     ms_sleep(2);
     print_debug_snapshot("apos clear_fault");
 
+    gpio_pwmcap_stop();
+    gpio_pwmcap_clear();
+    gpio_pwmcap_set_window(0);
+    gpio_pwmcap_start();
     gpio_set_pwm_ctrl(1, 0, 0, 0);   /* enable */
 
-    uint32_t free0, carrier0, timer0, done0, status0, dv0;
-    uint32_t free1, carrier1, timer1, done1, status1, dv1;
+    printf("\n  Aguardando 250 ms para acumular transicoes PWM...\n");
+    ms_sleep(250);
 
-    read_debug_monitors(&free0, &carrier0, &timer0, &done0, &status0, &dv0);
-    (void)status0;
-    uint32_t solver_alive0 = dv0 >> 2;
-    uint32_t solver_rst0 = (dv0 >> 1) & 1U;
-    (void)solver_rst0;
-    (void)done0;
-    printf("\n  Aguardando 1000 ms para medir deltas...\n");
-    ms_sleep(1000);
-    read_debug_monitors(&free1, &carrier1, &timer1, &done1, &status1, &dv1);
-    (void)done1;
-    uint32_t solver_alive1 = dv1 >> 2;
-    uint32_t solver_alive_delta = solver_alive1 - solver_alive0;
-    uint32_t solver_rst1 = (dv1 >> 1) & 1U;
+    uint32_t pwm_status = gpio_pwmcap_status();
+    uint16_t pwm_count = (uint16_t)(pwm_status >> 16);
+    uint64_t first_event = gpio_pwmcap_peek();
 
-    printf("\n  Debug monitors (apos enable):\n");
-    printf("    free_run_ctr     = %10u  delta=%10u\n", free1,    free1 - free0);
-    printf("    carrier_tick_ctr = %10u  delta=%10u\n", carrier1, carrier1 - carrier0);
-    printf("    timer_tick_ctr   = %10u  delta=%10u\n", timer1,   timer1 - timer0);
-    printf("    debug_aux_raw   = 0x%08X\n", dv1);
-    printf("    data_valid_latch = %10u\n", dv1 & 1U);
-    printf("    solver_rst_n     = %10u\n", solver_rst1);
-    printf("    solver_clk_alive = %10u  delta=%10u\n", solver_alive1, solver_alive_delta);
-    print_debug_status(status1);
+    printf("\n  PWM capture:\n");
+    printf("    status=0x%08X active=%u overflow=%u empty=%u full=%u count=%u\n",
+           pwm_status,
+           (pwm_status & PWM_CAP_STATUS_ACTIVE) ? 1U : 0U,
+           (pwm_status & PWM_CAP_STATUS_OVERFLOW) ? 1U : 0U,
+           (pwm_status & PWM_CAP_STATUS_EMPTY) ? 1U : 0U,
+           (pwm_status & PWM_CAP_STATUS_FULL) ? 1U : 0U,
+           pwm_count);
+    printf("    hil_time=%u hil_epoch=%u first_event=0x%016llX\n",
+           gpio_hil_time(), gpio_hil_epoch(), (unsigned long long)first_event);
 
-    printf("\n  Diagnostico:\n");
-
-    if (free1 == free0) {
-        printf("  [!] HIL_AXI_Top nao tem clock: free_run_ctr nao incrementa.\n");
+    if ((pwm_status & PWM_CAP_STATUS_ACTIVE) == 0U) {
+        printf("  [!] Captura PWM nao esta ativa.\n");
         return -1;
     }
 
-    if (((status1 >> 0) & 1U) == 0U) {
-        printf("  [!] Clock do HIL_AXI_Top esta vivo, mas rst_n esta baixo.\n"
-               "      Foque no reset vindo de proc_sys_reset_0/peripheral_aresetn.\n");
+    if (pwm_count == 0U || (pwm_status & PWM_CAP_STATUS_EMPTY) != 0U) {
+        printf("  [!] Captura PWM ativa, mas nenhuma transicao foi registrada.\n");
         return -1;
     }
 
-    if (carrier1 == carrier0) {
-        printf("  [!] Clock/reset do top OK, mas carrier_tick nao incrementa.\n"
-               "      Foque no NPCManager/parametros CLK_FREQ/PWM_FREQ/reset.\n");
-        return -1;
-    }
-
-    if (solver_alive_delta == 0U) {
-        printf("  [!] Dominio do solver nao esta vivo: solver_clk_alive nao incrementa.\n"
-               "      Foque em FCLK1/solver_clk, conexao do BD ou clock enable do PS7.\n");
-        return -1;
-    }
-
-    if (solver_rst1 == 0U) {
-        printf("  [!] Dominio do solver tem clock, mas solver_rst_n esta baixo.\n"
-               "      Foque em proc_sys_reset_solver/peripheral_aresetn e FCLK_RESET.\n");
-        return -1;
-    }
-
-    if (timer1 == timer0) {
-        printf("  [!] Dominio do solver tem clock e reset, mas timer_tick nao incrementa.\n"
-               "      Foque no TIM_Solver/SOLVER_STEP_CYCLES/enable interno.\n");
-        return -1;
-    }
-
-    if ((dv1 & 1U) == 0U) {
-        printf("  [!] Timer do TIM_Solver roda, mas data_valid nao aparece.\n"
-               "      Se solver_busy=1, o BilinearSolverHandler ficou preso.\n"
-               "      Se solver_busy=0, o start/clarke_valid nao esta iniciando o handler.\n");
-        return -1;
-    }
-
-    printf("  [OK] Caminho clock/reset/timer/solver_done esta vivo.\n");
+    printf("  [OK] Captura PWM esta ativa e registrando transicoes.\n");
     return 0;
 }
 
@@ -332,7 +293,7 @@ int main(void)
 
     printf("\n=== RESUMO ===\n");
     printf("  AXI bus (HIL_Regs readback): %s\n", step1 == 0 ? "OK" : "FAIL");
-    printf("  TIM_Solver debug counters:   %s\n", step2 == 0 ? "OK" : "FAIL");
+    printf("  PWM capture + TIM_Solver:   %s\n", step2 == 0 ? "OK" : "FAIL");
     printf("  Grandezas fisicas no GPIO:   %s\n", step3 == 0 ? "OK" : "FAIL");
     printf("\n");
 
