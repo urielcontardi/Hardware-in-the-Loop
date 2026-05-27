@@ -7,6 +7,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"hil.local/daemon/internal/frame"
+	"hil.local/daemon/internal/pwmrecv"
 	"hil.local/daemon/internal/receiver"
 	"hil.local/daemon/internal/ring"
 	hilUDP "hil.local/daemon/internal/udp"
@@ -15,6 +16,7 @@ import (
 type App struct {
 	ctx     context.Context
 	recv    *receiver.Receiver
+	pwmRecv *pwmrecv.Receiver
 	ring    *ring.Ring
 	localIP string
 	done    chan struct{}
@@ -49,6 +51,13 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.recv = recv
 
+	pwmRecv := pwmrecv.New(5007)
+	if err := pwmRecv.Start(); err != nil {
+		runtime.LogErrorf(ctx, "pwm receiver: %v", err)
+	} else {
+		a.pwmRecv = pwmRecv
+	}
+
 	go a.broadcastLoop()
 	runtime.LogInfof(ctx, "HIL daemon ready — telem destination: %s", a.localIP)
 }
@@ -57,6 +66,9 @@ func (a *App) shutdown(_ context.Context) {
 	close(a.done)
 	if a.recv != nil {
 		a.recv.Stop()
+	}
+	if a.pwmRecv != nil {
+		a.pwmRecv.Stop()
 	}
 }
 
@@ -69,6 +81,8 @@ func (a *App) broadcastLoop() {
 		select {
 		case <-a.done:
 			return
+		case b := <-a.pwmRecv.C:
+			runtime.EventsEmit(a.ctx, "pwm_events", b)
 		case <-ticker.C:
 			n := a.ring.PopN(scratch)
 			if n > 0 {
@@ -191,6 +205,18 @@ func (a *App) GetStats() map[string]uint64 {
 		"invalid":     a.recv.Stats.Invalid.Load(),
 		"seq_missed":  a.recv.Stats.SeqMissed.Load(),
 		"ring_len":    uint64(a.ring.Len()),
+		"pwm_packets_rx": func() uint64 {
+			if a.pwmRecv != nil {
+				return a.pwmRecv.Stats.PacketsRx.Load()
+			}
+			return 0
+		}(),
+		"pwm_events_rx": func() uint64 {
+			if a.pwmRecv != nil {
+				return a.pwmRecv.Stats.EventsRx.Load()
+			}
+			return 0
+		}(),
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"hil.local/daemon/internal/frame"
+	"hil.local/daemon/internal/pwmrecv"
 	"hil.local/daemon/internal/receiver"
 	"hil.local/daemon/internal/ring"
 	hiludp "hil.local/daemon/internal/udp"
@@ -25,8 +26,11 @@ import (
 var staticFiles embed.FS
 
 const (
-	defaultHTTPAddr = "127.0.0.1:5177"
-	telemetryPort   = 5006
+	defaultHTTPAddr     = "127.0.0.1:5177"
+	telemetryPort       = 5006
+	pwmEventsPort       = 5007
+	pwmHistoryMaxEvents = 2_000_000
+	pwmSSEBatchEvents   = 4096
 	// transportDecim — FPGA AXI-Stream decimation factor. 375 → ~9.876 kHz.
 	// On-chip IIR (ALPHA_BITS=9, fc ≈ 1.15 kHz) is the anti-aliasing pre-
 	// filter. Lowering this requires re-tuning the IIR. Display-rate
@@ -38,7 +42,13 @@ const (
 type server struct {
 	ring        *ring.Ring
 	recv        *receiver.Receiver
+	pwmRecv     *pwmrecv.Receiver
 	localIP     string
+	pwmMu       sync.RWMutex
+	pwmBase     uint64
+	pwmClockHz  uint32
+	pwmStatus   uint32
+	pwmHistory  []pwmrecv.Event
 	targetMu    sync.RWMutex
 	telemTarget string
 	scanMu      sync.Mutex
@@ -90,9 +100,16 @@ func main() {
 	}
 	defer recv.Stop()
 
+	pwmRecv := pwmrecv.New(pwmEventsPort)
+	if err := pwmRecv.Start(); err != nil {
+		log.Printf("pwm receiver: %v", err)
+	}
+	defer pwmRecv.Stop()
+
 	s := &server{
 		ring:    r,
 		recv:    recv,
+		pwmRecv: pwmRecv,
 		localIP: localIP(),
 	}
 
@@ -115,6 +132,7 @@ func main() {
 	log.Printf("HIL gateway listening on http://%s", addr)
 	log.Printf("local IP for board telemetry: %s", s.localIP)
 	log.Printf("telemetry UDP receiver listening on :%d", telemetryPort)
+	go s.pwmPump()
 	go s.telemetryPunchLoop()
 	if err := http.ListenAndServe(addr, logRequests(mux)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -354,8 +372,23 @@ func (s *server) resolveBoard(preferred string) (*hiludp.DiscoveryResponse, erro
 	return resp, nil
 }
 
+// resolveIP picks the board IP for a command WITHOUT probing it first. The
+// per-command path used to ping the board (and, on a slow/lost ping, escalate
+// to a subnet scan + broadcast discovery) before every status/run/stop — which
+// doubled the command load on the single-threaded board and could turn one
+// late reply into a scan storm that wedged it. The command itself (Get/Run/…)
+// already fails cleanly if the board is down, so a known IP is used directly.
+// Active discovery now happens only via /api/discover (the "Find" button) or
+// when no IP is known at all.
 func (s *server) resolveIP(preferred string) (string, error) {
-	resp, err := s.resolveBoard(preferred)
+	if ip := strings.TrimSpace(preferred); ip != "" {
+		s.setTelemetryTarget(ip)
+		return ip, nil
+	}
+	if ip := s.telemetryTarget(); ip != "" {
+		return ip, nil
+	}
+	resp, err := s.resolveBoard("")
 	if err != nil {
 		return "", err
 	}
@@ -397,6 +430,7 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	s.setTelemetryTarget(ip)
 	s.ring.Clear()
 	s.recv.Punch(ip, telemetryPort)
+	s.pwmRecv.Punch(ip, pwmEventsPort)
 	decim := transportDecim
 	status, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemDst: s.localIP})
 	if err != nil {
@@ -404,6 +438,7 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recv.Punch(ip, telemetryPort)
+	s.pwmRecv.Punch(ip, pwmEventsPort)
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -425,6 +460,7 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setTelemetryTarget("")
 	s.ring.Clear()
+	s.clearPwmHistory()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -480,6 +516,7 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 		s.setTelemetryTarget(ip)
 		s.ring.Clear()
 		s.recv.Punch(ip, telemetryPort)
+		s.pwmRecv.Punch(ip, pwmEventsPort)
 	}
 
 	status, err := hiludp.Set(ip, p)
@@ -489,12 +526,34 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AttachUDP {
 		s.recv.Punch(ip, telemetryPort)
+		s.pwmRecv.Punch(ip, pwmEventsPort)
 	}
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
 func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
-	s.forwardCommand(w, r, hiludp.Run)
+	req, err := decodeJSON[ipRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ip, err := s.resolveIP(req.IP)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	s.ring.Clear()
+	s.clearPwmHistory()
+	s.recv.Punch(ip, telemetryPort)
+	s.pwmRecv.Punch(ip, pwmEventsPort)
+	status, err := hiludp.Run(ip)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	s.recv.Punch(ip, telemetryPort)
+	s.pwmRecv.Punch(ip, pwmEventsPort)
+	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
 func (s *server) handlePause(w http.ResponseWriter, r *http.Request) {
@@ -548,14 +607,18 @@ func (s *server) forwardCommand(w http.ResponseWriter, r *http.Request, fn func(
 
 func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]uint64{
-		"packets_raw": s.recv.Stats.PacketsRaw.Load(),
-		"samples_rx":  s.recv.Stats.SamplesRx.Load(),
-		"packets_rx":  s.recv.Stats.PacketsRx.Load(),
-		"dropped":     s.recv.Stats.Dropped.Load(),
-		"crc_errors":  s.recv.Stats.CRCErrors.Load(),
-		"invalid":     s.recv.Stats.Invalid.Load(),
-		"seq_missed":  s.recv.Stats.SeqMissed.Load(),
-		"ring_len":    uint64(s.ring.Len()),
+		"packets_raw":     s.recv.Stats.PacketsRaw.Load(),
+		"samples_rx":      s.recv.Stats.SamplesRx.Load(),
+		"packets_rx":      s.recv.Stats.PacketsRx.Load(),
+		"dropped":         s.recv.Stats.Dropped.Load(),
+		"crc_errors":      s.recv.Stats.CRCErrors.Load(),
+		"invalid":         s.recv.Stats.Invalid.Load(),
+		"seq_missed":      s.recv.Stats.SeqMissed.Load(),
+		"ring_len":        uint64(s.ring.Len()),
+		"pwm_packets_rx":  s.pwmRecv.Stats.PacketsRx.Load(),
+		"pwm_events_rx":   s.pwmRecv.Stats.EventsRx.Load(),
+		"pwm_dropped":     s.pwmRecv.Stats.Dropped.Load(),
+		"pwm_history_len": s.pwmHistoryLen(),
 	})
 }
 
@@ -571,6 +634,82 @@ func (s *server) telemetryTarget() string {
 	return s.telemTarget
 }
 
+func (s *server) pwmPump() {
+	if s.pwmRecv == nil {
+		return
+	}
+	for b := range s.pwmRecv.C {
+		s.storePwmBatch(b)
+	}
+}
+
+func (s *server) storePwmBatch(b pwmrecv.Batch) {
+	if len(b.Events) == 0 {
+		return
+	}
+	s.pwmMu.Lock()
+	defer s.pwmMu.Unlock()
+
+	s.pwmClockHz = b.ClockHz
+	s.pwmStatus = b.Status
+	s.pwmHistory = append(s.pwmHistory, b.Events...)
+	if extra := len(s.pwmHistory) - pwmHistoryMaxEvents; extra > 0 {
+		s.pwmHistory = append([]pwmrecv.Event(nil), s.pwmHistory[extra:]...)
+		s.pwmBase += uint64(extra)
+	}
+}
+
+func (s *server) clearPwmHistory() {
+	s.pwmMu.Lock()
+	defer s.pwmMu.Unlock()
+	s.pwmBase += uint64(len(s.pwmHistory))
+	s.pwmHistory = s.pwmHistory[:0]
+	s.pwmStatus = 0
+}
+
+func (s *server) pwmHistoryLen() uint64 {
+	s.pwmMu.RLock()
+	defer s.pwmMu.RUnlock()
+	return uint64(len(s.pwmHistory))
+}
+
+func (s *server) pwmSnapshot() (uint64, []pwmrecv.Event, uint32, uint32) {
+	s.pwmMu.RLock()
+	defer s.pwmMu.RUnlock()
+	events := append([]pwmrecv.Event(nil), s.pwmHistory...)
+	return s.pwmBase, events, s.pwmClockHz, s.pwmStatus
+}
+
+func (s *server) pwmSince(cursor uint64, maxEvents int) (uint64, []pwmrecv.Event, uint32, uint32) {
+	s.pwmMu.RLock()
+	defer s.pwmMu.RUnlock()
+	if cursor < s.pwmBase {
+		cursor = s.pwmBase
+	}
+	start := int(cursor - s.pwmBase)
+	if start >= len(s.pwmHistory) {
+		return s.pwmBase + uint64(len(s.pwmHistory)), nil, s.pwmClockHz, s.pwmStatus
+	}
+	end := len(s.pwmHistory)
+	if maxEvents > 0 && end-start > maxEvents {
+		end = start + maxEvents
+	}
+	events := append([]pwmrecv.Event(nil), s.pwmHistory[start:end]...)
+	return s.pwmBase + uint64(end), events, s.pwmClockHz, s.pwmStatus
+}
+
+func writePWMBatch(w http.ResponseWriter, seq uint32, clockHz uint32, status uint32, events []pwmrecv.Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(pwmrecv.Batch{Type: "pwm_events", Seq: seq, ClockHz: clockHz, Status: status, Events: events})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: pwm_events\ndata: %s\n\n", payload)
+	return err
+}
+
 func (s *server) telemetryPunchLoop() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -580,6 +719,7 @@ func (s *server) telemetryPunchLoop() {
 		s.targetMu.RUnlock()
 		if ip != "" {
 			s.recv.Punch(ip, telemetryPort)
+			s.pwmRecv.Punch(ip, pwmEventsPort)
 		}
 	}
 }
@@ -601,14 +741,42 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
 	scratch := make([]frame.Sample, 4096)
+	var pwmSeq uint32
+
+	base, replay, clockHz, status := s.pwmSnapshot()
+	for off := 0; off < len(replay); off += pwmSSEBatchEvents {
+		end := off + pwmSSEBatchEvents
+		if end > len(replay) {
+			end = len(replay)
+		}
+		if err := writePWMBatch(w, pwmSeq, clockHz, status, replay[off:end]); err != nil {
+			return
+		}
+		pwmSeq++
+	}
+	pwmCursor := base + uint64(len(replay))
+	flusher.Flush()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			for burst := 0; burst < 8; burst++ {
+				var events []pwmrecv.Event
+				pwmCursor, events, clockHz, status = s.pwmSince(pwmCursor, pwmSSEBatchEvents)
+				if len(events) == 0 {
+					break
+				}
+				if err := writePWMBatch(w, pwmSeq, clockHz, status, events); err != nil {
+					return
+				}
+				pwmSeq++
+			}
+
 			n := s.ring.PopN(scratch)
 			if n == 0 {
+				flusher.Flush()
 				continue
 			}
 			payload, err := json.Marshal(scratch[:n])

@@ -2,7 +2,9 @@
 package udp
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -178,6 +180,49 @@ func broadcastAddrs(port int) []string {
 	return addrs
 }
 
+// unicastAddrs returns every host address on each local IPv4 /24-or-smaller
+// subnet. Some boards (e.g. the EBAZ4205) answer discovery via unicast but
+// silently drop subnet/global broadcast, so we probe each host directly.
+// Subnets wider than /24 (256 addrs) are skipped to avoid flooding.
+func unicastAddrs(port int) []string {
+	out := make([]string, 0, 256)
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		ifaceAddrs, _ := iface.Addrs()
+		for _, a := range ifaceAddrs {
+			ipNet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipNet.IP.To4()
+			mask := ipNet.Mask
+			if ip4 == nil || len(mask) != net.IPv4len {
+				continue
+			}
+			ones, bits := mask.Size()
+			if bits-ones > 8 { // wider than /24 → too many hosts, skip
+				continue
+			}
+			network := net.IPv4(ip4[0]&mask[0], ip4[1]&mask[1], ip4[2]&mask[2], ip4[3]&mask[3]).To4()
+			bcast := net.IPv4(ip4[0]|^mask[0], ip4[1]|^mask[1], ip4[2]|^mask[2], ip4[3]|^mask[3]).To4()
+			start := binary.BigEndian.Uint32(network) + 1 // skip network address
+			end := binary.BigEndian.Uint32(bcast)         // skip broadcast (loop is < end)
+			for h := start; h < end; h++ {
+				var host [4]byte
+				binary.BigEndian.PutUint32(host[:], h)
+				if net.IP(host[:]).Equal(ip4) { // skip our own address
+					continue
+				}
+				out = append(out, fmt.Sprintf("%d.%d.%d.%d:%d", host[0], host[1], host[2], host[3], port))
+			}
+		}
+	}
+	return out
+}
+
 // Discover broadcasts a one-shot discovery packet and returns the first board
 // that answers. It is intended for setup only, not for the telemetry hot path.
 func Discover(timeout time.Duration) (*DiscoveryResponse, error) {
@@ -206,14 +251,26 @@ func Discover(timeout time.Duration) (*DiscoveryResponse, error) {
 		return nil, err
 	}
 
+	// Send probes from a goroutine so reads start immediately. A unicast sweep
+	// across several /24s is hundreds of WriteToUDP calls; the ones to absent
+	// hosts stall on ARP and, done synchronously, would burn the whole deadline
+	// before the first read — making us miss a reply that already arrived.
 	payload := []byte(discoveryMagic)
-	for _, addr := range broadcastAddrs(DiscoveryPort) {
-		raddr, err := net.ResolveUDPAddr("udp4", addr)
-		if err != nil {
-			continue
+	probeAddrs := append(broadcastAddrs(DiscoveryPort), unicastAddrs(DiscoveryPort)...)
+	go func() {
+		for _, addr := range probeAddrs {
+			raddr, err := net.ResolveUDPAddr("udp4", addr)
+			if err != nil {
+				continue
+			}
+			if _, err := conn.WriteToUDP(payload, raddr); err != nil {
+				// conn closed once we return with a hit — stop probing.
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+			}
 		}
-		_, _ = conn.WriteToUDP(payload, raddr)
-	}
+	}()
 
 	buf := make([]byte, 1024)
 	for {

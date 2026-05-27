@@ -6,7 +6,7 @@
 //	[4..7]  SEQ   uint32
 //	[8]     FLAGS uint8  (bit0=enable, bit1=fault)
 //	[9]     N     uint8  (samples in burst)
-//	[10 .. 10+N*20-1]  samples: ia ib flux_a flux_b speed (float32 LE each)
+//	[10 .. 10+N*26-1]  samples: t_cycles(uint32), epoch(uint16), ia ib flux_a flux_b speed (float32 LE each)
 //	[last-1..last]     CRC16/CCITT-FALSE LE
 package frame
 
@@ -23,7 +23,7 @@ const (
 	Sync3 = 0x5A
 
 	HeaderSize  = 10 // SYNC(4)+SEQ(4)+FLAGS(1)+N(1)
-	SampleBytes = 20 // 5 × float32
+	SampleBytes = 26 // uint32 timestamp + uint16 epoch + 5 × float32
 	MaxBurst    = 32
 )
 
@@ -35,11 +35,13 @@ var (
 
 // Sample holds one telemetry point from the PS.
 type Sample struct {
-	Ia    float32
-	Ib    float32
-	FluxA float32
-	FluxB float32
-	Speed float32
+	TCycles uint32  `json:"t_cycles"`
+	Epoch   uint16  `json:"epoch"`
+	Ia      float32 `json:"Ia"`
+	Ib      float32 `json:"Ib"`
+	FluxA   float32 `json:"FluxA"`
+	FluxB   float32 `json:"FluxB"`
+	Speed   float32 `json:"Speed"`
 }
 
 // Frame is one decoded burst packet.
@@ -74,9 +76,9 @@ func Decode(buf []byte) (*Frame, error) {
 		return nil, ErrInvalidSync
 	}
 
-	seq   := binary.LittleEndian.Uint32(buf[4:8])
+	seq := binary.LittleEndian.Uint32(buf[4:8])
 	flags := buf[8]
-	n     := int(buf[9])
+	n := int(buf[9])
 
 	need := HeaderSize + n*SampleBytes + 2
 	if len(buf) < need {
@@ -85,7 +87,7 @@ func Decode(buf []byte) (*Frame, error) {
 
 	// CRC covers everything before the CRC field
 	payload := buf[:HeaderSize+n*SampleBytes]
-	gotCRC  := binary.LittleEndian.Uint16(buf[HeaderSize+n*SampleBytes:])
+	gotCRC := binary.LittleEndian.Uint16(buf[HeaderSize+n*SampleBytes:])
 	if CRC16(payload) != gotCRC {
 		return nil, ErrCRC
 	}
@@ -93,12 +95,17 @@ func Decode(buf []byte) (*Frame, error) {
 	samples := make([]Sample, n)
 	pos := HeaderSize
 	for i := range samples {
+		tCycles := binary.LittleEndian.Uint32(buf[pos:])
+		epoch := binary.LittleEndian.Uint16(buf[pos+4:])
+		fpos := pos + 6
 		samples[i] = Sample{
-			Ia:    math.Float32frombits(binary.LittleEndian.Uint32(buf[pos:])),
-			Ib:    math.Float32frombits(binary.LittleEndian.Uint32(buf[pos+4:])),
-			FluxA: math.Float32frombits(binary.LittleEndian.Uint32(buf[pos+8:])),
-			FluxB: math.Float32frombits(binary.LittleEndian.Uint32(buf[pos+12:])),
-			Speed: math.Float32frombits(binary.LittleEndian.Uint32(buf[pos+16:])),
+			TCycles: tCycles,
+			Epoch:   epoch,
+			Ia:      math.Float32frombits(binary.LittleEndian.Uint32(buf[fpos:])),
+			Ib:      math.Float32frombits(binary.LittleEndian.Uint32(buf[fpos+4:])),
+			FluxA:   math.Float32frombits(binary.LittleEndian.Uint32(buf[fpos+8:])),
+			FluxB:   math.Float32frombits(binary.LittleEndian.Uint32(buf[fpos+12:])),
+			Speed:   math.Float32frombits(binary.LittleEndian.Uint32(buf[fpos+16:])),
 		}
 		pos += SampleBytes
 	}
