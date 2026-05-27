@@ -473,11 +473,53 @@ body {
 
 /* ── SUBPLOT ROWS ─────────────────────────────── */
 .subplot-wrap {
+  position: relative;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
   background: #050b14;
 }
 .subplot-wrap:last-child { border-bottom: none; }
+
+/* Clickable legend overlay floating over the top-left of each subplot. The
+   container ignores pointer events (so dragging the empty space still pans the
+   plot); only the chips are interactive. Absolute positioning keeps it out of
+   the layout flow so it never steals canvas height. */
+.subplot-legend {
+  position: absolute;
+  top: 4px;
+  left: 54px;            /* clear of the y-axis labels */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  z-index: 5;
+  pointer-events: none;
+}
+.subplot-legend-item {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(8, 16, 28, 0.72);
+  border: 1px solid var(--border);
+  font: 10px "IBM Plex Mono", monospace;
+  color: var(--fg);
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+.subplot-legend-item:hover { background: rgba(20, 34, 52, 0.92); }
+.subplot-legend-item.legend-off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 
 /* ── SETTINGS MODAL ───────────────────────────── */
 .modal-overlay {
@@ -938,9 +980,23 @@ body {
 
 .scenario-toolbar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(3, auto) 1fr;
   gap: 6px;
   margin: 8px 0 10px;
+  align-items: center;
+}
+.scenario-progress {
+  font: 10px "IBM Plex Mono", monospace;
+  color: var(--blue);
+  padding-left: 4px;
+  letter-spacing: 0.05em;
+}
+.scenario-row.sc-active {
+  background: rgba(33, 75, 120, 0.35);
+  border-radius: 4px;
+}
+.scenario-row.sc-done {
+  opacity: 0.45;
 }
 
 .scenario-table {

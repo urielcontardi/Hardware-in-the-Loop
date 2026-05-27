@@ -5,7 +5,10 @@ import * as WailsRuntime from "../wailsjs/runtime/runtime";
 import * as WailsApp from "../wailsjs/go/main/App";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Sample = { Ia: number; Ib: number; FluxA: number; FluxB: number; Speed: number };
+type Sample = { t_cycles?: number; epoch?: number; Ia: number; Ib: number; FluxA: number; FluxB: number; Speed: number; TL?: number };
+type PwmEvent = { t_cycles: number; a: number; b: number; c: number; mask: number; epoch: number };
+type PwmPlotEvent = PwmEvent & { t_sec: number };
+type PwmEventBatch = { type: string; seq: number; clock_hz: number; status: number; events: PwmEvent[] };
 type HilStatus = {
   status: string;
   state: "idle" | "running" | "paused" | "stopped" | string;
@@ -33,6 +36,7 @@ type DiscoveryResponse = {
 
 type HilApi = {
   onTelemetry(cb: (samples: Sample[]) => void): void;
+  onPwmEvents(cb: (batch: PwmEventBatch) => void): void;
   DiscoverBoard(ip?: string): Promise<DiscoveryResponse>;
   SetParams(ip: string, freqHz: number, vdcV: number, torqueNm: number, baseFreqHz: number, maxVPu: number, accelTimeSec: number, enable: boolean, applyEnable: boolean, attachTelem: boolean): Promise<HilStatus>;
   ProgramMotor(ip: string, rs: number, rr: number, ls: number, lr: number, lm: number, j: number, npp: number): Promise<HilStatus>;
@@ -80,9 +84,18 @@ async function getJSON<T>(url: string): Promise<T> {
   return parsed as T;
 }
 
+let sharedEvents: EventSource | null = null;
+function getSharedEvents(): EventSource {
+  if (!sharedEvents) sharedEvents = new EventSource("/events");
+  return sharedEvents;
+}
+
 const api: HilApi = isWails ? {
   onTelemetry(cb) {
     WailsRuntime.EventsOn("telemetry", cb);
+  },
+  onPwmEvents(cb) {
+    WailsRuntime.EventsOn("pwm_events", cb);
   },
   DiscoverBoard() {
     return WailsApp.DiscoverBoard() as Promise<DiscoveryResponse>;
@@ -104,7 +117,7 @@ const api: HilApi = isWails ? {
   GetLocalIP: WailsApp.GetLocalIP as HilApi["GetLocalIP"],
 } : {
   onTelemetry(cb) {
-    const events = new EventSource("/events");
+    const events = getSharedEvents();
     events.addEventListener("telemetry", ev => {
       try {
         const samples = JSON.parse((ev as MessageEvent).data);
@@ -114,6 +127,12 @@ const api: HilApi = isWails ? {
       }
     });
     events.onerror = () => setTelemBadge(false, true);
+  },
+  onPwmEvents(cb) {
+    const events = getSharedEvents();
+    events.addEventListener("pwm_events", ev => {
+      try { cb(JSON.parse((ev as MessageEvent).data)); } catch {}
+    });
   },
   DiscoverBoard(ip) {
     return postJSON<DiscoveryResponse>("/api/discover", { ip });
@@ -173,7 +192,12 @@ type ChDef = {
   color: string;
   read: (s: Sample) => number;
   defaultSubplot: number;
+  dash?: number[];
 };
+
+// Pole pairs cached from the motor-model input — used to compute electromagnetic
+// torque from telemetry without a DOM read per decimated point.
+let motorNpp = 2;
 
 const SQRT3_2 = Math.sqrt(3) / 2;
 // Inverse Clarke (amplitude-invariant, matches FPGA convention):
@@ -188,6 +212,8 @@ const CHANNELS_AB: ChDef[] = [
   { name: "Φα",    unit: "Wb",    color: "#81c784", read: s => s.FluxA, defaultSubplot: 1 },
   { name: "Φβ",    unit: "Wb",    color: "#ce93d8", read: s => s.FluxB, defaultSubplot: 1 },
   { name: "Speed", unit: "RPM",   color: "#ffcc80", read: s => s.Speed * 60 / (2 * Math.PI), defaultSubplot: 2 },
+  { name: "Te",    unit: "N·m",   color: "#ffb74d", read: s => 1.5 * motorNpp * (s.FluxA * s.Ib - s.FluxB * s.Ia), defaultSubplot: 3 },
+  { name: "TL",    unit: "N·m",   color: "#b0bec5", read: s => s.TL ?? 0, defaultSubplot: 3, dash: [6, 4] },
 ];
 
 const CHANNELS_ABC: ChDef[] = [
@@ -198,6 +224,8 @@ const CHANNELS_ABC: ChDef[] = [
   { name: "Φb",    unit: "Wb",    color: "#ce93d8", read: s => xb(s.FluxA, s.FluxB), defaultSubplot: 1 },
   { name: "Φc",    unit: "Wb",    color: "#a5d6a7", read: s => xc(s.FluxA, s.FluxB), defaultSubplot: 1 },
   { name: "Speed", unit: "RPM",   color: "#ffcc80", read: s => s.Speed * 60 / (2 * Math.PI), defaultSubplot: 2 },
+  { name: "Te",    unit: "N·m",   color: "#ffb74d", read: s => 1.5 * motorNpp * (s.FluxA * s.Ib - s.FluxB * s.Ia), defaultSubplot: 3 },
+  { name: "TL",    unit: "N·m",   color: "#b0bec5", read: s => s.TL ?? 0, defaultSubplot: 3, dash: [6, 4] },
 ];
 
 const DISPLAY_MODE_STORAGE_KEY = "hil-display-mode";
@@ -212,11 +240,13 @@ const MAX_SAMPLES = 600_000;
 // 2 pts/bucket × 10 Hz × 7200 s ≈ 144 000 pts → ~2 h of session history.
 const OVERVIEW_EVERY = 1_000;
 const MAX_OVERVIEW_SAMPLES = 144_000;
-// Nominal telemetry rate. Used only to estimate sample timestamps when
-// pushing into the local time-series buffer (the board does not embed
-// per-sample timestamps in the UDP frames). Slight drift between this value
-// and the actual board rate is benign at chart resolution.
-const DISPLAY_SAMPLE_RATE_HZ = 10_000;
+// Nominal telemetry sample rate, used to lay telemetry samples on a uniform
+// time grid. The board's run-local hardware counter (t_cycles) freezes while
+// the solver is stopped and resets to 0 on each run, which produces duplicate
+// and non-monotonic timestamps; feeding those to the min/max decimator made
+// clean waveforms render as a jagged band. A uniform host-paced grid keeps
+// tBuf strictly increasing so the envelope stays smooth.
+const DISPLAY_SAMPLE_RATE_HZ = 9_876;  // ≈ telemetry rate at transportDecim=375
 
 // ── App state ─────────────────────────────────────────────────────────────────
 const tBuf: number[]      = [];
@@ -236,7 +266,30 @@ let nextSampleTime = 0;
 let lastTelemetryBatchAt = 0;
 let estimatedSamplePeriod = 1 / DISPLAY_SAMPLE_RATE_HZ;
 let lastBoardState: string = "idle";
-let lastSampleAt = 0;             // ms — for "stream stalled" detection
+let lastSampleAt = 0;             // ms — for stream stalled detection
+let telemLastRawCycles: number | null = null;
+let telemWrapOffsetCycles = 0;
+let telemEpoch: number | null = null;
+let pwmClockHz = 100_000_000;
+let pwmEpoch: number | null = null;
+let pwmActive = false;
+const pwmEvents: PwmPlotEvent[] = [];
+const PWM_COUNTER_MOD = 2 ** 32;
+const MAX_PWM_EVENTS = 1_500_000;
+const PWM_OVERVIEW_DT_SEC = 0.005;
+const MAX_PWM_OVERVIEW_SAMPLES = 1_500_000;
+let pwmLastRawCycles: number | null = null;
+let pwmWrapOffsetCycles = 0;
+const pwmOverviewT: number[] = [];
+const pwmOverviewA: number[] = [];
+const pwmOverviewB: number[] = [];
+const pwmOverviewC: number[] = [];
+let pwmOverviewNextT: number | null = null;
+let pwmOverviewAState = 0;
+let pwmOverviewBState = 0;
+let pwmOverviewCState = 0;
+let captureTelemetry = false;
+let capturePwm = false;
 // ── Scope-style view state ────────────────────────────────────────────────────
 // Visible window = [viewEndSec - windowSec, viewEndSec].
 //   • Live (paused = false): viewEndSec tracks the latest sample.
@@ -248,17 +301,31 @@ let lastSampleAt = 0;             // ms — for "stream stalled" detection
 let paused = false;
 let windowSec = 1.0;
 let viewEndSec = 0;
+// PWM events are timestamped by the FPGA hardware counter, which drifts from
+// the host-paced telemetry clock (it freezes while the solver is idle). So the
+// PWM plot needs its own right edge in hardware time: live, it tracks the last
+// PWM event; paused, it follows the telemetry window by the drift offset
+// captured at pause, so pan/zoom keep both plots on the same relative range.
+let pwmViewEndSec = 0;
+let pwmTelemOffset = 0;
 const WINDOW_PRESETS_MS = [500, 1000, 5000, 30000, 60000];
 const WINDOW_MIN_SEC = 0.01;     //  10 ms — finest zoom
 const WINDOW_MAX_SEC = 60.0;     //  60 s  — full buffer width (= MAX_SAMPLES/fs)
 
 // Subplot state — derived from each channel's defaultSubplot.
-let nSubplots = 3;
+let nSubplots = 4;  // currents, flux, speed, torque (load)
 let chSubplot: number[] = CHANNELS.map(c => c.defaultSubplot);
 let visible:   boolean[] = Array(N_CH).fill(true);
+// References for syncing visibility across the side-panel checkbox and the
+// per-subplot clickable legend chip. Indexed by channel; rebuilt on each
+// buildChannelList()/buildPlots(). pwmVisible persists across plot rebuilds.
+let chCheckboxes:  HTMLInputElement[]        = [];
+let chLegendItems: (HTMLElement | null)[]    = [];
+const pwmVisible = [true, true, true];
 
 // uPlot instances (one per subplot)
 let plots: uPlot[] = [];
+let pwmPlot: uPlot | null = null;
 let isBuilding = false;
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
@@ -397,9 +464,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <input id="scenario-name" type="text" value="motor_fault_step" class="write-input" />
           </div>
           <div class="scenario-toolbar">
-            <button class="btn btn-sm" type="button" disabled>Load</button>
-            <button class="btn btn-sm" type="button" disabled>Save</button>
-            <button class="btn btn-sm" type="button" disabled>Run recipe</button>
+            <button id="btn-recipe-load" class="btn btn-sm" type="button">Load</button>
+            <button id="btn-recipe-save" class="btn btn-sm" type="button">Save</button>
+            <button id="btn-recipe-run"  class="btn btn-sm" type="button">Run recipe</button>
+            <span   id="scenario-progress" class="scenario-progress"></span>
           </div>
           <div id="scenario-table" class="scenario-table" aria-label="Scenario event editor">
             <div class="scenario-head">
@@ -465,14 +533,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="subplot-n-group">
               <button class="subplot-n-btn" data-n="1">1</button>
               <button class="subplot-n-btn" data-n="2">2</button>
-              <button class="subplot-n-btn active" data-n="3">3</button>
-              <button class="subplot-n-btn" data-n="4">4</button>
+              <button class="subplot-n-btn" data-n="3">3</button>
+              <button class="subplot-n-btn active" data-n="4">4</button>
             </div>
           </div>
 
           <div class="subplot-layout-row">
             <span class="subplot-layout-label">Window</span>
             <div class="subplot-n-group" id="window-group">
+              <button class="subplot-n-btn" data-win-ms="20">20ms</button>
+              <button class="subplot-n-btn" data-win-ms="100">100ms</button>
               <button class="subplot-n-btn" data-win-ms="500">500ms</button>
               <button class="subplot-n-btn active" data-win-ms="1000">1s</button>
               <button class="subplot-n-btn" data-win-ms="5000">5s</button>
@@ -521,6 +591,8 @@ const elAccelTime   = document.querySelector<HTMLInputElement>("#accel-time")!;
 const elVdc         = document.querySelector<HTMLInputElement>("#vdc")!;
 const elTorque      = document.querySelector<HTMLInputElement>("#torque")!;
 const elNpp         = document.querySelector<HTMLInputElement>("#npp")!;
+motorNpp = Math.max(1, Number(elNpp.value) || 2);
+elNpp.addEventListener("input", () => { motorNpp = Math.max(1, Number(elNpp.value) || 2); });
 const elRatedRpm    = document.querySelector<HTMLInputElement>("#rated-rpm")!;
 const elMaxVPu      = document.querySelector<HTMLInputElement>("#max-vpu")!;
 const elMotorRs     = document.querySelector<HTMLInputElement>("#motor-rs")!;
@@ -548,8 +620,13 @@ const elStatus      = document.querySelector<HTMLDivElement>("#status")!;
 const elSampleCount = document.querySelector<HTMLSpanElement>("#sample-count")!;
 const elChList      = document.querySelector<HTMLDivElement>("#ch-list")!;
 const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
-const elScenarioTable = document.querySelector<HTMLDivElement>("#scenario-table")!;
+const elScenarioTable    = document.querySelector<HTMLDivElement>("#scenario-table")!;
 const elBtnAddScenarioEvent = document.querySelector<HTMLButtonElement>("#btn-add-scenario-event")!;
+const elBtnRecipeLoad    = document.querySelector<HTMLButtonElement>("#btn-recipe-load")!;
+const elBtnRecipeSave    = document.querySelector<HTMLButtonElement>("#btn-recipe-save")!;
+const elBtnRecipeRun     = document.querySelector<HTMLButtonElement>("#btn-recipe-run")!;
+const elScenarioName     = document.querySelector<HTMLInputElement>("#scenario-name")!;
+const elScenarioProgress = document.querySelector<HTMLSpanElement>("#scenario-progress")!;
 
 const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
@@ -574,34 +651,201 @@ tabButtons.forEach(btn => {
   btn.addEventListener("click", () => setActiveTab(btn.dataset.tab || "plant"));
 });
 
-function bindScenarioRemove(row: Element) {
-  row.querySelector<HTMLButtonElement>(".scenario-remove")?.addEventListener("click", () => row.remove());
+// ── Scenario recipe ───────────────────────────────────────────────────────────
+// Param options per target keep the table self-consistent and prevent the user
+// from accidentally mixing motor fault params with control targets.
+const SCENARIO_PARAMS: Record<string, string[]> = {
+  control: ["speed_rpm", "torque_nm", "vdc_v", "accel_time_s", "max_v_pu", "base_freq_hz"],
+  motor:   ["rs", "rr", "ls", "lr", "lm", "j", "npp"],
+  load:    ["torque_nm"],
+};
+
+function syncScenarioParamSelect(row: HTMLElement) {
+  const tSel = row.querySelectorAll<HTMLSelectElement>("select")[0];
+  const pSel = row.querySelectorAll<HTMLSelectElement>("select")[1];
+  const opts = SCENARIO_PARAMS[tSel.value] ?? SCENARIO_PARAMS.control;
+  const cur  = pSel.value;
+  pSel.innerHTML = opts.map(o => `<option${o === cur ? " selected" : ""}>${o}</option>`).join("");
 }
 
-document.querySelectorAll(".scenario-row").forEach(bindScenarioRemove);
-elBtnAddScenarioEvent.addEventListener("click", () => {
+function bindScenarioRow(row: HTMLElement) {
+  row.querySelector<HTMLButtonElement>(".scenario-remove")
+    ?.addEventListener("click", () => { if (!scenarioRunning) row.remove(); });
+  row.querySelectorAll<HTMLSelectElement>("select")[0]
+    ?.addEventListener("change", () => syncScenarioParamSelect(row));
+  syncScenarioParamSelect(row);
+}
+
+function addScenarioRow(preset?: { t: number; target: string; param: string; value: number }): HTMLElement {
+  const target  = preset?.target ?? "control";
+  const param   = preset?.param  ?? "speed_rpm";
+  const opts    = (SCENARIO_PARAMS[target] ?? SCENARIO_PARAMS.control)
+    .map(o => `<option${o === param ? " selected" : ""}>${o}</option>`).join("");
   const row = document.createElement("div");
   row.className = "scenario-row";
   row.innerHTML = `
-    <input type="number" value="0.0" min="0" step="0.001" class="write-input" />
+    <input  type="number" value="${preset?.t ?? 0}"     min="0" step="0.001" class="write-input" />
     <select class="write-input">
-      <option>control</option>
-      <option>motor</option>
-      <option>load</option>
+      <option${target === "control" ? " selected" : ""}>control</option>
+      <option${target === "motor"   ? " selected" : ""}>motor</option>
+      <option${target === "load"    ? " selected" : ""}>load</option>
     </select>
-    <select class="write-input">
-      <option>speed_rpm</option>
-      <option>torque_nm</option>
-      <option>rs</option>
-      <option>rr</option>
-      <option>vdc_v</option>
-    </select>
-    <input type="number" value="0" step="0.001" class="write-input" />
-    <button class="scenario-remove" type="button" title="Remove event">x</button>
-  `;
+    <select class="write-input">${opts}</select>
+    <input  type="number" value="${preset?.value ?? 0}" step="0.001" class="write-input" />
+    <button class="scenario-remove" type="button" title="Remove event">x</button>`;
   elScenarioTable.appendChild(row);
-  bindScenarioRemove(row);
-});
+  bindScenarioRow(row);
+  return row;
+}
+
+document.querySelectorAll<HTMLElement>(".scenario-row").forEach(bindScenarioRow);
+elBtnAddScenarioEvent.addEventListener("click", () => { if (!scenarioRunning) addScenarioRow(); });
+
+// ── Scenario execution state ──────────────────────────────────────────────────
+let scenarioRunning = false;
+let scenarioTimeouts: number[] = [];
+let scenarioProgressTimer: number | null = null;
+let scenarioT0 = 0;
+
+function readScenarioEvents() {
+  return Array.from(elScenarioTable.querySelectorAll<HTMLElement>(".scenario-row"))
+    .map(row => {
+      const inputs  = row.querySelectorAll<HTMLInputElement>("input");
+      const selects = row.querySelectorAll<HTMLSelectElement>("select");
+      return {
+        t:      Number(inputs[0].value)  || 0,
+        target: selects[0].value,
+        param:  selects[1].value,
+        value:  Number(inputs[1].value)  || 0,
+        row,
+      };
+    })
+    .sort((a, b) => a.t - b.t);
+}
+
+async function dispatchScenarioEvent(ev: { target: string; param: string; value: number }) {
+  const ip = elIp.value.trim();
+  if (!ip) return;
+  try {
+    const p = readParams();
+    if (ev.target === "control" || ev.target === "load") {
+      let freq = p.freq, vdc = p.vdc, torque = p.torque;
+      let baseFreq = p.baseFreq, maxVPu = p.maxVPu, accelTime = p.accelTime;
+      switch (ev.param) {
+        case "speed_rpm":    freq      = ev.value * p.npp / 60; break;
+        case "torque_nm":    torque    = ev.value;              break;
+        case "vdc_v":        vdc       = ev.value;              break;
+        case "accel_time_s": accelTime = ev.value;              break;
+        case "max_v_pu":     maxVPu    = ev.value;              break;
+        case "base_freq_hz": baseFreq  = ev.value;              break;
+      }
+      await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, false);
+    } else if (ev.target === "motor") {
+      const m: Record<string, number> = {
+        rs: p.motorRs, rr: p.motorRr, ls: p.motorLs,
+        lr: p.motorLr, lm: p.motorLm, j:  p.motorJ,  npp: p.npp,
+      };
+      m[ev.param] = ev.value;
+      await api.ProgramMotor(ip, m.rs, m.rr, m.ls, m.lr, m.lm, m.j, m.npp);
+    }
+  } catch { /* scenario continues on transient errors */ }
+}
+
+function stopScenario() {
+  scenarioRunning = false;
+  scenarioTimeouts.forEach(clearTimeout);
+  scenarioTimeouts = [];
+  if (scenarioProgressTimer !== null) { clearInterval(scenarioProgressTimer); scenarioProgressTimer = null; }
+  elScenarioTable.querySelectorAll(".scenario-row").forEach(r =>
+    r.classList.remove("sc-active", "sc-done"));
+  elScenarioProgress.textContent = "";
+  elBtnRecipeRun.textContent = "Run recipe";
+  elBtnRecipeRun.classList.remove("btn-danger");
+  elBtnRecipeLoad.disabled = false;
+  elBtnRecipeSave.disabled = false;
+  elBtnAddScenarioEvent.disabled = false;
+  elScenarioTable.querySelectorAll<HTMLButtonElement>(".scenario-remove")
+    .forEach(b => { b.disabled = false; });
+}
+
+function startScenario() {
+  if (scenarioRunning) { stopScenario(); return; }
+  const events = readScenarioEvents();
+  if (events.length === 0) return;
+
+  scenarioRunning = true;
+  scenarioT0 = performance.now();
+  scenarioTimeouts = [];
+
+  elBtnRecipeRun.textContent = "■ Stop";
+  elBtnRecipeRun.classList.add("btn-danger");
+  elBtnRecipeLoad.disabled = true;
+  elBtnRecipeSave.disabled = true;
+  elBtnAddScenarioEvent.disabled = true;
+  elScenarioTable.querySelectorAll<HTMLButtonElement>(".scenario-remove")
+    .forEach(b => { b.disabled = true; });
+
+  events.forEach((ev, idx) => {
+    scenarioTimeouts.push(window.setTimeout(async () => {
+      if (idx > 0) {
+        events[idx - 1].row.classList.remove("sc-active");
+        events[idx - 1].row.classList.add("sc-done");
+      }
+      ev.row.classList.add("sc-active");
+      await dispatchScenarioEvent(ev);
+    }, ev.t * 1000));
+  });
+
+  // Auto-stop half a second after the last event fires
+  const lastT = events[events.length - 1].t;
+  scenarioTimeouts.push(window.setTimeout(() => {
+    const last = events[events.length - 1];
+    last.row.classList.remove("sc-active");
+    last.row.classList.add("sc-done");
+    stopScenario();
+  }, (lastT + 0.5) * 1000));
+
+  scenarioProgressTimer = window.setInterval(() => {
+    const elapsed = (performance.now() - scenarioT0) / 1000;
+    elScenarioProgress.textContent = `t = ${elapsed.toFixed(1)} s`;
+  }, 100);
+}
+
+// ── Recipe persistence (localStorage) ────────────────────────────────────────
+const RECIPE_KEY = "hil-scenario-recipes";
+
+function saveRecipe() {
+  const name   = elScenarioName.value.trim() || "default";
+  const events = readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value }));
+  try {
+    const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
+    all[name] = events;
+    localStorage.setItem(RECIPE_KEY, JSON.stringify(all));
+    const orig = elBtnRecipeSave.textContent!;
+    elBtnRecipeSave.textContent = "Saved ✓";
+    window.setTimeout(() => { elBtnRecipeSave.textContent = orig; }, 1500);
+  } catch { /* storage not available */ }
+}
+
+function loadRecipe() {
+  const name = elScenarioName.value.trim() || "default";
+  try {
+    const all    = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
+    const events = all[name] as { t: number; target: string; param: string; value: number }[] | undefined;
+    if (!events?.length) {
+      const orig = elBtnRecipeLoad.textContent!;
+      elBtnRecipeLoad.textContent = "Not found";
+      window.setTimeout(() => { elBtnRecipeLoad.textContent = orig; }, 1500);
+      return;
+    }
+    elScenarioTable.querySelectorAll(".scenario-row").forEach(r => r.remove());
+    events.forEach(ev => addScenarioRow(ev));
+  } catch { /* storage not available */ }
+}
+
+elBtnRecipeLoad.addEventListener("click", loadRecipe);
+elBtnRecipeSave.addEventListener("click", saveRecipe);
+elBtnRecipeRun.addEventListener("click", startScenario);
 
 // ── Subplot count selector ────────────────────────────────────────────────────
 document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-n]").forEach(btn => {
@@ -618,10 +862,30 @@ document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-mode]").forEac
 let valSpans: HTMLSpanElement[]     = [];
 let subplotBadges: HTMLButtonElement[] = [];
 
+// Single source of truth for channel visibility: updates the plot series and
+// keeps the side-panel checkbox/row and the on-plot legend chip in sync, so a
+// click in either place is reflected everywhere.
+function setChannelVisible(i: number, show: boolean) {
+  visible[i] = show;
+  const s = chSubplot[i];
+  if (s < plots.length) {
+    const chIdx = getChIdx(s);
+    const seriesIdx = chIdx.indexOf(i) + 1;
+    if (seriesIdx > 0) plots[s].setSeries(seriesIdx, { show });
+  }
+  const cb = chCheckboxes[i];
+  if (cb) {
+    cb.checked = show;
+    cb.closest(".ch-row")?.classList.toggle("ch-hidden", !show);
+  }
+  chLegendItems[i]?.classList.toggle("legend-off", !show);
+}
+
 function buildChannelList() {
   elChList.innerHTML = "";
   valSpans = [];
   subplotBadges = [];
+  chCheckboxes = [];
 
   CHANNELS.forEach((ch, i) => {
     const row = document.createElement("label");
@@ -633,6 +897,7 @@ function buildChannelList() {
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = visible[i]; cb.className = "ch-cb";
+    chCheckboxes[i] = cb;
 
     const name = document.createElement("span");
     name.className = "ch-name"; name.textContent = ch.name;
@@ -654,18 +919,8 @@ function buildChannelList() {
     row.append(dot, cb, name, val, unit, badge);
     elChList.append(row);
 
-    const applyVisible = () => {
-      row.classList.toggle("ch-hidden", !cb.checked);
-      visible[i] = cb.checked;
-      const s = chSubplot[i];
-      if (s < plots.length) {
-        const chIdx = getChIdx(s);
-        const seriesIdx = chIdx.indexOf(i) + 1;
-        if (seriesIdx > 0) plots[s].setSeries(seriesIdx, { show: cb.checked });
-      }
-    };
-    applyVisible();  // initial state class
-    cb.addEventListener("change", applyVisible);
+    row.classList.toggle("ch-hidden", !visible[i]);  // initial state class
+    cb.addEventListener("change", () => setChannelVisible(i, cb.checked));
 
     badge.addEventListener("click", e => {
       e.preventDefault();
@@ -702,7 +957,7 @@ function getChIdx(s: number): number[] {
 }
 
 function plotHeight(): number {
-  return Math.max(80, Math.floor(elPlotArea.clientHeight / nSubplots));
+  return Math.max(72, Math.floor(elPlotArea.clientHeight / (nSubplots + 1)));
 }
 
 function setNSubplots(n: number) {
@@ -900,7 +1155,10 @@ function buildPlots() {
   isBuilding = true;
 
   plots.forEach(p => p.destroy());
+  pwmPlot?.destroy();
   plots = [];
+  pwmPlot = null;
+  chLegendItems = [];
   elPlotArea.innerHTML = "";
 
   const w = Math.max(400, elPlotArea.clientWidth);
@@ -924,6 +1182,7 @@ function buildPlots() {
       label: CHANNELS[ci].name,
       stroke: CHANNELS[ci].color,
       width: 1.5,
+      dash: CHANNELS[ci].dash,
       show: visible[ci],
       value: (_u: uPlot) => CHANNELS[ci].unit,
     }));
@@ -1028,7 +1287,93 @@ function buildPlots() {
     );
 
     plots.push(p);
+
+    // Clickable legend overlay (absolute, top-left over the canvas) — click a
+    // chip to hide/show that wave. Stays in sync with the side-panel checkbox
+    // via setChannelVisible. mousedown is swallowed so a chip click never
+    // starts a pan-drag on the wrap.
+    const legend = document.createElement("div");
+    legend.className = "subplot-legend";
+    legend.addEventListener("mousedown", e => e.stopPropagation());
+    chIdx.forEach(ci => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "subplot-legend-item" + (visible[ci] ? "" : " legend-off");
+      const dot = document.createElement("span");
+      dot.className = "legend-dot";
+      dot.style.background = CHANNELS[ci].color;
+      const lbl = document.createElement("span");
+      lbl.textContent = CHANNELS[ci].name;
+      item.append(dot, lbl);
+      item.addEventListener("click", e => {
+        e.preventDefault();
+        e.stopPropagation();
+        setChannelVisible(ci, !visible[ci]);
+      });
+      chLegendItems[ci] = item;
+      legend.appendChild(item);
+    });
+    wrap.appendChild(legend);
   }
+
+
+  const pwmWrap = document.createElement("div");
+  pwmWrap.className = "subplot-wrap pwm-subplot-wrap";
+  // PWM is the first subplot: insert at the top of the plot area regardless of
+  // creation order (DOM position, not uPlot instantiation order, drives layout).
+  elPlotArea.prepend(pwmWrap);
+  pwmPlot = new uPlot(
+    {
+      width: w,
+      height: h,
+      pxAlign: 0,
+      cursor: { show: true, drag: { x: false, y: false, setScale: false }, sync: { key: cursorSync.key } },
+      scales: { x: { time: false } },
+      axes: [
+        { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" } },
+        { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" }, label: "PWM state" },
+      ],
+      series: [
+        { label: "t [s]" },
+        { label: "PWM A", stroke: "#ffd54f", width: 1.5, points: { show: false }, show: pwmVisible[0] },
+        { label: "PWM B", stroke: "#4fc3f7", width: 1.5, points: { show: false }, show: pwmVisible[1] },
+        { label: "PWM C", stroke: "#ef9a9a", width: 1.5, points: { show: false }, show: pwmVisible[2] },
+      ],
+      legend: { show: false },
+    },
+    [[], [], [], []] as uPlot.AlignedData,
+    pwmWrap,
+  );
+
+  // Clickable legend for the PWM phases — same UX as the telemetry subplots.
+  const pwmMeta = [
+    { name: "PWM A", color: "#ffd54f" },
+    { name: "PWM B", color: "#4fc3f7" },
+    { name: "PWM C", color: "#ef9a9a" },
+  ];
+  const pwmLegend = document.createElement("div");
+  pwmLegend.className = "subplot-legend";
+  pwmLegend.addEventListener("mousedown", e => e.stopPropagation());
+  pwmMeta.forEach((m, k) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "subplot-legend-item" + (pwmVisible[k] ? "" : " legend-off");
+    const dot = document.createElement("span");
+    dot.className = "legend-dot";
+    dot.style.background = m.color;
+    const lbl = document.createElement("span");
+    lbl.textContent = m.name;
+    item.append(dot, lbl);
+    item.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      pwmVisible[k] = !pwmVisible[k];
+      item.classList.toggle("legend-off", !pwmVisible[k]);
+      pwmPlot?.setSeries(k + 1, { show: pwmVisible[k] });
+    });
+    pwmLegend.appendChild(item);
+  });
+  pwmWrap.appendChild(pwmLegend);
 
   isBuilding = false;
 }
@@ -1039,9 +1384,175 @@ new ResizeObserver(() => {
   const w = Math.max(400, elPlotArea.clientWidth);
   const h = plotHeight();
   plots.forEach(p => p.setSize({ width: w, height: h }));
+  pwmPlot?.setSize({ width: w, height: h });
 }).observe(elPlotArea);
 
 requestAnimationFrame(() => buildPlots());
+
+function npcLevel(state: number): number | null {
+  // NPC gate-state encoding from RTL: 0011=+Vdc/2, 0110=0, 1100=-Vdc/2.
+  // Other short-lived codes are deadtime/transient gate combinations; plotting
+  // them as zero creates false PWM pulses, so the renderer holds last valid.
+  if (state === 0b0011) return 1;
+  if (state === 0b0110) return 0;
+  if (state === 0b1100) return -1;
+  return null;
+}
+
+function applyNpcLevel(state: number, prev: number): number {
+  const decoded = npcLevel(state);
+  return decoded == null ? prev : decoded;
+}
+
+function appendPwmOverviewUntil(t: number) {
+  if (pwmOverviewNextT === null) pwmOverviewNextT = Math.floor(t / PWM_OVERVIEW_DT_SEC) * PWM_OVERVIEW_DT_SEC;
+  while (pwmOverviewNextT <= t) {
+    pwmOverviewT.push(pwmOverviewNextT);
+    pwmOverviewA.push(pwmOverviewAState);
+    pwmOverviewB.push(pwmOverviewBState);
+    pwmOverviewC.push(pwmOverviewCState);
+    pwmOverviewNextT += PWM_OVERVIEW_DT_SEC;
+  }
+  if (pwmOverviewT.length > MAX_PWM_OVERVIEW_SAMPLES) {
+    const drop = pwmOverviewT.length - MAX_PWM_OVERVIEW_SAMPLES;
+    pwmOverviewT.splice(0, drop);
+    pwmOverviewA.splice(0, drop);
+    pwmOverviewB.splice(0, drop);
+    pwmOverviewC.splice(0, drop);
+  }
+}
+
+function pwmOverviewData(viewStart: number, viewEnd: number, maxPts: number): [number[], number[], number[], number[]] {
+  if (pwmOverviewT.length === 0) return [[], [], [], []];
+  const start = Math.max(viewStart, pwmOverviewT[0]);
+  const end = Math.min(viewEnd, pwmOverviewT[pwmOverviewT.length - 1]);
+  if (end < start) return [[], [], [], []];
+  const iStart = lowerBound(start, pwmOverviewT);
+  const iEnd = lowerBound(end, pwmOverviewT);
+  const n = Math.max(0, iEnd - iStart);
+  if (n === 0) return [[], [], [], []];
+  if (n <= maxPts) {
+    return [
+      pwmOverviewT.slice(iStart, iEnd),
+      pwmOverviewA.slice(iStart, iEnd),
+      pwmOverviewB.slice(iStart, iEnd),
+      pwmOverviewC.slice(iStart, iEnd),
+    ];
+  }
+  const xs: number[] = [];
+  const ya: number[] = [];
+  const yb: number[] = [];
+  const yc: number[] = [];
+  const buckets = Math.max(1, Math.floor(maxPts / 2));
+  const bucketSize = n / buckets;
+  for (let j = 0; j < buckets; j++) {
+    const i0 = iStart + Math.floor(j * bucketSize);
+    const i1 = Math.min(iStart + Math.floor((j + 1) * bucketSize), iEnd) - 1;
+    if (i0 > i1) continue;
+    let minA = pwmOverviewA[i0], maxA = pwmOverviewA[i0];
+    let minB = pwmOverviewB[i0], maxB = pwmOverviewB[i0];
+    let minC = pwmOverviewC[i0], maxC = pwmOverviewC[i0];
+    for (let i = i0 + 1; i <= i1; i++) {
+      const a = pwmOverviewA[i], b = pwmOverviewB[i], c = pwmOverviewC[i];
+      if (a < minA) minA = a; if (a > maxA) maxA = a;
+      if (b < minB) minB = b; if (b > maxB) maxB = b;
+      if (c < minC) minC = c; if (c > maxC) maxC = c;
+    }
+    const t = (pwmOverviewT[i0] + pwmOverviewT[i1]) * 0.5;
+    xs.push(t, t);
+    ya.push(minA, maxA);
+    yb.push(minB, maxB);
+    yc.push(minC, maxC);
+  }
+  return [xs, ya, yb, yc];
+}
+
+function pwmTime(ev: PwmPlotEvent): number {
+  return ev.t_sec;
+}
+
+function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], number[], number[]] {
+  const maxTransitions = Math.max(2000, (elPlotArea.clientWidth || 800) * 8);
+  if (pwmEvents.length === 0) return pwmOverviewData(viewStart, viewEnd, maxTransitions);
+
+  const firstTime = pwmTime(pwmEvents[0]);
+  const lastTime = pwmTime(pwmEvents[pwmEvents.length - 1]);
+  if (viewStart < firstTime || viewEnd - viewStart > 10.0) {
+    const overview = pwmOverviewData(viewStart, viewEnd, maxTransitions);
+    if (overview[0].length > 0) return overview;
+  }
+  const plotStart = Math.max(viewStart, firstTime);
+  const plotEnd = pwmActive ? viewEnd : Math.min(viewEnd, lastTime);
+  if (plotEnd < plotStart || viewEnd < firstTime || viewStart > lastTime) return [[], [], [], []];
+
+  const xs: number[] = [];
+  const ya: number[] = [];
+  const yb: number[] = [];
+  const yc: number[] = [];
+  let prevIdx = 0;
+  for (let i = 0; i < pwmEvents.length; i++) {
+    const t = pwmTime(pwmEvents[i]);
+    if (t <= plotStart) prevIdx = i;
+    if (t > plotEnd) break;
+  }
+  let firstIdx = prevIdx;
+  while (firstIdx < pwmEvents.length && pwmTime(pwmEvents[firstIdx]) < plotStart) firstIdx++;
+  let lastIdx = firstIdx;
+  while (lastIdx < pwmEvents.length && pwmTime(pwmEvents[lastIdx]) <= plotEnd) lastIdx++;
+  const transitionCount = Math.max(0, lastIdx - firstIdx);
+  if (transitionCount > maxTransitions) {
+    let idx = prevIdx;
+    let a = applyNpcLevel(pwmEvents[prevIdx].a, 0);
+    let b = applyNpcLevel(pwmEvents[prevIdx].b, 0);
+    let c = applyNpcLevel(pwmEvents[prevIdx].c, 0);
+    const buckets = Math.max(1, Math.floor(maxTransitions / 2));
+    for (let j = 0; j < buckets; j++) {
+      const t0 = plotStart + (plotEnd - plotStart) * j / buckets;
+      const t1 = plotStart + (plotEnd - plotStart) * (j + 1) / buckets;
+      while (idx + 1 < pwmEvents.length && pwmTime(pwmEvents[idx + 1]) < t0) {
+        idx++;
+        const ev = pwmEvents[idx];
+        a = applyNpcLevel(ev.a, a);
+        b = applyNpcLevel(ev.b, b);
+        c = applyNpcLevel(ev.c, c);
+      }
+      let minA = a, maxA = a, minB = b, maxB = b, minC = c, maxC = c;
+      while (idx + 1 < pwmEvents.length && pwmTime(pwmEvents[idx + 1]) <= t1) {
+        idx++;
+        const ev = pwmEvents[idx];
+        a = applyNpcLevel(ev.a, a);
+        b = applyNpcLevel(ev.b, b);
+        c = applyNpcLevel(ev.c, c);
+        if (a < minA) minA = a; if (a > maxA) maxA = a;
+        if (b < minB) minB = b; if (b > maxB) maxB = b;
+        if (c < minC) minC = c; if (c > maxC) maxC = c;
+      }
+      const t = (t0 + t1) * 0.5;
+      xs.push(t, t);
+      ya.push(minA, maxA);
+      yb.push(minB, maxB);
+      yc.push(minC, maxC);
+    }
+    return [xs, ya, yb, yc];
+  }
+  let lastT = plotStart;
+  let a = applyNpcLevel(pwmEvents[prevIdx].a, 0);
+  let b = applyNpcLevel(pwmEvents[prevIdx].b, 0);
+  let c = applyNpcLevel(pwmEvents[prevIdx].c, 0);
+  xs.push(plotStart); ya.push(a); yb.push(b); yc.push(c);
+  for (let i = firstIdx; i < lastIdx; i++) {
+    const ev = pwmEvents[i];
+    const t = pwmTime(ev);
+    xs.push(t); ya.push(a); yb.push(b); yc.push(c);
+    a = applyNpcLevel(ev.a, a); b = applyNpcLevel(ev.b, b); c = applyNpcLevel(ev.c, c);
+    xs.push(t); ya.push(a); yb.push(b); yc.push(c);
+    lastT = t;
+  }
+  if (lastT < plotEnd) {
+    xs.push(plotEnd); ya.push(a); yb.push(b); yc.push(c);
+  }
+  return [xs, ya, yb, yc];
+}
 
 // ── Render ────────────────────────────────────────────────────────────────────
 let renderPending = false;
@@ -1073,6 +1584,23 @@ function scheduleRender() {
       // range shifts. uPlot's cursor.sync still keeps the crosshair aligned.
       p.setScale("x", { min: viewStart, max: viewEnd });
     });
+    if (pwmPlot) {
+      // PWM window in hardware time (see pwmViewEndSec note). Live: glue to the
+      // newest PWM event and remember its offset from the telemetry edge.
+      // Paused: ride that offset so panning/zooming the telemetry view carries
+      // the PWM view along by the same amount.
+      if (!paused && pwmEvents.length > 0) {
+        pwmViewEndSec = pwmEvents[pwmEvents.length - 1].t_sec;
+        pwmTelemOffset = pwmViewEndSec - viewEnd;
+      } else {
+        pwmViewEndSec = viewEnd + pwmTelemOffset;
+      }
+      const pwmStart = pwmViewEndSec - windowSec;
+      const [px, pa, pb, pc] = pwmStepData(pwmStart, pwmViewEndSec);
+      pwmPlot.setData([px, pa, pb, pc] as uPlot.AlignedData);
+      pwmPlot.setScale("x", { min: pwmStart, max: pwmViewEndSec });
+      pwmPlot.setScale("y", { min: -1.25, max: 1.25 });
+    }
     scaleSyncing = false;
 
     elSampleCount.textContent = `${sampleCount.toLocaleString()} samples`;
@@ -1084,7 +1612,7 @@ function scheduleRender() {
 
 // ── Telemetry events ──────────────────────────────────────────────────────────
 api.onTelemetry((samples: Sample[]) => {
-  if (!Array.isArray(samples) || samples.length === 0) return;
+  if (!captureTelemetry || !Array.isArray(samples) || samples.length === 0) return;
   const nowMs = performance.now();
   const nowSec = (nowMs - t0) / 1000;
   lastSampleAt = nowMs;
@@ -1094,13 +1622,21 @@ api.onTelemetry((samples: Sample[]) => {
   }
   lastTelemetryBatchAt = nowSec;
 
+  // Sample-and-hold the commanded load so the TL trace shows the step history
+  // aligned with the measured torque response. One DOM read per batch.
+  const tlNow = Number(elTorque.value) || 0;
+
   for (const s of samples) {
-    tBuf.push(nextSampleTime);
+    s.TL = tlNow;
+    // Uniform host-paced time grid — strictly increasing, immune to the board
+    // counter's freezes/resets that corrupted the min/max decimation.
+    const sampleTime = nextSampleTime;
+    tBuf.push(sampleTime);
     samplesBuf.push(s);
     // Track min+max of Iα within the current overview bucket (s.Ia = Iα).
     const v0 = s.Ia;
-    if (v0 < ovBucketMinV) { ovBucketMinV = v0; ovBucketMinT = nextSampleTime; ovBucketMinS = s; }
-    if (v0 > ovBucketMaxV) { ovBucketMaxV = v0; ovBucketMaxT = nextSampleTime; ovBucketMaxS = s; }
+    if (v0 < ovBucketMinV) { ovBucketMinV = v0; ovBucketMinT = sampleTime; ovBucketMinS = s; }
+    if (v0 > ovBucketMaxV) { ovBucketMaxV = v0; ovBucketMaxT = sampleTime; ovBucketMaxS = s; }
     if (++ovCounter >= OVERVIEW_EVERY) {
       ovCounter = 0;
       if (ovBucketMinS !== null) {
@@ -1133,6 +1669,34 @@ api.onTelemetry((samples: Sample[]) => {
     valSpans[i].textContent = ch.read(last).toFixed(4);
   });
 
+  scheduleRender();
+});
+
+api.onPwmEvents((batch: PwmEventBatch) => {
+  if (!capturePwm || !batch || !Array.isArray(batch.events) || batch.events.length === 0) return;
+  pwmClockHz = batch.clock_hz || pwmClockHz;
+  pwmActive = (batch.status & 0x1) !== 0;
+  for (const ev of batch.events) {
+    const raw = ev.t_cycles >>> 0;
+    if (pwmEpoch !== null && ev.epoch !== pwmEpoch) {
+      pwmWrapOffsetCycles = 0;
+      pwmLastRawCycles = null;
+    } else if (pwmLastRawCycles !== null && raw < pwmLastRawCycles && pwmLastRawCycles - raw > 0x80000000) {
+      pwmWrapOffsetCycles += PWM_COUNTER_MOD;
+    }
+    pwmEpoch = ev.epoch;
+    pwmLastRawCycles = raw;
+    // Absolute run-local hardware time — same origin (counter=0 at Run) as the
+    // telemetry timeline, so PWM steps line up with the motor waveforms.
+    const tSec = (pwmWrapOffsetCycles + raw) / pwmClockHz;
+    appendPwmOverviewUntil(tSec);
+    pwmOverviewAState = applyNpcLevel(ev.a, pwmOverviewAState);
+    pwmOverviewBState = applyNpcLevel(ev.b, pwmOverviewBState);
+    pwmOverviewCState = applyNpcLevel(ev.c, pwmOverviewCState);
+    pwmEvents.push({ ...ev, t_sec: tSec });
+  }
+
+  if (pwmEvents.length > MAX_PWM_EVENTS) pwmEvents.splice(0, pwmEvents.length - MAX_PWM_EVENTS);
   scheduleRender();
 });
 
@@ -1254,6 +1818,8 @@ function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
 function resetPlotBuffer() {
   paused = false;
   viewEndSec = 0;
+  pwmViewEndSec = 0;
+  pwmTelemOffset = 0;
   tBuf.length = 0;
   samplesBuf.length = 0;
   ovTBuf.length = 0;
@@ -1266,10 +1832,27 @@ function resetPlotBuffer() {
   nextSampleTime = 0;
   lastTelemetryBatchAt = 0;
   estimatedSamplePeriod = 1 / DISPLAY_SAMPLE_RATE_HZ;
+  telemLastRawCycles = null;
+  telemWrapOffsetCycles = 0;
+  telemEpoch = null;
+  pwmEvents.length = 0;
+  pwmOverviewT.length = 0;
+  pwmOverviewA.length = 0;
+  pwmOverviewB.length = 0;
+  pwmOverviewC.length = 0;
+  pwmOverviewNextT = null;
+  pwmOverviewAState = 0;
+  pwmOverviewBState = 0;
+  pwmOverviewCState = 0;
+  pwmEpoch = null;
+  pwmActive = false;
+  pwmLastRawCycles = null;
+  pwmWrapOffsetCycles = 0;
   plots.forEach((p, s) => {
     const chIdx = getChIdx(s);
     p.setData([[], ...chIdx.map(() => [])] as uPlot.AlignedData);
   });
+  pwmPlot?.setData([[], [], [], []] as uPlot.AlignedData);
   elSampleCount.textContent = "0 samples";
   scheduleRender();
 }
@@ -1288,6 +1871,9 @@ elBtnDiscover.addEventListener("click", () => withButton(elBtnDiscover, async ()
 
 elBtnConnect.addEventListener("click", () => withButton(elBtnConnect, async () => {
   const { ip } = readParams();
+  captureTelemetry = false;
+  capturePwm = false;
+  resetPlotBuffer();
   // single hello → attaches telemetry to this PC and pulls current state
   const s = await api.AttachTelemetry(ip) as HilStatus;
   const boardIP = s.board_ip || ip;
@@ -1319,9 +1905,14 @@ elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
 
 elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
   const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
-  resetPlotBuffer();   // clears tBuf and re-enters live (paused = false)
+  captureTelemetry = false;
+  capturePwm = false;
+  resetPlotBuffer();
   await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
   const s = await api.Run(ip) as HilStatus;
+  resetPlotBuffer();
+  captureTelemetry = true;
+  capturePwm = true;
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
   setStatus("Running", "ok");
@@ -1339,11 +1930,11 @@ elBtnReset.addEventListener("click", () => withButton(elBtnReset, async () => {
 elBtnStop.addEventListener("click", () => withButton(elBtnStop, async () => {
   const { ip } = readParams();
   const s = await api.StopController(ip) as HilStatus;
+  captureTelemetry = false;
+  capturePwm = false;
   applyBoardIP(s.board_ip);
-  // Board stops its telem thread on Stop — reflect it in the badge. The plot
-  // is intentionally left intact so the user can inspect the last run; the
-  // next Run will clear it. Form values also stay (applyResponse won't
-  // hydrate on the "stopped" state).
+  paused = true;
+  viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
   setTelemBadge(false, false);
   setStatus("Stopped (daemon alive — can Run again)", "ok");
   applyResponse(s);
@@ -1398,12 +1989,11 @@ document.querySelectorAll<HTMLButtonElement>("#window-group button[data-win-ms]"
       if (ms === 0) {
         // "All" — zoom out to cover the complete session and pause the view.
         const session = getSessionSec();
-        windowSec = session > 0 ? session + 5 : WINDOW_MAX_SEC;
+        windowSec = session > 0 ? Math.max(session, WINDOW_MIN_SEC) : WINDOW_MAX_SEC;
         paused = true;
-        const end = ovTBuf.length > 0
+        viewEndSec = ovTBuf.length > 0
           ? ovTBuf[ovTBuf.length - 1]
           : (tBuf.length > 0 ? tBuf[tBuf.length - 1] : 0);
-        viewEndSec = end + 2;
       } else {
         const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
         windowSec = clamp(ms / 1000, WINDOW_MIN_SEC, maxSec);
