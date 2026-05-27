@@ -17,9 +17,6 @@ update_compile_order -fileset sources_1
 set check_result [check_syntax -fileset sources_1 -return_string]
 puts $check_result
 
-# Também executa o elaborate para pegar erros semânticos
-set infos    [get_msg_config -severity INFO -count]
-set errors   [llength [get_msg_config -severity ERROR -rules {*}]]
 puts "\nSyntax check concluído."
 
 close_project

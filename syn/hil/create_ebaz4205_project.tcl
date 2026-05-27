@@ -559,6 +559,36 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins hil_regs_0/coeff_data_o] \
         [get_bd_pins hil_axi_top_0/coeff_data_i]
 
+
+    # PWM transition capture: control/readback via HIL_Regs_AXI.
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/pwm_cap_start_o] \
+        [get_bd_pins hil_axi_top_0/pwm_cap_start_i]
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/pwm_cap_stop_o] \
+        [get_bd_pins hil_axi_top_0/pwm_cap_stop_i]
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/pwm_cap_clear_o] \
+        [get_bd_pins hil_axi_top_0/pwm_cap_clear_i]
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/pwm_cap_pop_o] \
+        [get_bd_pins hil_axi_top_0/pwm_cap_pop_i]
+    connect_bd_net \
+        [get_bd_pins hil_regs_0/pwm_cap_window_o] \
+        [get_bd_pins hil_axi_top_0/pwm_cap_window_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/pwm_cap_status_o] \
+        [get_bd_pins hil_regs_0/pwm_cap_status_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/pwm_cap_data_o] \
+        [get_bd_pins hil_regs_0/pwm_cap_data_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/hil_time_o] \
+        [get_bd_pins hil_regs_0/hil_time_i]
+    connect_bd_net \
+        [get_bd_pins hil_axi_top_0/hil_epoch_o] \
+        [get_bd_pins hil_regs_0/hil_epoch_i]
+
     # Debug bus do HIL_AXI_Top → HIL_Regs_AXI (offsets 0x1C..0x2C).
     # Permite ler contadores e status word via PS sem ocupar os AXI GPIOs,
     # que ficam dedicados às grandezas físicas (ialpha, ibeta, flux, speed).
@@ -628,6 +658,8 @@ proc cr_bd_ebaz4205 {} {
     set seg_hil [get_bd_addr_segs hil_regs_0/S_AXI/reg0]
     if {[llength $seg_hil] > 0} {
         set_property offset 0x43C00000 [get_bd_addr_segs \
+            {processing_system7_0/Data/SEG_hil_regs_0_reg0}]
+        set_property range 4K [get_bd_addr_segs \
             {processing_system7_0/Data/SEG_hil_regs_0_reg0}]
         puts "  HIL_Regs_AXI → 0x43C00000"
     }

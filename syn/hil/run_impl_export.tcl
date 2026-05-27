@@ -38,6 +38,10 @@ if {[llength $locked] > 0} {
 set bd_files [get_files -quiet -filter {FILE_TYPE == "Block Designs"}]
 if {[llength $bd_files] > 0} {
     puts "Regenerating BD/IP output products..."
+    foreach bd_file $bd_files {
+        set_property synth_checkpoint_mode None $bd_file
+        set_property generate_synth_checkpoint false $bd_file
+    }
     generate_target all $bd_files
     export_ip_user_files -of_objects $bd_files -no_script -sync -force -quiet
 }

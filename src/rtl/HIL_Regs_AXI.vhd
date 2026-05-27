@@ -1,6 +1,6 @@
 -- HIL_Regs_AXI.vhd
 --
--- AXI4-Lite slave — 6 write regs + 6 read-only debug regs for HIL.
+-- AXI4-Lite slave — control/debug regs for HIL.
 -- Written in user VHDL (not Xilinx IP), so Vivado's optimizer cannot
 -- constant-propagate through it: PS7 is a hard-IP black box, making
 -- the register values non-constant by definition.
@@ -25,6 +25,14 @@
 --   0x38  coeff_data_hi    write/read — coefficient[41:32]
 --   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we_o,
 --                                      bit[1]=1 pulses coeff_apply_o
+--   0x40  pwm_cap_ctrl     write      — bit0=start, bit1=stop, bit2=clear
+--   0x44  pwm_cap_status   read       — capture status/count
+--   0x48  pwm_cap_window   write/read — cycles; 0=continuous while enabled
+--   0x4C  pwm_cap_data_lo  read       — current event[31:0]
+--   0x50  pwm_cap_data_hi  read       — current event[63:32]
+--   0x54  pwm_cap_pop      write      — bit0 pops current event
+--   0x58  hil_time          read       — current run-local time[31:0]
+--   0x5C  hil_epoch         read       — current run epoch[15:0]
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -33,7 +41,7 @@ use ieee.numeric_std.all;
 entity HIL_Regs_AXI is
     generic (
         C_S_AXI_DATA_WIDTH : integer := 32;
-        C_S_AXI_ADDR_WIDTH : integer := 6   -- covers 0x00..0x3F (12 regs)
+        C_S_AXI_ADDR_WIDTH : integer := 8   -- covers 0x00..0xFF
     );
     port (
         -- AXI4-Lite slave interface
@@ -76,6 +84,17 @@ entity HIL_Regs_AXI is
         coeff_addr_o   : out std_logic_vector(31 downto 0);
         coeff_data_o   : out std_logic_vector(41 downto 0);
 
+        -- PWM transition capture control/readout.
+        pwm_cap_start_o  : out std_logic;
+        pwm_cap_stop_o   : out std_logic;
+        pwm_cap_clear_o  : out std_logic;
+        pwm_cap_pop_o    : out std_logic;
+        pwm_cap_window_o : out std_logic_vector(31 downto 0);
+        pwm_cap_status_i : in  std_logic_vector(31 downto 0);
+        pwm_cap_data_i   : in  std_logic_vector(63 downto 0);
+        hil_time_i       : in  std_logic_vector(31 downto 0);
+        hil_epoch_i      : in  std_logic_vector(31 downto 0);
+
         -- Read-only debug bus from HIL_AXI_Top.
         dbg_status_i     : in  std_logic_vector(31 downto 0);
         dbg_free_run_i   : in  std_logic_vector(31 downto 0);
@@ -107,10 +126,17 @@ architecture rtl of HIL_Regs_AXI is
     signal reg_coeff_addr  : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_coeff_lo    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_coeff_hi    : std_logic_vector(31 downto 0) := (others => '0');
+    signal reg_pwm_cap_window : std_logic_vector(31 downto 0) := (others => '0');
     signal coeff_we_r      : std_logic := '0';
     signal coeff_apply_r   : std_logic := '0';
+    signal pwm_cap_start_r : std_logic := '0';
+    signal pwm_cap_stop_r  : std_logic := '0';
+    signal pwm_cap_clear_r : std_logic := '0';
+    signal pwm_cap_pop_r   : std_logic := '0';
 
     constant DEBUG_MAGIC : std_logic_vector(31 downto 0) := x"48494C52"; -- "HILR"
+    constant PWM_CAP_CTRL_MAGIC : std_logic_vector(31 downto 0) := x"FFFF0100";
+    constant PWM_CAP_POP_MAGIC  : std_logic_vector(31 downto 0) := x"FFFF0104";
 
     -- Prevent Vivado from trimming output port connections via dead-cone elimination.
     -- Without these attributes, synthesis sees the registers as "only driving
@@ -125,6 +151,7 @@ architecture rtl of HIL_Regs_AXI is
     attribute dont_touch of reg_coeff_addr  : signal is "true";
     attribute dont_touch of reg_coeff_lo    : signal is "true";
     attribute dont_touch of reg_coeff_hi    : signal is "true";
+    attribute dont_touch of reg_pwm_cap_window : signal is "true";
 
 begin
 
@@ -139,6 +166,11 @@ begin
     coeff_apply_o  <= coeff_apply_r;
     coeff_addr_o   <= reg_coeff_addr;
     coeff_data_o   <= reg_coeff_hi(9 downto 0) & reg_coeff_lo;
+    pwm_cap_start_o  <= pwm_cap_start_r;
+    pwm_cap_stop_o   <= pwm_cap_stop_r;
+    pwm_cap_clear_o  <= pwm_cap_clear_r;
+    pwm_cap_pop_o    <= pwm_cap_pop_r;
+    pwm_cap_window_o <= reg_pwm_cap_window;
 
     S_AXI_AWREADY <= awready;
     S_AXI_WREADY  <= wready;
@@ -166,11 +198,20 @@ begin
                 reg_coeff_addr  <= (others => '0');
                 reg_coeff_lo    <= (others => '0');
                 reg_coeff_hi    <= (others => '0');
+                reg_pwm_cap_window <= (others => '0');
                 coeff_we_r      <= '0';
                 coeff_apply_r   <= '0';
+                pwm_cap_start_r <= '0';
+                pwm_cap_stop_r  <= '0';
+                pwm_cap_clear_r <= '0';
+                pwm_cap_pop_r   <= '0';
             else
                 coeff_we_r <= '0';
                 coeff_apply_r <= '0';
+                pwm_cap_start_r <= '0';
+                pwm_cap_stop_r  <= '0';
+                pwm_cap_clear_r <= '0';
+                pwm_cap_pop_r   <= '0';
 
                 -- AWREADY: accept address
                 if awready = '0' and S_AXI_AWVALID = '1' then
@@ -190,20 +231,35 @@ begin
                 -- Write to register when both address and data are valid
                 if awready = '1' and S_AXI_AWVALID = '1' and
                    wready  = '1' and S_AXI_WVALID  = '1' then
-                    case aw_addr(5 downto 2) is
-                        when "0000" => reg_va_ref      <= S_AXI_WDATA;
-                        when "0001" => reg_vb_ref      <= S_AXI_WDATA;
-                        when "0010" => reg_vc_ref      <= S_AXI_WDATA;
-                        when "0011" => reg_pwm_ctrl    <= S_AXI_WDATA;
-                        when "0100" => reg_vdc_word    <= S_AXI_WDATA;
-                        when "0101" => reg_torque_word <= S_AXI_WDATA;
-                        when "1100" => reg_coeff_addr  <= S_AXI_WDATA;
-                        when "1101" => reg_coeff_lo    <= S_AXI_WDATA;
-                        when "1110" => reg_coeff_hi    <= S_AXI_WDATA;
-                        when "1111" =>
+                    case to_integer(unsigned(aw_addr(7 downto 2))) is
+                        when 0  => reg_va_ref      <= S_AXI_WDATA;
+                        when 1  => reg_vb_ref      <= S_AXI_WDATA;
+                        when 2  => reg_vc_ref      <= S_AXI_WDATA;
+                        when 3  => reg_pwm_ctrl    <= S_AXI_WDATA;
+                        when 4  => reg_vdc_word    <= S_AXI_WDATA;
+                        when 5  => reg_torque_word <= S_AXI_WDATA;
+                        when 12 => reg_coeff_addr  <= S_AXI_WDATA;
+                        when 13 => reg_coeff_lo    <= S_AXI_WDATA;
+                        when 14 => reg_coeff_hi    <= S_AXI_WDATA;
+                        when 15 =>
                             coeff_we_r    <= S_AXI_WDATA(0);
                             coeff_apply_r <= S_AXI_WDATA(1);
-                        when others => null;  -- 0x18..0x2C são read-only
+                        when 16 =>
+                            pwm_cap_start_r <= S_AXI_WDATA(0);
+                            pwm_cap_stop_r  <= S_AXI_WDATA(1);
+                            pwm_cap_clear_r <= S_AXI_WDATA(2);
+                            reg_coeff_addr  <= PWM_CAP_CTRL_MAGIC;
+                            reg_coeff_lo    <= S_AXI_WDATA;
+                            reg_coeff_hi    <= (others => '0');
+                            coeff_we_r      <= '1';
+                        when 18 => reg_pwm_cap_window <= S_AXI_WDATA;
+                        when 21 =>
+                            pwm_cap_pop_r  <= S_AXI_WDATA(0);
+                            reg_coeff_addr <= PWM_CAP_POP_MAGIC;
+                            reg_coeff_lo   <= S_AXI_WDATA;
+                            reg_coeff_hi   <= (others => '0');
+                            coeff_we_r     <= '1';
+                        when others => null;
                     end case;
                     bvalid <= '1';
                 elsif bvalid = '1' and S_AXI_BREADY = '1' then
@@ -224,23 +280,29 @@ begin
             else
                 if arready = '0' and S_AXI_ARVALID = '1' then
                     arready <= '1';
-                    case S_AXI_ARADDR(5 downto 2) is
-                        when "0000" => rdata <= reg_va_ref;
-                        when "0001" => rdata <= reg_vb_ref;
-                        when "0010" => rdata <= reg_vc_ref;
-                        when "0011" => rdata <= reg_pwm_ctrl;
-                        when "0100" => rdata <= reg_vdc_word;
-                        when "0101" => rdata <= reg_torque_word;
-                        when "0110" => rdata <= DEBUG_MAGIC;     -- 0x18
-                        when "0111" => rdata <= dbg_status_i;    -- 0x1C
-                        when "1000" => rdata <= dbg_free_run_i;  -- 0x20
-                        when "1001" => rdata <= dbg_carrier_i;   -- 0x24
-                        when "1010" => rdata <= dbg_timer_i;     -- 0x28
-                        when "1011" => rdata <= dbg_dv_latch_i;  -- 0x2C
-                        when "1100" => rdata <= reg_coeff_addr;   -- 0x30
-                        when "1101" => rdata <= reg_coeff_lo;     -- 0x34
-                        when "1110" => rdata <= reg_coeff_hi;     -- 0x38
-                        when "1111" => rdata <= (others => '0');  -- 0x3C commit strobe
+                    case to_integer(unsigned(S_AXI_ARADDR(7 downto 2))) is
+                        when 0  => rdata <= reg_va_ref;
+                        when 1  => rdata <= reg_vb_ref;
+                        when 2  => rdata <= reg_vc_ref;
+                        when 3  => rdata <= reg_pwm_ctrl;
+                        when 4  => rdata <= reg_vdc_word;
+                        when 5  => rdata <= reg_torque_word;
+                        when 6  => rdata <= DEBUG_MAGIC;
+                        when 7  => rdata <= dbg_status_i;
+                        when 8  => rdata <= dbg_free_run_i;
+                        when 9  => rdata <= dbg_carrier_i;
+                        when 10 => rdata <= dbg_timer_i;
+                        when 11 => rdata <= dbg_dv_latch_i;
+                        when 12 => rdata <= reg_coeff_addr;
+                        when 13 => rdata <= reg_coeff_lo;
+                        when 14 => rdata <= reg_coeff_hi;
+                        when 15 => rdata <= (others => '0');
+                        when 17 => rdata <= dbg_status_i;
+                        when 18 => rdata <= reg_pwm_cap_window;
+                        when 19 => rdata <= dbg_free_run_i;
+                        when 20 => rdata <= dbg_carrier_i;
+                        when 22 => rdata <= dbg_timer_i;
+                        when 23 => rdata <= dbg_dv_latch_i;
                         when others => rdata <= (others => '0');
                     end case;
                     rvalid <= '1';

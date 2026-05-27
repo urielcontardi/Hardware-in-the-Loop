@@ -127,6 +127,17 @@ Entity HIL_AXI_Top is
         dbg_timer_o      : out std_logic_vector(31 downto 0);  -- timer ticks do solver
         dbg_dv_latch_o   : out std_logic_vector(31 downto 0);  -- data_valid latch sticky
 
+        -- ── PWM transition capture (read by PS via HIL_Regs_AXI) ────────────
+        pwm_cap_start_i  : in  std_logic;
+        pwm_cap_stop_i   : in  std_logic;
+        pwm_cap_clear_i  : in  std_logic;
+        pwm_cap_pop_i    : in  std_logic;
+        pwm_cap_window_i : in  std_logic_vector(31 downto 0);
+        pwm_cap_status_o : out std_logic_vector(31 downto 0);
+        pwm_cap_data_o   : out std_logic_vector(63 downto 0);
+        hil_time_o       : out std_logic_vector(31 downto 0);
+        hil_epoch_o      : out std_logic_vector(31 downto 0);
+
         -- ── AXI4-Stream master → AXI DMA S2MM ───────────────────────────────
         m_axis_tdata     : out std_logic_vector(255 downto 0);
         m_axis_tvalid    : out std_logic;
@@ -294,7 +305,43 @@ Architecture rtl of HIL_AXI_Top is
     signal decim_count    : unsigned(29 downto 0);
     signal decim_ratio    : unsigned(29 downto 0);
 
+    --------------------------------------------------------------------------
+    -- PWM transition capture FIFO (100 MHz clock domain).
+    --------------------------------------------------------------------------
+    constant PWM_CAP_DEPTH_C : natural := 2048;
+    type pwm_cap_mem_t is array (0 to PWM_CAP_DEPTH_C-1) of std_logic_vector(63 downto 0);
+    signal pwm_cap_mem       : pwm_cap_mem_t;
+    signal pwm_cap_wr        : natural range 0 to PWM_CAP_DEPTH_C-1 := 0;
+    signal pwm_cap_rd        : natural range 0 to PWM_CAP_DEPTH_C-1 := 0;
+    signal pwm_cap_count     : natural range 0 to PWM_CAP_DEPTH_C := 0;
+    signal pwm_cap_active    : std_logic := '0';
+    signal pwm_cap_overflow  : std_logic := '0';
+    signal pwm_cap_time      : unsigned(31 downto 0) := (others => '0');
+    signal pwm_cap_epoch     : unsigned(15 downto 0) := (others => '0');
+    signal pwm_enable_d      : std_logic := '0';
+    signal pwm_cap_force     : std_logic := '0';
+    signal pwm_a_prev        : std_logic_vector(3 downto 0) := (others => '0');
+    signal pwm_b_prev        : std_logic_vector(3 downto 0) := (others => '0');
+    signal pwm_c_prev        : std_logic_vector(3 downto 0) := (others => '0');
+    constant PWM_CAP_CTRL_MAGIC_C : std_logic_vector(31 downto 0) := x"FFFF0100";
+    constant PWM_CAP_POP_MAGIC_C  : std_logic_vector(31 downto 0) := x"FFFF0104";
+    signal pwm_cap_ctrl_cmd  : std_logic;
+    signal pwm_cap_pop_cmd   : std_logic;
+    signal pwm_cap_start_cmd : std_logic;
+    signal pwm_cap_stop_cmd  : std_logic;
+    signal pwm_cap_clear_cmd : std_logic;
+    signal pwm_cap_data_s   : std_logic_vector(63 downto 0);
+    signal pwm_cap_status_s : std_logic_vector(31 downto 0);
+    signal hil_time_s       : std_logic_vector(31 downto 0);
+    signal hil_epoch_s      : std_logic_vector(31 downto 0);
+
 Begin
+
+    pwm_cap_ctrl_cmd  <= '1' when coeff_we_i = '1' and coeff_addr_i = PWM_CAP_CTRL_MAGIC_C else '0';
+    pwm_cap_pop_cmd   <= '1' when coeff_we_i = '1' and coeff_addr_i = PWM_CAP_POP_MAGIC_C else '0';
+    pwm_cap_start_cmd <= pwm_cap_ctrl_cmd and coeff_data_i(0);
+    pwm_cap_stop_cmd  <= pwm_cap_ctrl_cmd and coeff_data_i(1);
+    pwm_cap_clear_cmd <= pwm_cap_ctrl_cmd and coeff_data_i(2);
 
     --------------------------------------------------------------------------
     -- Clock do solver: 200 MHz gerado na PL a partir do FCLK0 de 100 MHz.
@@ -669,14 +716,141 @@ Begin
     speed_mon_o      <= speed_aa_axi(TIM_DW-1 downto TIM_DW-32);
     data_valid_mon_o <= data_valid_latch;
 
+
+    --------------------------------------------------------------------------
+    -- PWM transition event capture.
+    -- Event word: [31:0]=timestamp, [35:32]=A, [39:36]=B, [43:40]=C,
+    -- [47:44]=changed mask, [63:48]=epoch. Capture auto-starts on PWM enable
+    -- rising edge so every HIL Run begins a new epoch at t=0.
+    --------------------------------------------------------------------------
+    PWM_Capture : process(clk)
+        variable count_v : natural range 0 to PWM_CAP_DEPTH_C;
+        variable wr_v    : natural range 0 to PWM_CAP_DEPTH_C-1;
+        variable rd_v    : natural range 0 to PWM_CAP_DEPTH_C-1;
+        variable mask_v  : std_logic_vector(3 downto 0);
+        variable event_v : std_logic_vector(63 downto 0);
+        variable changed_v : boolean;
+    begin
+        if rising_edge(clk) then
+            if rst_n = '0' then
+                pwm_cap_wr       <= 0;
+                pwm_cap_rd       <= 0;
+                pwm_cap_count    <= 0;
+                pwm_cap_active   <= '0';
+                pwm_cap_overflow <= '0';
+                pwm_cap_time     <= (others => '0');
+                pwm_cap_epoch    <= (others => '0');
+                pwm_enable_d     <= '0';
+                pwm_cap_force    <= '0';
+                pwm_a_prev       <= (others => '0');
+                pwm_b_prev       <= (others => '0');
+                pwm_c_prev       <= (others => '0');
+            else
+                count_v := pwm_cap_count;
+                wr_v    := pwm_cap_wr;
+                rd_v    := pwm_cap_rd;
+                pwm_enable_d <= pwm_enable_s;
+
+                if pwm_cap_pop_cmd = '1' and count_v > 0 then
+                    if rd_v = PWM_CAP_DEPTH_C - 1 then
+                        rd_v := 0;
+                    else
+                        rd_v := rd_v + 1;
+                    end if;
+                    count_v := count_v - 1;
+                end if;
+
+                if pwm_cap_clear_cmd = '1' then
+                    wr_v := 0;
+                    rd_v := 0;
+                    count_v := 0;
+                    pwm_cap_overflow <= '0';
+                end if;
+
+                if (pwm_enable_s = '1' and pwm_enable_d = '0') or pwm_cap_start_cmd = '1' then
+                    wr_v := 0;
+                    rd_v := 0;
+                    count_v := 0;
+                    pwm_cap_active <= '1';
+                    pwm_cap_overflow <= '0';
+                    pwm_cap_time <= (others => '0');
+                    pwm_cap_epoch <= pwm_cap_epoch + 1;
+                    pwm_cap_force <= '1';
+                elsif pwm_cap_stop_cmd = '1' or pwm_enable_s = '0' then
+                    pwm_cap_active <= '0';
+                end if;
+
+                if pwm_cap_active = '1' then
+                    mask_v := (others => '0');
+                    if pwm_a /= pwm_a_prev then mask_v(0) := '1'; end if;
+                    if pwm_b /= pwm_b_prev then mask_v(1) := '1'; end if;
+                    if pwm_c /= pwm_c_prev then mask_v(2) := '1'; end if;
+                    changed_v := mask_v(2 downto 0) /= "000";
+
+                    if changed_v or pwm_cap_force = '1' then
+                        event_v := (others => '0');
+                        event_v(31 downto 0)  := std_logic_vector(pwm_cap_time);
+                        event_v(35 downto 32) := pwm_a;
+                        event_v(39 downto 36) := pwm_b;
+                        event_v(43 downto 40) := pwm_c;
+                        event_v(47 downto 44) := mask_v;
+                        event_v(63 downto 48) := std_logic_vector(pwm_cap_epoch);
+                        if count_v < PWM_CAP_DEPTH_C then
+                            pwm_cap_mem(wr_v) <= event_v;
+                            if wr_v = PWM_CAP_DEPTH_C - 1 then
+                                wr_v := 0;
+                            else
+                                wr_v := wr_v + 1;
+                            end if;
+                            count_v := count_v + 1;
+                        else
+                            pwm_cap_overflow <= '1';
+                        end if;
+                        pwm_a_prev <= pwm_a;
+                        pwm_b_prev <= pwm_b;
+                        pwm_c_prev <= pwm_c;
+                        pwm_cap_force <= '0';
+                    end if;
+
+                    pwm_cap_time <= pwm_cap_time + 1;
+                    if unsigned(pwm_cap_window_i) /= 0 and pwm_cap_time >= unsigned(pwm_cap_window_i) then
+                        pwm_cap_active <= '0';
+                    end if;
+                else
+                    pwm_a_prev <= pwm_a;
+                    pwm_b_prev <= pwm_b;
+                    pwm_c_prev <= pwm_c;
+                end if;
+
+                pwm_cap_wr    <= wr_v;
+                pwm_cap_rd    <= rd_v;
+                pwm_cap_count <= count_v;
+            end if;
+        end if;
+    end process PWM_Capture;
+
+    pwm_cap_data_s <= pwm_cap_mem(pwm_cap_rd) when pwm_cap_count > 0 else (others => '0');
+    hil_time_s <= std_logic_vector(pwm_cap_time);
+    hil_epoch_s <= x"0000" & std_logic_vector(pwm_cap_epoch);
+    pwm_cap_status_s(0) <= pwm_cap_active;
+    pwm_cap_status_s(1) <= pwm_cap_overflow;
+    pwm_cap_status_s(2) <= '1' when pwm_cap_count = 0 else '0';
+    pwm_cap_status_s(3) <= '1' when pwm_cap_count = PWM_CAP_DEPTH_C else '0';
+    pwm_cap_status_s(15 downto 4) <= (others => '0');
+    pwm_cap_status_s(31 downto 16) <= std_logic_vector(to_unsigned(pwm_cap_count, 16));
+    pwm_cap_data_o <= pwm_cap_data_s;
+    pwm_cap_status_o <= pwm_cap_status_s;
+    hil_time_o <= hil_time_s;
+    hil_epoch_o <= hil_epoch_s;
+
     --------------------------------------------------------------------------
     -- Debug bus exposto via HIL_Regs_AXI (não interfere nos monitores físicos)
     --------------------------------------------------------------------------
-    dbg_status_o   <= debug_status_word;
-    dbg_free_run_o <= std_logic_vector(free_run_ctr);
-    dbg_carrier_o  <= std_logic_vector(carrier_tick_ctr);
-    dbg_timer_o    <= std_logic_vector(timer_tick_ctr);
-    dbg_dv_latch_o <= std_logic_vector(solver_clk_alive_ctr) & solver_rst_n_m2 & data_valid_latch;
+    dbg_status_o   <= pwm_cap_status_s;
+    dbg_free_run_o <= pwm_cap_data_s(31 downto 0);
+    dbg_carrier_o  <= pwm_cap_data_s(63 downto 32);
+    dbg_timer_o    <= hil_time_s;
+    dbg_dv_latch_o <= hil_epoch_s;
 
     Debug_Status : process(rst_n, pwm_enable_s, pwm_clear_s, carrier_tick_s,
                            timer_tick_dbg_axi, clarke_valid_dbg_axi, solver_busy_dbg_axi,

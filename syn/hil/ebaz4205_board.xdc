@@ -24,6 +24,7 @@ set_property IOSTANDARD LVCMOS33 [get_ports ENET0_GMII_RX_CLK_0]
 
 set_property PACKAGE_PIN U15 [get_ports ENET0_GMII_TX_CLK_0]
 set_property IOSTANDARD LVCMOS33 [get_ports ENET0_GMII_TX_CLK_0]
+set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets -of_objects [get_ports ENET0_GMII_TX_CLK_0]]
 
 set_property PACKAGE_PIN W16 [get_ports ENET0_GMII_RX_DV_0]
 set_property IOSTANDARD LVCMOS33 [get_ports ENET0_GMII_RX_DV_0]
