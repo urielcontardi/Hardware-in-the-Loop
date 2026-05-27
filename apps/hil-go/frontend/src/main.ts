@@ -244,13 +244,15 @@ const MAX_SAMPLES = 600_000;
 // 2 pts/bucket × 10 Hz × 7200 s ≈ 144 000 pts → ~2 h of session history.
 const OVERVIEW_EVERY = 1_000;
 const MAX_OVERVIEW_SAMPLES = 144_000;
-// Nominal telemetry sample rate, used to lay telemetry samples on a uniform
-// time grid. The board's run-local hardware counter (t_cycles) freezes while
-// the solver is stopped and resets to 0 on each run, which produces duplicate
-// and non-monotonic timestamps; feeding those to the min/max decimator made
-// clean waveforms render as a jagged band. A uniform host-paced grid keeps
-// tBuf strictly increasing so the envelope stays smooth.
-const DISPLAY_SAMPLE_RATE_HZ = 9_876;  // ≈ telemetry rate at transportDecim=375
+// Both telemetry samples and PWM events are timestamped by the SAME run-local
+// FPGA counter (hil_time <= pwm_cap_time in RTL). Using hardware time for both
+// gives exact alignment. Two edge-cases are handled:
+//   • Counter frozen when solver is idle → duplicate t_cycles → enforce
+//     strict monotonicity by nudging forward by a nominal period.
+//   • Counter resets to 0 on each run (epoch++) → clear telemetry buffers
+//     on epoch change so old samples never bleed into the new run's view.
+const HW_CLOCK_HZ             = 100_000_000;
+const TELEM_NOMINAL_PERIOD_S  = 1 / 9_876;   // ≈ 100 µs at transportDecim=375
 
 // ── App state ─────────────────────────────────────────────────────────────────
 const tBuf: number[]      = [];
@@ -265,15 +267,12 @@ let ovBucketMinV = Infinity,  ovBucketMaxV = -Infinity;
 let ovBucketMinT = 0,         ovBucketMaxT = 0;
 let ovBucketMinS: Sample | null = null, ovBucketMaxS: Sample | null = null;
 let sampleCount = 0;
-let t0 = performance.now();
-let nextSampleTime = 0;
-let lastTelemetryBatchAt = 0;
-let estimatedSamplePeriod = 1 / DISPLAY_SAMPLE_RATE_HZ;
 let lastBoardState: string = "idle";
 let lastSampleAt = 0;             // ms — for stream stalled detection
 let telemLastRawCycles: number | null = null;
 let telemWrapOffsetCycles = 0;
 let telemEpoch: number | null = null;
+let lastTelemPlotTime = 0;        // enforces strict monotonicity in tBuf
 let pwmClockHz = 100_000_000;
 let pwmEpoch: number | null = null;
 let pwmActive = false;
@@ -1570,6 +1569,21 @@ function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], n
 // ── Render ────────────────────────────────────────────────────────────────────
 let renderPending = false;
 
+// Wipes only the telemetry data buffers — called when the FPGA epoch changes
+// (new Run) so stale pre-run samples at the frozen counter value are removed
+// before the fresh run's samples arrive at t≈0.
+function clearTelemBuffers() {
+  tBuf.length = 0;
+  samplesBuf.length = 0;
+  ovTBuf.length = 0;
+  ovSBuf.length = 0;
+  ovCounter = 0;
+  ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
+  ovBucketMinS = null;     ovBucketMaxS = null;
+  lastTelemPlotTime = 0;
+  sampleCount = 0;
+}
+
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
@@ -1626,26 +1640,45 @@ function scheduleRender() {
 // ── Telemetry events ──────────────────────────────────────────────────────────
 api.onTelemetry((samples: Sample[]) => {
   if (!captureTelemetry || !Array.isArray(samples) || samples.length === 0) return;
-  const nowMs = performance.now();
-  const nowSec = (nowMs - t0) / 1000;
-  lastSampleAt = nowMs;
+  lastSampleAt = performance.now();
 
-  if (lastTelemetryBatchAt === 0) {
-    nextSampleTime = Math.max(0, nowSec - estimatedSamplePeriod * (samples.length - 1));
-  }
-  lastTelemetryBatchAt = nowSec;
-
-  // Sample-and-hold the commanded load so the TL trace shows the step history
-  // aligned with the measured torque response. One DOM read per batch.
+  // Sample-and-hold the commanded load so the TL trace shows the step history.
   const tlNow = Number(elTorque.value) || 0;
 
   for (const s of samples) {
     s.TL = tlNow;
-    // Uniform host-paced time grid — strictly increasing, immune to the board
-    // counter's freezes/resets that corrupted the min/max decimation.
-    const sampleTime = nextSampleTime;
+
+    // ── Hardware-time alignment ──────────────────────────────────────────────
+    // t_cycles comes from the same FPGA run-local counter as PWM events, so
+    // telemetry and PWM share one timeline with no host-clock drift.
+    const raw   = (s.t_cycles ?? 0) >>> 0;
+    const epoch = s.epoch ?? 0;
+
+    if (telemEpoch !== null && epoch !== telemEpoch) {
+      // Epoch incremented → new run started. Clear stale samples so the
+      // old frozen-counter data at end-of-previous-run doesn't linger.
+      clearTelemBuffers();
+      telemWrapOffsetCycles = 0;
+      telemLastRawCycles = null;
+    } else if (telemLastRawCycles !== null && raw < telemLastRawCycles
+               && telemLastRawCycles - raw > 0x80000000) {
+      telemWrapOffsetCycles += PWM_COUNTER_MOD;  // 32-bit wrap
+    }
+    telemEpoch          = epoch;
+    telemLastRawCycles  = raw;
+
+    let hwSec = (telemWrapOffsetCycles + raw) / HW_CLOCK_HZ;
+
+    // Enforce strict monotonicity: when the solver is idle the counter
+    // freezes, producing duplicate t_cycles. Nudge forward by one nominal
+    // period so the min/max decimator always gets ordered, even buckets.
+    if (hwSec <= lastTelemPlotTime) hwSec = lastTelemPlotTime + TELEM_NOMINAL_PERIOD_S;
+    lastTelemPlotTime = hwSec;
+
+    const sampleTime = hwSec;
     tBuf.push(sampleTime);
     samplesBuf.push(s);
+
     // Track min+max of Iα within the current overview bucket (s.Ia = Iα).
     const v0 = s.Ia;
     if (v0 < ovBucketMinV) { ovBucketMinV = v0; ovBucketMinT = sampleTime; ovBucketMinS = s; }
@@ -1653,7 +1686,6 @@ api.onTelemetry((samples: Sample[]) => {
     if (++ovCounter >= OVERVIEW_EVERY) {
       ovCounter = 0;
       if (ovBucketMinS !== null) {
-        // Emit min and max in chronological order (same convention as decimateFrom).
         const [fT, fS, sT, sS] = ovBucketMinT <= ovBucketMaxT
           ? [ovBucketMinT, ovBucketMinS, ovBucketMaxT, ovBucketMaxS!]
           : [ovBucketMaxT, ovBucketMaxS!, ovBucketMinT, ovBucketMinS];
@@ -1667,7 +1699,6 @@ api.onTelemetry((samples: Sample[]) => {
       ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
       ovBucketMinS = null;     ovBucketMaxS = null;
     }
-    nextSampleTime += estimatedSamplePeriod;
     sampleCount++;
   }
 
@@ -1841,10 +1872,7 @@ function resetPlotBuffer() {
   ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
   ovBucketMinS = null;     ovBucketMaxS = null;
   sampleCount = 0;
-  t0 = performance.now();
-  nextSampleTime = 0;
-  lastTelemetryBatchAt = 0;
-  estimatedSamplePeriod = 1 / DISPLAY_SAMPLE_RATE_HZ;
+  lastTelemPlotTime = 0;
   telemLastRawCycles = null;
   telemWrapOffsetCycles = 0;
   telemEpoch = null;
