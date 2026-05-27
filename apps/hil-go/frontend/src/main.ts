@@ -785,7 +785,16 @@ function stopScenario() {
 function startScenario() {
   if (scenarioRunning) { stopScenario(); return; }
   const events = readScenarioEvents();
-  if (events.length === 0) return;
+  if (events.length === 0) {
+    elScenarioProgress.textContent = "Adicione eventos à receita.";
+    return;
+  }
+  // If the motor is not already running, start it now so scenario events
+  // take effect immediately instead of leaving the board in PAUSED state.
+  const ip = elIp.value.trim();
+  if (ip && lastBoardState !== "running") {
+    api.Run(ip).catch(() => {});
+  }
 
   scenarioRunning = true;
   scenarioT0 = performance.now();
