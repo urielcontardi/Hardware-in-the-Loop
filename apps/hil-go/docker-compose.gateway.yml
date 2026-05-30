@@ -9,3 +9,6 @@ services:
     network_mode: host
     environment:
       HIL_HTTP_ADDR: "127.0.0.1:5177"
+      HIL_RUNS_DIR: /app/runs
+    volumes:
+      - ./runs:/app/runs

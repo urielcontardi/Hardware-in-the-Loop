@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +48,7 @@ type server struct {
 	recv        *receiver.Receiver
 	pwmRecv     *pwmrecv.Receiver
 	localIP     string
+	runsDir     string
 	pwmMu       sync.RWMutex
 	pwmBase     uint64
 	pwmClockHz  uint32
@@ -53,6 +58,13 @@ type server struct {
 	telemTarget string
 	scanMu      sync.Mutex
 	lastScanAt  time.Time
+}
+
+// RunMeta describes a saved .hilbin run file.
+type RunMeta struct {
+	Name     string `json:"name"`
+	Size     int64  `json:"size"`
+	Modified string `json:"modified"`
 }
 
 type motorRequest struct {
@@ -106,11 +118,20 @@ func main() {
 	}
 	defer pwmRecv.Stop()
 
+	runsDir := strings.TrimSpace(os.Getenv("HIL_RUNS_DIR"))
+	if runsDir == "" {
+		runsDir = "./runs"
+	}
+	if err := os.MkdirAll(runsDir, 0755); err != nil {
+		log.Printf("warning: could not create runs dir %q: %v", runsDir, err)
+	}
+
 	s := &server{
 		ring:    r,
 		recv:    recv,
 		pwmRecv: pwmRecv,
 		localIP: localIP(),
+		runsDir: runsDir,
 	}
 
 	mux := http.NewServeMux()
@@ -127,6 +148,8 @@ func main() {
 	mux.HandleFunc("/api/stop", s.handleStop)
 	mux.HandleFunc("/api/reset", s.handleReset)
 	mux.HandleFunc("/api/stats", s.handleStats)
+	mux.HandleFunc("/api/runs", s.handleRuns)
+	mux.HandleFunc("/api/runs/", s.handleRunsDownload)
 	mux.HandleFunc("/events", s.handleEvents)
 
 	log.Printf("HIL gateway listening on http://%s", addr)
@@ -793,6 +816,100 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func shutdownServer(ctx context.Context, srv *http.Server) {
 	_ = srv.Shutdown(ctx)
+}
+
+// handleRuns handles GET /api/runs (list) and POST /api/runs (save).
+func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		entries, err := os.ReadDir(s.runsDir)
+		if err != nil {
+			writeJSON(w, http.StatusOK, []RunMeta{})
+			return
+		}
+		var runs []RunMeta
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".hilbin") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			runs = append(runs, RunMeta{
+				Name:     e.Name(),
+				Size:     info.Size(),
+				Modified: info.ModTime().UTC().Format(time.RFC3339),
+			})
+		}
+		sort.Slice(runs, func(i, j int) bool { return runs[i].Modified > runs[j].Modified })
+		if runs == nil {
+			runs = []RunMeta{}
+		}
+		writeJSON(w, http.StatusOK, runs)
+
+	case http.MethodPost:
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" || strings.ContainsAny(name, "/\\..") {
+			writeError(w, http.StatusBadRequest, errors.New("invalid or missing name parameter"))
+			return
+		}
+		if !strings.HasSuffix(name, ".hilbin") {
+			name += ".hilbin"
+		}
+		data, err := io.ReadAll(io.LimitReader(r.Body, 512<<20))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("read body: %w", err))
+			return
+		}
+		path := filepath.Join(s.runsDir, filepath.Base(name))
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("write file: %w", err))
+			return
+		}
+		fi, _ := os.Stat(path)
+		writeJSON(w, http.StatusOK, RunMeta{
+			Name:     name,
+			Size:     fi.Size(),
+			Modified: fi.ModTime().UTC().Format(time.RFC3339),
+		})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// handleRunsDownload serves GET /api/runs/{filename} for downloading a saved run.
+func (s *server) handleRunsDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	name := filepath.Base(strings.TrimPrefix(r.URL.Path, "/api/runs/"))
+	if name == "" || name == "." || !strings.HasSuffix(name, ".hilbin") {
+		http.NotFound(w, r)
+		return
+	}
+	path := filepath.Join(s.runsDir, name)
+
+	if r.Method == http.MethodDelete {
+		if err := os.Remove(path); err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 const indexHTML = `<!doctype html>

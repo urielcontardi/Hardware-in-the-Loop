@@ -374,6 +374,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab-btn" data-tab="control" type="button">Control</button>
         <button class="tab-btn" data-tab="scenario" type="button">Scenarios</button>
         <button class="tab-btn" data-tab="telemetry" type="button">Telemetry</button>
+        <button class="tab-btn" data-tab="history" type="button">History</button>
       </div>
 
       <div class="tab-pane active" data-tab-panel="plant">
@@ -601,6 +602,27 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <span id="batch-progress" class="scenario-progress"></span>
         </section>
+
+        <section class="panel">
+          <div class="panel-title">CONFIG</div>
+          <div class="btn-row">
+            <button id="btn-config-export" class="btn btn-sm" type="button">Export JSON</button>
+            <button id="btn-config-import" class="btn btn-sm" type="button">Import JSON</button>
+          </div>
+          <input id="config-import-input" type="file" accept=".json" style="display:none" />
+        </section>
+      </div>
+
+      <div class="tab-pane" data-tab-panel="history">
+        <section class="panel">
+          <div class="panel-title-row">
+            <span class="panel-title">RUN HISTORY</span>
+            <button id="btn-runs-refresh" class="btn btn-xs" type="button">↺ Refresh</button>
+          </div>
+          <div id="runs-list" class="runs-list">
+            <div class="runs-empty" id="runs-empty">No runs saved yet.</div>
+          </div>
+        </section>
       </div>
 
       <div class="tab-pane" data-tab-panel="telemetry">
@@ -762,7 +784,13 @@ const elBtnAddBatchItem = document.querySelector<HTMLButtonElement>("#btn-add-ba
 const elBtnBatchRun     = document.querySelector<HTMLButtonElement>("#btn-batch-run")!;
 const elBtnBatchStop    = document.querySelector<HTMLButtonElement>("#btn-batch-stop")!;
 const elBatchProgress   = document.querySelector<HTMLSpanElement>("#batch-progress")!;
-const elBatchEmptyHint  = document.querySelector<HTMLDivElement>("#batch-empty-hint")!;
+const elBatchEmptyHint     = document.querySelector<HTMLDivElement>("#batch-empty-hint")!;
+const elBtnConfigExport    = document.querySelector<HTMLButtonElement>("#btn-config-export")!;
+const elBtnConfigImport    = document.querySelector<HTMLButtonElement>("#btn-config-import")!;
+const elConfigImportInput  = document.querySelector<HTMLInputElement>("#config-import-input")!;
+const elBtnRunsRefresh     = document.querySelector<HTMLButtonElement>("#btn-runs-refresh")!;
+const elRunsList           = document.querySelector<HTMLDivElement>("#runs-list")!;
+const elRunsEmpty          = document.querySelector<HTMLDivElement>("#runs-empty")!;
 
 const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
@@ -789,6 +817,7 @@ tabButtons.forEach(btn => {
     setActiveTab(tab);
     elSidebar.classList.toggle("sidebar-wide", tab === "scenario");
     if (tab === "scenario") refreshBatchRecipeSelects();
+    if (tab === "history")  loadRunHistory();
   });
 });
 
@@ -850,6 +879,7 @@ let scenarioT0 = 0;
 
 // ── Batch runner state ────────────────────────────────────────────────────────
 type BatchItem = { recipeName: string; endDelaySec: number };
+type RunMeta   = { name: string; size: number; modified: string };
 let batchRunning = false;
 let batchIndex   = 0;
 let batchTimeouts: number[] = [];
@@ -1118,9 +1148,22 @@ elBtnBatchStop.addEventListener("click", () => {
 
 elBtnSaveRun.addEventListener("click", () => withButton(elBtnSaveRun, async () => {
   const name = `hil_run_${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}`;
-  await triggerSave(name);
-  setStatus("Run saved", "ok");
+  if (isWails) {
+    await triggerSave(name);
+  } else {
+    await saveRunToServer(name);
+    setStatus(`Saved: ${name}.hilbin`, "ok");
+  }
 }));
+
+elBtnConfigExport.addEventListener("click", exportConfig);
+elBtnConfigImport.addEventListener("click", () => elConfigImportInput.click());
+elConfigImportInput.addEventListener("change", () => {
+  const file = elConfigImportInput.files?.[0];
+  if (file) importConfig(file);
+});
+
+elBtnRunsRefresh.addEventListener("click", loadRunHistory);
 
 elBtnLoadRun.addEventListener("click", () => {
   if (isWails && api.LoadRun) {
@@ -2615,7 +2658,7 @@ async function runBatchSequence() {
 
       const ts      = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
       const runName = `${item.recipeName}_${ts}`;
-      await triggerSave(runName);
+      await saveRunToServer(runName);
 
       setBatchItemStatus(i, "done");
       setStatus(`Saved: ${runName}.hilbin`, "ok");
@@ -2662,6 +2705,161 @@ async function startBatch() {
     if (batchProgressTimer !== null) { clearInterval(batchProgressTimer); batchProgressTimer = null; }
     elBtnBatchRun.disabled = false;
   });
+}
+
+// ── Run history ───────────────────────────────────────────────────────────────
+function parseRunFilename(filename: string): { label: string; date: Date | null } {
+  const base = filename.replace(/\.hilbin$/, "");
+  const m = base.match(/^(.+)_(\d{14})$/);
+  if (m) {
+    const ts = m[2];
+    const date = new Date(
+      parseInt(ts.slice(0, 4)), parseInt(ts.slice(4, 6)) - 1, parseInt(ts.slice(6, 8)),
+      parseInt(ts.slice(8, 10)), parseInt(ts.slice(10, 12)), parseInt(ts.slice(12, 14))
+    );
+    return { label: m[1].replace(/_/g, " "), date };
+  }
+  return { label: base.replace(/_/g, " "), date: null };
+}
+
+function formatRelTime(date: Date): string {
+  const diff = Date.now() - date.getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1)   return "just now";
+  if (m < 60)  return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24)  return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7)   return `${d}d ago`;
+  return date.toLocaleDateString();
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024)        return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function saveRunToServer(name: string): Promise<void> {
+  if (isWails) return; // Wails uses native file dialog
+  const buf = serializeHilbin(name);
+  const filename = name.endsWith(".hilbin") ? name : name + ".hilbin";
+  const res = await fetch(`/api/runs?name=${encodeURIComponent(filename)}`, {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: buf,
+  });
+  if (!res.ok) throw new Error(`server save failed: ${res.status}`);
+}
+
+async function loadRunHistory(): Promise<void> {
+  if (isWails) { elRunsEmpty.textContent = "History not available in Wails mode."; return; }
+  try {
+    const runs = await getJSON<RunMeta[]>("/api/runs");
+    elRunsEmpty.style.display = runs.length ? "none" : "";
+    // Remove old cards (keep empty hint)
+    elRunsList.querySelectorAll(".run-card").forEach(c => c.remove());
+    for (const run of runs) {
+      elRunsList.appendChild(buildRunCard(run));
+    }
+  } catch {
+    elRunsEmpty.textContent = "Could not load history.";
+  }
+}
+
+function buildRunCard(run: RunMeta): HTMLElement {
+  const { label, date } = parseRunFilename(run.name);
+  const relTime  = date ? formatRelTime(date) : "—";
+  const absTime  = date ? date.toLocaleString() : run.modified;
+  const size     = formatBytes(run.size);
+
+  const card = document.createElement("div");
+  card.className = "run-card";
+  card.innerHTML = `
+    <div class="run-card-name" title="${run.name}">${label}</div>
+    <div class="run-card-meta">
+      <span class="run-card-time" title="${absTime}">${relTime}</span>
+      <span class="run-card-size">${size}</span>
+    </div>
+    <div class="run-card-actions">
+      <button class="btn btn-xs btn-accent run-btn-load" data-name="${run.name}" type="button">Load</button>
+      <button class="btn btn-xs run-btn-download" data-name="${run.name}" type="button">↓ Download</button>
+      <button class="btn btn-xs run-btn-delete" data-name="${run.name}" type="button" title="Delete run">✕</button>
+    </div>`;
+
+  card.querySelector<HTMLButtonElement>(".run-btn-load")!.addEventListener("click", async () => {
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(run.name)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      const meta = deserializeHilbin(buf);
+      showRunMetaBadge(meta);
+      setActiveTab("telemetry");
+      elSidebar.classList.remove("sidebar-wide");
+      setStatus(`Loaded: ${meta.name} (${meta.sampleCount.toLocaleString()} samples)`, "ok");
+    } catch (e) {
+      setStatus(`Load failed: ${e}`, "error");
+    }
+  });
+
+  card.querySelector<HTMLButtonElement>(".run-btn-download")!.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = `/api/runs/${encodeURIComponent(run.name)}`;
+    a.download = run.name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  });
+
+  card.querySelector<HTMLButtonElement>(".run-btn-delete")!.addEventListener("click", async () => {
+    if (!confirm(`Delete "${run.name}"?`)) return;
+    try {
+      await fetch(`/api/runs/${encodeURIComponent(run.name)}`, { method: "DELETE" });
+      card.classList.add("run-card-deleting");
+      card.addEventListener("transitionend", () => { card.remove(); updateRunsEmpty(); }, { once: true });
+    } catch { /* ignore */ }
+  });
+
+  return card;
+}
+
+function updateRunsEmpty() {
+  elRunsEmpty.style.display = elRunsList.querySelectorAll(".run-card").length ? "none" : "";
+}
+
+// ── Scenario / batch config export-import ────────────────────────────────────
+function exportConfig() {
+  const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
+  const batchItems = readBatchItems();
+  const config = { version: 1, exported: new Date().toISOString(), recipes: all, batch: batchItems };
+  const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = `hil-config-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+function importConfig(file: File) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const config = JSON.parse(reader.result as string);
+      // Merge recipes
+      const existing = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
+      const merged = { ...existing, ...(config.recipes ?? {}) };
+      localStorage.setItem(RECIPE_KEY, JSON.stringify(merged));
+      refreshBatchRecipeSelects();
+      // Restore batch rows if present
+      if (Array.isArray(config.batch) && config.batch.length > 0) {
+        elBatchTable.querySelectorAll(".batch-row").forEach(r => r.remove());
+        config.batch.forEach((item: BatchItem) => addBatchRow(item));
+      }
+      const count = Object.keys(config.recipes ?? {}).length;
+      setStatus(`Imported ${count} recipe(s)`, "ok");
+    } catch (e) {
+      setStatus(`Import failed: ${e}`, "error");
+    }
+    elConfigImportInput.value = "";
+  };
+  reader.readAsText(file);
 }
 
 // ── Button handlers ───────────────────────────────────────────────────────────
