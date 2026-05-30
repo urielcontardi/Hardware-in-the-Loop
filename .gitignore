@@ -100,3 +100,4 @@ apps/hil-go/frontend/node_modules/
 apps/hil-go/frontend/dist/
 apps/hil-go/frontend/wailsjs/
 apps/hil-go/build/
+apps/hil-go/runs/
