@@ -56,6 +56,14 @@ type HilApi = {
 const isWails = typeof window !== "undefined" && !!(window as any).go?.main?.App;
 const BOARD_IP_STORAGE_KEY = "hil-board-ip";
 
+function gatewayURL(path: string): string {
+  if (/^https?:\/\//.test(path)) return path;
+  const clean = path.replace(/^\/+/, "");
+  const proxy = window.location.pathname.match(/^(.*\/proxy\/\d+\/)/);
+  const base = proxy ? proxy[1] : "/";
+  return base + clean;
+}
+
 function responseError(res: Response, text: string): string {
   const title = text.match(/<title>(.*?)<\/title>/is)?.[1]?.replace(/\s+/g, " ").trim();
   if (title) return title;
@@ -63,7 +71,7 @@ function responseError(res: Response, text: string): string {
 }
 
 async function postJSON<T>(url: string, body: unknown = {}): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetch(gatewayURL(url), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -77,7 +85,7 @@ async function postJSON<T>(url: string, body: unknown = {}): Promise<T> {
 }
 
 async function getJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(gatewayURL(url));
   const text = await res.text();
   let parsed: any = null;
   try { parsed = text ? JSON.parse(text) : null; } catch {}
@@ -88,7 +96,7 @@ async function getJSON<T>(url: string): Promise<T> {
 
 let sharedEvents: EventSource | null = null;
 function getSharedEvents(): EventSource {
-  if (!sharedEvents) sharedEvents = new EventSource("/events");
+  if (!sharedEvents) sharedEvents = new EventSource(gatewayURL("/events"));
   return sharedEvents;
 }
 
@@ -337,24 +345,15 @@ let isBuilding = false;
 
 // ── DOM ───────────────────────────────────────────────────────────────────────
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-  <header class="topbar">
-    <div class="topbar-brand">
-      <img src="/LSE_LOGO.png" alt="LSE" class="app-logo" />
-      <div class="topbar-sep"></div>
-      <div>
-        <span class="app-name">HIL Monitor</span>
-        <span class="app-sub">Hardware-in-the-Loop · LSE</span>
-      </div>
-    </div>
-    <div class="topbar-right">
-      <div id="freq-badge" class="badge badge-idle" style="font-variant-numeric:tabular-nums">— Hz</div>
-      <div id="state-badge" class="state-badge state-idle">IDLE</div>
-      <div id="ws-badge" class="badge badge-idle">● TELEM OFF</div>
-    </div>
-  </header>
-
   <div class="workspace">
     <aside class="sidebar">
+
+      <div class="sidebar-brand">
+        <img src="/LSE_LOGO.png" alt="LSE" class="app-logo" />
+        <span class="app-name">HIL Monitor</span>
+      </div>
+
+      <div class="sidebar-scroll">
 
       <section class="panel">
         <div class="panel-title">CONNECTION</div>
@@ -477,6 +476,20 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="btn-recipe-run"  class="btn btn-sm" type="button">▶ Run</button>
             <span   id="scenario-progress" class="scenario-progress"></span>
           </div>
+          <div class="scenario-run-card" id="scenario-run-card">
+            <div class="scenario-run-status">
+              <span class="scenario-run-dot" id="scenario-run-dot"></span>
+              <span id="scenario-run-state">Ready</span>
+            </div>
+            <div class="scenario-run-meter" aria-hidden="true">
+              <div id="scenario-run-meter-fill"></div>
+            </div>
+            <div class="scenario-run-meta">
+              <span id="scenario-event-count">7 events</span>
+              <span id="scenario-duration">13.5 s</span>
+              <span id="scenario-next-event">Next: t=0.0 s</span>
+            </div>
+          </div>
           <div id="scenario-table" class="scenario-table" aria-label="Scenario event editor">
             <div class="scenario-head">
               <span>t [s]</span>
@@ -585,7 +598,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </section>
 
         <section class="panel">
-          <div class="panel-title">BATCH</div>
+          <div class="panel-title-row">
+            <span class="panel-title">BATCH</span>
+            <span id="batch-count" class="panel-note">0 queued</span>
+          </div>
           <div id="batch-table" class="scenario-table" aria-label="Batch recipe list">
             <div class="batch-head">
               <span>Recipe</span>
@@ -600,7 +616,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <button id="btn-batch-run"  class="btn btn-sm" type="button">▶ Run Batch</button>
             <button id="btn-batch-stop" class="btn btn-sm btn-danger" type="button" disabled>■ Stop</button>
           </div>
-          <span id="batch-progress" class="scenario-progress"></span>
+          <div class="batch-progress-wrap">
+            <span id="batch-progress" class="scenario-progress"></span>
+            <div class="scenario-run-meter" aria-hidden="true">
+              <div id="batch-meter-fill"></div>
+            </div>
+          </div>
         </section>
 
         <section class="panel">
@@ -617,8 +638,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <section class="panel">
           <div class="panel-title-row">
             <span class="panel-title">RUN HISTORY</span>
-            <button id="btn-runs-refresh" class="btn btn-xs" type="button">↺ Refresh</button>
+            <span id="runs-summary" class="panel-note">0 runs</span>
           </div>
+          <input id="runs-search" class="write-input" type="search" placeholder="Filter runs" style="margin-bottom:6px" />
           <div id="runs-list" class="runs-list">
             <div class="runs-empty" id="runs-empty">No runs saved yet.</div>
           </div>
@@ -647,18 +669,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
           </div>
 
-          <div class="subplot-layout-row">
-            <span class="subplot-layout-label">Window</span>
-            <div class="subplot-n-group" id="window-group">
-              <button class="subplot-n-btn" data-win-ms="20">20ms</button>
-              <button class="subplot-n-btn" data-win-ms="100">100ms</button>
-              <button class="subplot-n-btn" data-win-ms="500">500ms</button>
-              <button class="subplot-n-btn active" data-win-ms="1000">1s</button>
-              <button class="subplot-n-btn" data-win-ms="5000">5s</button>
-              <button class="subplot-n-btn" data-win-ms="30000">30s</button>
-              <button class="subplot-n-btn" data-win-ms="0">All</button>
-            </div>
-          </div>
 
 
           <div class="btn-row" style="margin-top:6px">
@@ -674,6 +684,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="btn-row" style="margin-top:6px">
             <button id="btn-save-run" class="btn btn-sm">Save run</button>
             <button id="btn-load-run" class="btn btn-sm">Load run</button>
+            <button id="btn-export-csv" class="btn btn-sm">Export CSV</button>
           </div>
           <input id="load-file-input" type="file" accept=".hilbin" style="display:none" />
           <div id="run-meta-badge" class="run-meta-badge hidden"></div>
@@ -693,7 +704,16 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
       </div>
 
-      <div id="status" class="status-bar">● Idle</div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-badges">
+          <div id="freq-badge" class="badge badge-idle">— Hz</div>
+          <div id="state-badge" class="state-badge state-idle">IDLE</div>
+          <div id="ws-badge" class="badge badge-idle">● TELEM OFF</div>
+        </div>
+        <div id="status" class="status-bar">● Idle</div>
+      </div>
     </aside>
 
     <main class="graph-shell">
@@ -773,10 +793,17 @@ const elBtnRecipeRun     = document.querySelector<HTMLButtonElement>("#btn-recip
 const elScenarioName     = document.querySelector<HTMLInputElement>("#scenario-name")!;
 const elScenarioProgress = document.querySelector<HTMLSpanElement>("#scenario-progress")!;
 const elScenarioEndRow   = document.querySelector<HTMLDivElement>("#scenario-end-row")!;
+const elScenarioRunCard  = document.querySelector<HTMLDivElement>("#scenario-run-card")!;
+const elScenarioRunState = document.querySelector<HTMLSpanElement>("#scenario-run-state")!;
+const elScenarioMeterFill = document.querySelector<HTMLDivElement>("#scenario-run-meter-fill")!;
+const elScenarioEventCount = document.querySelector<HTMLSpanElement>("#scenario-event-count")!;
+const elScenarioDuration = document.querySelector<HTMLSpanElement>("#scenario-duration")!;
+const elScenarioNextEvent = document.querySelector<HTMLSpanElement>("#scenario-next-event")!;
 const elBtnRecipeAddBatch = document.querySelector<HTMLButtonElement>("#btn-recipe-add-batch")!;
 const elSidebar       = document.querySelector<HTMLElement>(".sidebar")!;
 const elBtnSaveRun    = document.querySelector<HTMLButtonElement>("#btn-save-run")!;
 const elBtnLoadRun    = document.querySelector<HTMLButtonElement>("#btn-load-run")!;
+const elBtnExportCsv  = document.querySelector<HTMLButtonElement>("#btn-export-csv")!;
 const elLoadFileInput = document.querySelector<HTMLInputElement>("#load-file-input")!;
 const elRunMetaBadge  = document.querySelector<HTMLDivElement>("#run-meta-badge")!;
 const elBatchTable      = document.querySelector<HTMLDivElement>("#batch-table")!;
@@ -785,10 +812,13 @@ const elBtnBatchRun     = document.querySelector<HTMLButtonElement>("#btn-batch-
 const elBtnBatchStop    = document.querySelector<HTMLButtonElement>("#btn-batch-stop")!;
 const elBatchProgress   = document.querySelector<HTMLSpanElement>("#batch-progress")!;
 const elBatchEmptyHint     = document.querySelector<HTMLDivElement>("#batch-empty-hint")!;
+const elBatchCount         = document.querySelector<HTMLSpanElement>("#batch-count")!;
+const elBatchMeterFill     = document.querySelector<HTMLDivElement>("#batch-meter-fill")!;
 const elBtnConfigExport    = document.querySelector<HTMLButtonElement>("#btn-config-export")!;
 const elBtnConfigImport    = document.querySelector<HTMLButtonElement>("#btn-config-import")!;
 const elConfigImportInput  = document.querySelector<HTMLInputElement>("#config-import-input")!;
-const elBtnRunsRefresh     = document.querySelector<HTMLButtonElement>("#btn-runs-refresh")!;
+const elRunsSearch         = document.querySelector<HTMLInputElement>("#runs-search")!;
+const elRunsSummary        = document.querySelector<HTMLSpanElement>("#runs-summary")!;
 const elRunsList           = document.querySelector<HTMLDivElement>("#runs-list")!;
 const elRunsEmpty          = document.querySelector<HTMLDivElement>("#runs-empty")!;
 
@@ -869,7 +899,9 @@ function addScenarioRow(preset?: { t: number; target: string; param: string; val
 }
 
 document.querySelectorAll<HTMLElement>(".scenario-row:not(.scenario-end-row)").forEach(bindScenarioRow);
-elBtnAddScenarioEvent.addEventListener("click", () => { if (!scenarioRunning) addScenarioRow(); });
+elBtnAddScenarioEvent.addEventListener("click", () => { if (!scenarioRunning) { addScenarioRow(); updateScenarioSummary(); } });
+elScenarioTable.addEventListener("input", () => updateScenarioSummary());
+elScenarioTable.addEventListener("change", () => updateScenarioSummary());
 
 // ── Scenario execution state ──────────────────────────────────────────────────
 let scenarioRunning = false;
@@ -883,8 +915,11 @@ type RunMeta   = { name: string; size: number; modified: string };
 let batchRunning = false;
 let batchIndex   = 0;
 let batchTimeouts: number[] = [];
+let batchSleepResolvers: Array<() => void> = [];
 let batchT0 = 0;
 let batchProgressTimer: number | null = null;
+let batchCurrentStartedAt = 0;
+let batchCurrentDuration = 0;
 
 function getScenarioEndTime(): number {
   return Number(elScenarioEndRow.querySelector<HTMLInputElement>("input")!.value) || 0;
@@ -892,6 +927,27 @@ function getScenarioEndTime(): number {
 
 function setScenarioEndTime(t: number) {
   elScenarioEndRow.querySelector<HTMLInputElement>("input")!.value = String(t);
+}
+
+function formatScenarioSeconds(t: number): string {
+  if (!Number.isFinite(t)) return "0.0 s";
+  return `${t.toFixed(t < 10 ? 1 : 0)} s`;
+}
+
+function updateScenarioSummary(state: "ready" | "starting" | "running" | "done" | "error" = scenarioRunning ? "running" : "ready") {
+  const events = readScenarioEvents();
+  const lastT = events.length ? events[events.length - 1].t : 0;
+  const endTime = Math.max(getScenarioEndTime(), lastT);
+  const elapsed = scenarioRunning ? Math.max(0, (performance.now() - scenarioT0) / 1000) : 0;
+  const next = events.find(ev => ev.t >= elapsed - 0.02);
+  const progress = state === "done" ? 100 : endTime > 0 ? Math.min(100, Math.max(0, elapsed / endTime * 100)) : 0;
+
+  elScenarioRunCard.dataset.state = state;
+  elScenarioRunState.textContent = state === "running" ? "Running" : state === "starting" ? "Starting" : state === "done" ? "Complete" : state === "error" ? "Error" : "Ready";
+  elScenarioMeterFill.style.width = `${progress}%`;
+  elScenarioEventCount.textContent = `${events.length} event${events.length === 1 ? "" : "s"}`;
+  elScenarioDuration.textContent = `End ${formatScenarioSeconds(endTime)}`;
+  elScenarioNextEvent.textContent = next ? `Next ${next.target}.${next.param} @ ${formatScenarioSeconds(next.t)}` : events.length ? "No pending events" : "Add events to run";
 }
 
 function readScenarioEvents() {
@@ -909,6 +965,8 @@ function readScenarioEvents() {
     })
     .sort((a, b) => a.t - b.t);
 }
+
+updateScenarioSummary();
 
 function applyScenarioValueToForm(ev: { target: string; param: string; value: number }) {
   if (ev.target === "control") {
@@ -984,7 +1042,8 @@ function stopScenario() {
   elScenarioTable.querySelectorAll(".scenario-row").forEach(r =>
     r.classList.remove("sc-active", "sc-done"));
   elScenarioProgress.textContent = "";
-  elBtnRecipeRun.textContent = "Run recipe";
+  updateScenarioSummary("ready");
+  elBtnRecipeRun.textContent = "▶ Run";
   elBtnRecipeRun.classList.remove("btn-danger");
   elBtnRecipeLoad.disabled = false;
   elBtnRecipeSave.disabled = false;
@@ -1027,10 +1086,12 @@ async function startScenario() {
   }
   elBtnRecipeRun.disabled = true;
   elScenarioProgress.textContent = "Starting...";
+  updateScenarioSummary("starting");
   try {
     await prepareScenarioRun();
   } catch (e) {
     elScenarioProgress.textContent = "Start failed";
+    updateScenarioSummary("error");
     setStatus(`Scenario start failed: ${String(e)}`, "error");
     showPsStatus(String(e), false);
     elBtnRecipeRun.disabled = false;
@@ -1041,8 +1102,12 @@ async function startScenario() {
   scenarioT0 = performance.now();
   scenarioTimeouts = [];
 
+  setActiveTab("telemetry");
+  elSidebar.classList.remove("sidebar-wide");
+
   elBtnRecipeRun.disabled = false;
   elBtnRecipeRun.textContent = "■ Stop";
+  updateScenarioSummary("running");
   elBtnRecipeRun.classList.add("btn-danger");
   elBtnRecipeLoad.disabled = true;
   elBtnRecipeSave.disabled = true;
@@ -1074,6 +1139,7 @@ async function startScenario() {
   scenarioProgressTimer = window.setInterval(() => {
     const elapsed = (performance.now() - scenarioT0) / 1000;
     elScenarioProgress.textContent = `t = ${elapsed.toFixed(1)} s`;
+    updateScenarioSummary("running");
   }, 100);
 }
 
@@ -1122,6 +1188,7 @@ function loadRecipe() {
     events.forEach(ev => addScenarioRow(ev));
     setScenarioEndTime(endTime);
     refreshBatchRecipeSelects();
+    updateScenarioSummary();
   } catch { /* storage not available */ }
 }
 
@@ -1156,6 +1223,7 @@ elBtnSaveRun.addEventListener("click", () => withButton(elBtnSaveRun, async () =
   }
 }));
 
+elBtnExportCsv.addEventListener("click", exportToCsv);
 elBtnConfigExport.addEventListener("click", exportConfig);
 elBtnConfigImport.addEventListener("click", () => elConfigImportInput.click());
 elConfigImportInput.addEventListener("change", () => {
@@ -1163,7 +1231,9 @@ elConfigImportInput.addEventListener("change", () => {
   if (file) importConfig(file);
 });
 
-elBtnRunsRefresh.addEventListener("click", loadRunHistory);
+elRunsSearch.addEventListener("input", applyRunFilter);
+updateBatchSummary();
+applyRunFilter();
 
 elBtnLoadRun.addEventListener("click", () => {
   if (isWails && api.LoadRun) {
@@ -2486,7 +2556,7 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
 
 async function triggerSave(name: string) {
   const buf      = serializeHilbin(name);
-  const filename = name.endsWith(".hilbin") ? name : name + ".hilbin";
+  const filename = (name.endsWith(".hilbin") ? name : name + ".hilbin").replace(/[/\\]+/g, "_");
   if (isWails && api.SaveRun) {
     await api.SaveRun(arrayBufferToBase64(buf), filename);
   } else {
@@ -2497,6 +2567,63 @@ async function triggerSave(name: string) {
     document.body.appendChild(a); a.click();
     document.body.removeChild(a); URL.revokeObjectURL(url);
   }
+}
+
+function hilbinToCsv(buf: ArrayBuffer): string {
+  const u8   = new Uint8Array(buf);
+  const view = new DataView(buf);
+  const magic = String.fromCharCode(...u8.slice(0, 7));
+  if (magic !== "HILDATA") throw new Error("Not a valid .hilbin file");
+  const jsonSize  = view.getUint32(8, true);
+  const metaStr   = new TextDecoder().decode(u8.slice(12, 12 + jsonSize));
+  const meta      = JSON.parse(metaStr);
+  const npp: number = meta.npp ?? 2;
+  const lm: number  = meta.motor?.lm ?? motorLm;
+  const lr: number  = (meta.motor?.lr ?? motorLr - motorLm) + lm;
+  const k = 1.5 * npp * (lm / lr);
+  const rawBase   = 12 + jsonSize;
+  const alignBase = (rawBase + 7) & ~7;
+  let off = alignBase;
+  const telemCount = view.getUint32(off, true); off += 4;
+  const rows: string[] = ["t_s,Ialpha_A,Ibeta_A,Ia_A,Ib_A,Ic_A,FluxAlpha_Wb,FluxBeta_Wb,Speed_rpm,Te_Nm,TL_Nm"];
+  for (let i = 0; i < telemCount; i++) {
+    const t     = view.getFloat32(off,      true);
+    const Ia    = view.getFloat32(off +  4, true);
+    const Ib    = view.getFloat32(off +  8, true);
+    const FluxA = view.getFloat32(off + 12, true);
+    const FluxB = view.getFloat32(off + 16, true);
+    const Speed = view.getFloat32(off + 20, true);
+    const TL    = view.getFloat32(off + 24, true);
+    off += 28;
+    const ia = xa(Ia, Ib), ib = xb(Ia, Ib), ic = xc(Ia, Ib);
+    const rpm = Speed * 60 / (2 * Math.PI);
+    const te  = k * (FluxA * Ib - FluxB * Ia);
+    rows.push(`${t},${Ia},${Ib},${ia},${ib},${ic},${FluxA},${FluxB},${rpm},${te},${TL}`);
+  }
+  return rows.join("\n");
+}
+
+function exportToCsv() {
+  if (tBuf.length === 0) { setStatus("No data to export", "error"); return; }
+  const k = 1.5 * motorNpp * (motorLm / motorLr);
+  const rows: string[] = [
+    "t_s,Ialpha_A,Ibeta_A,Ia_A,Ib_A,Ic_A,FluxAlpha_Wb,FluxBeta_Wb,Speed_rpm,Te_Nm,TL_Nm"
+  ];
+  for (let i = 0; i < tBuf.length; i++) {
+    const s = samplesBuf[i];
+    const ia = xa(s.Ia, s.Ib), ib = xb(s.Ia, s.Ib), ic = xc(s.Ia, s.Ib);
+    const rpm = s.Speed * 60 / (2 * Math.PI);
+    const te  = k * (s.FluxA * s.Ib - s.FluxB * s.Ia);
+    rows.push(`${tBuf[i]},${s.Ia},${s.Ib},${ia},${ib},${ic},${s.FluxA},${s.FluxB},${rpm},${te},${s.TL ?? 0}`);
+  }
+  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  const name = `hil_run_${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}.csv`;
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+  setStatus(`Exported ${tBuf.length.toLocaleString()} samples → ${name}`, "ok");
 }
 
 function showRunMetaBadge(meta: { name: string; date: string; sampleCount: number; pwmCount: number }) {
@@ -2527,6 +2654,12 @@ function updateBatchEmptyHint() {
   elBatchEmptyHint.style.display = hasRows ? "none" : "";
 }
 
+function updateBatchSummary() {
+  const count = elBatchTable.querySelectorAll(".batch-row").length;
+  elBatchCount.textContent = `${count} queued`;
+  if (!batchRunning) elBatchMeterFill.style.width = "0%";
+}
+
 function addBatchRow(preset?: BatchItem): HTMLElement {
   const names = getSavedRecipeNames();
   let opts: string;
@@ -2544,9 +2677,10 @@ function addBatchRow(preset?: BatchItem): HTMLElement {
     <span class="batch-status" data-status="pending">○</span>
     <button class="scenario-remove" type="button" title="Remove">×</button>`;
   row.querySelector<HTMLButtonElement>(".scenario-remove")
-    ?.addEventListener("click", () => { if (!batchRunning) { row.remove(); updateBatchEmptyHint(); } });
+    ?.addEventListener("click", () => { if (!batchRunning) { row.remove(); updateBatchEmptyHint(); updateBatchSummary(); } });
   elBatchTable.appendChild(row);
   updateBatchEmptyHint();
+  updateBatchSummary();
   return row;
 }
 
@@ -2561,6 +2695,7 @@ function refreshBatchRecipeSelects() {
       if (!names.includes(cur) && names.length > 0) sel.value = names[0];
     }
   });
+  updateBatchSummary();
 }
 
 function readBatchItems(): BatchItem[] {
@@ -2583,8 +2718,10 @@ function stopBatch() {
   batchRunning = false;
   batchTimeouts.forEach(clearTimeout);
   batchTimeouts = [];
+  batchSleepResolvers.splice(0).forEach(resolve => resolve());
   if (batchProgressTimer !== null) { clearInterval(batchProgressTimer); batchProgressTimer = null; }
   elBatchProgress.textContent = "";
+  elBatchMeterFill.style.width = "0%";
   elBtnBatchRun.disabled     = false;
   elBtnBatchStop.disabled    = true;
   elBtnAddBatchItem.disabled = false;
@@ -2595,29 +2732,60 @@ function stopBatch() {
 
 function batchSleep(ms: number): Promise<void> {
   return new Promise(resolve => {
-    const tid = window.setTimeout(resolve, ms);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      batchTimeouts = batchTimeouts.filter(id => id !== tid);
+      batchSleepResolvers = batchSleepResolvers.filter(fn => fn !== finish);
+      resolve();
+    };
+    const tid = window.setTimeout(finish, Math.max(0, ms));
     batchTimeouts.push(tid);
+    batchSleepResolvers.push(finish);
   });
 }
 
+async function runRecipeEventsSequentially(recipe: { events: RecipeEvent[]; endTime: number }): Promise<boolean> {
+  const sorted = [...recipe.events].sort((a, b) => a.t - b.t);
+  const lastT = sorted.length ? sorted[sorted.length - 1].t : 0;
+  const endTime = Math.max(recipe.endTime, lastT + 0.5);
+  let cursor = 0;
+
+  batchCurrentStartedAt = performance.now();
+  batchCurrentDuration = endTime;
+
+  for (const ev of sorted) {
+    await batchSleep((ev.t - cursor) * 1000);
+    if (!batchRunning) return false;
+    await dispatchScenarioEvent(ev);
+    cursor = ev.t;
+  }
+
+  await batchSleep((endTime - cursor) * 1000);
+  return batchRunning;
+}
+
 async function runBatchSequence() {
-  const ip = elIp.value.trim();
+  let ip = elIp.value.trim();
   if (!ip) { setStatus("Missing board IP", "error"); stopBatch(); return; }
 
   try {
     const found = await api.DiscoverBoard(ip) as DiscoveryResponse;
-    applyBoardIP(found.ip || ip);
-    rememberBoardIP(found.ip || ip);
+    ip = found.ip || ip;
+    applyBoardIP(ip);
+    rememberBoardIP(ip);
   } catch { /* proceed with stored IP */ }
 
   const items = readBatchItems();
+  let completed = 0;
 
   for (let i = 0; i < items.length; i++) {
     if (!batchRunning) break;
     batchIndex = i;
     setBatchItemStatus(i, "running");
 
-    const item   = items[i];
+    const item = items[i];
     const recipe = getRecipeByName(item.recipeName);
     if (!recipe) {
       setBatchItemStatus(i, "error");
@@ -2626,6 +2794,7 @@ async function runBatchSequence() {
     }
 
     try {
+      elBatchProgress.textContent = `Running ${i + 1}/${items.length}: ${item.recipeName}`;
       await api.StopController(ip);
       await api.ResetSolver(ip);
       captureTelemetry = false;
@@ -2639,41 +2808,38 @@ async function runBatchSequence() {
       captureTelemetry = true;
       capturePwm = true;
 
-      const { events, endTime } = recipe;
-      const sorted = [...events].sort((a, b) => a.t - b.t);
-      const lastT  = sorted.length ? sorted[sorted.length - 1].t : 0;
-      sorted.forEach(ev => {
-        const tid = window.setTimeout(() => dispatchScenarioEvent(ev), ev.t * 1000);
-        batchTimeouts.push(tid);
-      });
-      // Wait until the recipe's END time (same as the ⏹ END marker), then stop
-      await batchSleep(Math.max(endTime, lastT + 0.5) * 1000);
-
-      if (!batchRunning) break;
+      const finishedRecipe = await runRecipeEventsSequentially(recipe);
+      if (!finishedRecipe) break;
 
       await api.StopController(ip);
       await api.ResetSolver(ip);
       captureTelemetry = false;
       capturePwm = false;
 
-      const ts      = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
-      const runName = `${item.recipeName}_${ts}`;
+      const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+      const runName = `${safeRunStem(item.recipeName)}_${ts}`;
       await saveRunToServer(runName);
 
+      completed++;
       setBatchItemStatus(i, "done");
       setStatus(`Saved: ${runName}.hilbin`, "ok");
+
+      if (i < items.length - 1 && item.endDelaySec > 0) {
+        elBatchProgress.textContent = `Cooling down ${formatScenarioSeconds(item.endDelaySec)} before next recipe`;
+        batchCurrentStartedAt = performance.now();
+        batchCurrentDuration = item.endDelaySec;
+        await batchSleep(item.endDelaySec * 1000);
+      }
     } catch (e) {
       setBatchItemStatus(i, "error");
       setStatus(`Batch item ${i + 1} failed: ${e}`, "error");
       break;
     }
-
-    // Gap between scenarios (cooldown before starting the next)
-    await batchSleep(item.endDelaySec * 1000);
   }
 
-  const allDone = batchRunning && batchIndex >= items.length - 1;
+  const allDone = completed === items.length && items.length > 0;
   stopBatch();
+  updateBatchSummary();
   if (allDone) setStatus("Batch complete", "ok");
 }
 
@@ -2686,6 +2852,8 @@ async function startBatch() {
   batchT0      = performance.now();
   batchIndex   = 0;
   batchTimeouts = [];
+  batchSleepResolvers.splice(0);
+  updateBatchSummary();
 
   elBtnBatchRun.disabled     = true;
   elBtnBatchStop.disabled    = false;
@@ -2695,10 +2863,15 @@ async function startBatch() {
   elBatchTable.querySelectorAll<HTMLElement>(".batch-row")
     .forEach((_, i) => setBatchItemStatus(i, "pending"));
 
+  batchCurrentStartedAt = performance.now();
+  batchCurrentDuration = 0;
   batchProgressTimer = window.setInterval(() => {
     const elapsed = ((performance.now() - batchT0) / 1000).toFixed(1);
-    const count   = readBatchItems().length;
-    elBatchProgress.textContent = `Batch: ${batchIndex + 1}/${count} · t=${elapsed}s`;
+    const count = readBatchItems().length;
+    const itemElapsed = (performance.now() - batchCurrentStartedAt) / 1000;
+    const pct = batchCurrentDuration > 0 ? Math.min(100, Math.max(0, itemElapsed / batchCurrentDuration * 100)) : 0;
+    elBatchMeterFill.style.width = `${pct}%`;
+    elBatchProgress.textContent = `Batch ${batchIndex + 1}/${count} · t=${elapsed}s`;
   }, 200);
 
   runBatchSequence().finally(() => {
@@ -2740,30 +2913,42 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function safeRunStem(name: string): string {
+  return (name || "run")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || "run";
+}
+
 async function saveRunToServer(name: string): Promise<void> {
   if (isWails) return; // Wails uses native file dialog
   const buf = serializeHilbin(name);
-  const filename = name.endsWith(".hilbin") ? name : name + ".hilbin";
-  const res = await fetch(`/api/runs?name=${encodeURIComponent(filename)}`, {
+  const filename = (name.endsWith(".hilbin") ? name : name + ".hilbin").replace(/[/\\]+/g, "_");
+  const res = await fetch(gatewayURL(`/api/runs?name=${encodeURIComponent(filename)}`), {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
     body: buf,
   });
-  if (!res.ok) throw new Error(`server save failed: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`server save failed: ${res.status}${text ? ` ${responseError(res, text)}` : ""}`);
+  }
 }
 
 async function loadRunHistory(): Promise<void> {
   if (isWails) { elRunsEmpty.textContent = "History not available in Wails mode."; return; }
   try {
     const runs = await getJSON<RunMeta[]>("/api/runs");
-    elRunsEmpty.style.display = runs.length ? "none" : "";
-    // Remove old cards (keep empty hint)
     elRunsList.querySelectorAll(".run-card").forEach(c => c.remove());
     for (const run of runs) {
       elRunsList.appendChild(buildRunCard(run));
     }
+    applyRunFilter();
   } catch {
     elRunsEmpty.textContent = "Could not load history.";
+    elRunsEmpty.style.display = "";
   }
 }
 
@@ -2775,21 +2960,25 @@ function buildRunCard(run: RunMeta): HTMLElement {
 
   const card = document.createElement("div");
   card.className = "run-card";
+  card.dataset.name = run.name.toLowerCase();
+  card.dataset.label = label.toLowerCase();
   card.innerHTML = `
-    <div class="run-card-name" title="${run.name}">${label}</div>
-    <div class="run-card-meta">
-      <span class="run-card-time" title="${absTime}">${relTime}</span>
-      <span class="run-card-size">${size}</span>
+    <div class="run-card-body run-btn-load" title="Click to load and view" style="cursor:pointer">
+      <div class="run-card-name">${label}</div>
+      <div class="run-card-meta">
+        <span class="run-card-time" title="${absTime}">${relTime}</span>
+        <span class="run-card-size">${size}</span>
+      </div>
     </div>
     <div class="run-card-actions">
-      <button class="btn btn-xs btn-accent run-btn-load" data-name="${run.name}" type="button">Load</button>
-      <button class="btn btn-xs run-btn-download" data-name="${run.name}" type="button">↓ Download</button>
+      <button class="btn btn-xs run-btn-download" data-name="${run.name}" type="button" title="Download .hilbin">↓ .hilbin</button>
+      <button class="btn btn-xs run-btn-csv" data-name="${run.name}" type="button" title="Export CSV">↓ CSV</button>
       <button class="btn btn-xs run-btn-delete" data-name="${run.name}" type="button" title="Delete run">✕</button>
     </div>`;
 
-  card.querySelector<HTMLButtonElement>(".run-btn-load")!.addEventListener("click", async () => {
+  card.querySelector<HTMLElement>(".run-btn-load")!.addEventListener("click", async () => {
     try {
-      const res = await fetch(`/api/runs/${encodeURIComponent(run.name)}`);
+      const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
       const meta = deserializeHilbin(buf);
@@ -2804,15 +2993,32 @@ function buildRunCard(run: RunMeta): HTMLElement {
 
   card.querySelector<HTMLButtonElement>(".run-btn-download")!.addEventListener("click", () => {
     const a = document.createElement("a");
-    a.href = `/api/runs/${encodeURIComponent(run.name)}`;
+    a.href = gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`);
     a.download = run.name;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  });
+
+  card.querySelector<HTMLButtonElement>(".run-btn-csv")!.addEventListener("click", async () => {
+    try {
+      const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      const csv = hilbinToCsv(buf);
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = run.name.replace(/\.hilbin$/, "") + ".csv";
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    } catch (e) {
+      setStatus(`CSV export failed: ${e}`, "error");
+    }
   });
 
   card.querySelector<HTMLButtonElement>(".run-btn-delete")!.addEventListener("click", async () => {
     if (!confirm(`Delete "${run.name}"?`)) return;
     try {
-      await fetch(`/api/runs/${encodeURIComponent(run.name)}`, { method: "DELETE" });
+      await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`), { method: "DELETE" });
       card.classList.add("run-card-deleting");
       card.addEventListener("transitionend", () => { card.remove(); updateRunsEmpty(); }, { once: true });
     } catch { /* ignore */ }
@@ -2821,8 +3027,23 @@ function buildRunCard(run: RunMeta): HTMLElement {
   return card;
 }
 
+function applyRunFilter() {
+  const q = elRunsSearch.value.trim().toLowerCase();
+  const cards = Array.from(elRunsList.querySelectorAll<HTMLElement>(".run-card"));
+  let visible = 0;
+  cards.forEach(card => {
+    const haystack = `${card.dataset.name ?? ""} ${card.dataset.label ?? ""}`;
+    const show = !q || haystack.includes(q);
+    card.style.display = show ? "" : "none";
+    if (show) visible++;
+  });
+  elRunsSummary.textContent = q ? `${visible}/${cards.length} runs` : `${cards.length} runs`;
+  elRunsEmpty.textContent = cards.length === 0 ? "No runs saved yet." : "No runs match the filter.";
+  elRunsEmpty.style.display = visible ? "none" : "";
+}
+
 function updateRunsEmpty() {
-  elRunsEmpty.style.display = elRunsList.querySelectorAll(".run-card").length ? "none" : "";
+  applyRunFilter();
 }
 
 // ── Scenario / batch config export-import ────────────────────────────────────
@@ -2935,14 +3156,12 @@ elBtnReset.addEventListener("click", () => withButton(elBtnReset, async () => {
 elBtnStop.addEventListener("click", () => withButton(elBtnStop, async () => {
   const { ip } = readParams();
   const s = await api.StopController(ip) as HilStatus;
-  captureTelemetry = false;
-  capturePwm = false;
   applyBoardIP(s.board_ip);
   paused = true;
   viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
-  setTelemBadge(false, false);
   setStatus("Stopped (daemon alive — can Run again)", "ok");
   applyResponse(s);
+  scheduleRender();
 }));
 
 // Smoothing (10-sample boxcar ≈ 1 ms ≈ 1 PWM period at 10 kHz) is always on
@@ -2955,10 +3174,10 @@ function detachOnExit() {
   if (!ip || isWails) return;
   const payload = JSON.stringify({ ip });
   if (navigator.sendBeacon) {
-    navigator.sendBeacon("/api/detach", new Blob([payload], { type: "application/json" }));
+    navigator.sendBeacon(gatewayURL("/api/detach"), new Blob([payload], { type: "application/json" }));
     return;
   }
-  fetch("/api/detach", {
+  fetch(gatewayURL("/api/detach"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: payload,
