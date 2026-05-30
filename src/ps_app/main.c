@@ -18,6 +18,7 @@
 #include <net/if.h>
 #include <ifaddrs.h>
 #include <math.h>
+#include <sys/file.h>   /* flock — single-instance guard */
 typedef struct {
     float rs;
     float rr;
@@ -83,10 +84,14 @@ static timer_t g_timerid;
 static void set_udp_reuse(int sock)
 {
     int yes = 1;
+    /* SO_REUSEADDR only — allows a clean rebind after a restart. We deliberately
+     * do NOT set SO_REUSEPORT: that would let a second hil_controller instance
+     * bind the same port and silently coexist, and two instances each driving
+     * the FPGA at 1 kHz produce conflicting pwm_ctrl writes (enable toggles →
+     * epoch spins, state oscillates running/paused). Without SO_REUSEPORT, a
+     * duplicate instance fails bind() with EADDRINUSE and exits — exactly what
+     * we want, since inittab already keeps one instance alive. */
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-#ifdef SO_REUSEPORT
-    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
-#endif
 }
 
 static int setup_1khz_timer(void)
@@ -710,8 +715,37 @@ int main(void)
 
     printf("HIL Controller starting...\n");
 
+    /* Single-instance guard. Two hil_controller instances both driving the
+     * FPGA at 1 kHz produce conflicting pwm_ctrl writes (enable toggles →
+     * pwm_cap_epoch spins → telemetry timeline never advances, and state
+     * oscillates running/paused as command responses load-balance between
+     * them). An exclusive flock guarantees exactly one instance: a second
+     * one exits immediately. The lock auto-releases when the process dies,
+     * so the inittab respawn always succeeds. This is independent of UDP
+     * socket options (SO_REUSEADDR alone still permits duplicate binds). */
+    {
+        int lock_fd = open("/tmp/hil_controller.lock", O_CREAT | O_RDWR, 0644);
+        if (lock_fd < 0 || flock(lock_fd, LOCK_EX | LOCK_NB) < 0) {
+            fprintf(stderr, "hil_controller: another instance is already "
+                            "running — exiting.\n");
+            return 1;
+        }
+        /* lock_fd intentionally leaked — held for the process lifetime. */
+    }
+
     if (gpio_init() < 0)  return 1;
     if (vf_init()   < 0)  return 1;
+
+    /* Program the default motor model into the solver at startup. A fresh
+     * bitstream (loaded by FSBL on every power-on) comes up with no TIM
+     * coefficients, so without this the solver outputs zeros until the user
+     * clicks "Apply Motor". Programming the defaults here makes the board
+     * produce correct dynamics immediately after power-on — no manual step. */
+    if (program_motor_coeffs(&motor_params) == 0)
+        printf("Motor model programmed at startup (default params)\n");
+    else
+        fprintf(stderr, "WARNING: failed to program default motor model at startup\n");
+
     if (setup_1khz_timer() < 0) return 1;
 
     /* DIAGNOSTIC: forcibly disable DMA to isolate cache-coherency bug.
