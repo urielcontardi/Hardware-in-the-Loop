@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -223,4 +225,41 @@ func (a *App) GetStats() map[string]uint64 {
 // GetLocalIP returns the machine's primary non-loopback IPv4 address.
 func (a *App) GetLocalIP() string {
 	return a.localIP
+}
+
+// SaveRun opens a native save dialog and writes the provided base64-encoded
+// .hilbin data to the chosen path.
+func (a *App) SaveRun(dataB64 string, suggestedName string) error {
+	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if err != nil {
+		return err
+	}
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		DefaultFilename: suggestedName,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "HIL Run (*.hilbin)", Pattern: "*.hilbin"},
+		},
+	})
+	if err != nil || path == "" {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// LoadRun opens a native open dialog and returns the chosen file's contents
+// as a base64-encoded string.
+func (a *App) LoadRun() (string, error) {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Filters: []runtime.FileFilter{
+			{DisplayName: "HIL Run (*.hilbin)", Pattern: "*.hilbin"},
+		},
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
 }
