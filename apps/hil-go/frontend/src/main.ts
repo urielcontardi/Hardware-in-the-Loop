@@ -1437,7 +1437,8 @@ function attachPlotNavigation(wrap: HTMLElement) {
   // inspecting history. This handler is shared by telemetry and PWM plots.
   wrap.addEventListener("wheel", (e: WheelEvent) => {
     e.preventDefault();
-    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    const notches = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) / 100, 3);
+    const factor = Math.pow(1.10, notches);
     const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
     const next = clamp(windowSec * factor, WINDOW_MIN_SEC, maxSec);
     if (next === windowSec) return;
