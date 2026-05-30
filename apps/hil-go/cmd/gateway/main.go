@@ -155,6 +155,23 @@ func main() {
 	log.Printf("HIL gateway listening on http://%s", addr)
 	log.Printf("local IP for board telemetry: %s", s.localIP)
 	log.Printf("telemetry UDP receiver listening on :%d", telemetryPort)
+	// Restore last board IP and re-attach telemetry after a gateway restart.
+	if saved, err := os.ReadFile(filepath.Join(runsDir, ".last_board_ip")); err == nil {
+		ip := strings.TrimSpace(string(saved))
+		if ip != "" {
+			s.setTelemetryTarget(ip)
+			go func() {
+				time.Sleep(2 * time.Second) // let the receiver start
+				decim := transportDecim
+				if _, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemDst: s.localIP}); err != nil {
+					log.Printf("auto-attach to %s failed: %v", ip, err)
+				} else {
+					log.Printf("auto-attached telemetry to %s", ip)
+				}
+			}()
+		}
+	}
+
 	go s.pwmPump()
 	go s.telemetryPunchLoop()
 	if err := http.ListenAndServe(addr, logRequests(mux)); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -603,8 +620,6 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
-	_, _ = hiludp.TelemOff(ip)
-	s.setTelemetryTarget("")
 	s.ring.Clear()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
@@ -646,9 +661,17 @@ func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) setTelemetryTarget(ip string) {
+	ip = strings.TrimSpace(ip)
 	s.targetMu.Lock()
-	s.telemTarget = strings.TrimSpace(ip)
+	s.telemTarget = ip
 	s.targetMu.Unlock()
+	// Persist so the next gateway restart can re-attach automatically.
+	path := filepath.Join(s.runsDir, ".last_board_ip")
+	if ip == "" {
+		_ = os.Remove(path)
+	} else {
+		_ = os.WriteFile(path, []byte(ip), 0644)
+	}
 }
 
 func (s *server) telemetryTarget() string {
@@ -850,7 +873,7 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		name := strings.TrimSpace(r.URL.Query().Get("name"))
-		if name == "" || strings.ContainsAny(name, "/\\..") {
+		if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
 			writeError(w, http.StatusBadRequest, errors.New("invalid or missing name parameter"))
 			return
 		}

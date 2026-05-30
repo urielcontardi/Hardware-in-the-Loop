@@ -6,6 +6,7 @@ services:
     image: hil-gateway:local
     container_name: hil-gateway
     restart: unless-stopped
+    user: "${HIL_GATEWAY_UID:-1000}:${HIL_GATEWAY_GID:-1000}"
     network_mode: host
     environment:
       HIL_HTTP_ADDR: "127.0.0.1:5177"
