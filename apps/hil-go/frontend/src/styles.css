@@ -1107,6 +1107,20 @@ body {
 .scenario-row.sc-done {
   opacity: 0.45;
 }
+.scenario-end-row {
+  border-top: 1px solid rgba(0, 212, 168, 0.25);
+  padding-top: 5px;
+  margin-top: 2px;
+}
+.scenario-end-label {
+  color: var(--accent);
+  font-size: 9px;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  padding-left: 4px;
+}
 
 .scenario-table {
   display: flex;
@@ -1118,9 +1132,26 @@ body {
 .scenario-head,
 .scenario-row {
   display: grid;
-  grid-template-columns: 45px minmax(0, 1fr) minmax(0, 1fr) 54px 20px;
+  grid-template-columns: 38px 68px minmax(0, 1fr) 50px 22px;
   gap: 5px;
   align-items: center;
+}
+
+.batch-head,
+.batch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 20px 22px;
+  gap: 5px;
+  align-items: center;
+}
+
+.batch-head {
+  color: var(--muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0 2px;
 }
 
 .scenario-head {
@@ -1192,4 +1223,16 @@ body {
   color: var(--muted);
   min-width: 16px;
   text-align: center;
+  transition: color 0.15s;
+}
+.batch-status[data-status="running"] { color: var(--blue); }
+.batch-status[data-status="done"]    { color: var(--ok); }
+.batch-status[data-status="error"]   { color: var(--danger); }
+
+/* ── Batch empty hint ──────────────────────────────────────────────────────── */
+.batch-empty-hint {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 6px 4px;
+  font-style: italic;
 }

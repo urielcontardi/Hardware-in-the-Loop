@@ -575,24 +575,29 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               <input type="number" value="0" step="0.001" class="write-input" />
               <button class="scenario-remove" type="button" title="Remove event">x</button>
             </div>
+            <div class="scenario-row scenario-end-row" id="scenario-end-row">
+              <input type="number" value="13.5" min="0" step="0.5" class="write-input" title="Auto-stop at this time (s from Run)" />
+              <span class="scenario-end-label" style="grid-column:2/6">⏹ END — auto-stop</span>
+            </div>
           </div>
-          <button id="btn-add-scenario-event" class="btn btn-sm scenario-add" type="button">Add event</button>
+          <button id="btn-add-scenario-event" class="btn btn-sm scenario-add" type="button">+ Add event</button>
         </section>
 
         <section class="panel">
           <div class="panel-title">BATCH</div>
           <div id="batch-table" class="scenario-table" aria-label="Batch recipe list">
-            <div class="scenario-head">
+            <div class="batch-head">
               <span>Recipe</span>
-              <span>End delay (s)</span>
-              <span>Status</span>
+              <span>Gap (s)</span>
+              <span></span>
               <span></span>
             </div>
+            <div class="batch-empty-hint" id="batch-empty-hint">Add saved recipes to run in sequence.</div>
           </div>
           <div class="btn-row" style="margin-top:6px">
             <button id="btn-add-batch-item" class="btn btn-sm" type="button">+ Add</button>
-            <button id="btn-batch-run"  class="btn btn-sm" type="button">Run Batch</button>
-            <button id="btn-batch-stop" class="btn btn-sm btn-danger" type="button" disabled>Stop Batch</button>
+            <button id="btn-batch-run"  class="btn btn-sm" type="button">▶ Run Batch</button>
+            <button id="btn-batch-stop" class="btn btn-sm btn-danger" type="button" disabled>■ Stop</button>
           </div>
           <span id="batch-progress" class="scenario-progress"></span>
         </section>
@@ -745,6 +750,7 @@ const elBtnRecipeSave    = document.querySelector<HTMLButtonElement>("#btn-recip
 const elBtnRecipeRun     = document.querySelector<HTMLButtonElement>("#btn-recipe-run")!;
 const elScenarioName     = document.querySelector<HTMLInputElement>("#scenario-name")!;
 const elScenarioProgress = document.querySelector<HTMLSpanElement>("#scenario-progress")!;
+const elScenarioEndRow   = document.querySelector<HTMLDivElement>("#scenario-end-row")!;
 const elBtnSaveRun    = document.querySelector<HTMLButtonElement>("#btn-save-run")!;
 const elBtnLoadRun    = document.querySelector<HTMLButtonElement>("#btn-load-run")!;
 const elLoadFileInput = document.querySelector<HTMLInputElement>("#load-file-input")!;
@@ -754,6 +760,7 @@ const elBtnAddBatchItem = document.querySelector<HTMLButtonElement>("#btn-add-ba
 const elBtnBatchRun     = document.querySelector<HTMLButtonElement>("#btn-batch-run")!;
 const elBtnBatchStop    = document.querySelector<HTMLButtonElement>("#btn-batch-stop")!;
 const elBatchProgress   = document.querySelector<HTMLSpanElement>("#batch-progress")!;
+const elBatchEmptyHint  = document.querySelector<HTMLDivElement>("#batch-empty-hint")!;
 
 const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
@@ -775,7 +782,10 @@ function setActiveTab(tab: string) {
 tabButtons.forEach(btn => {
   btn.setAttribute("role", "tab");
   btn.setAttribute("aria-selected", btn.classList.contains("active") ? "true" : "false");
-  btn.addEventListener("click", () => setActiveTab(btn.dataset.tab || "plant"));
+  btn.addEventListener("click", () => {
+    setActiveTab(btn.dataset.tab || "plant");
+    if (btn.dataset.tab === "scenario") refreshBatchRecipeSelects();
+  });
 });
 
 // ── Scenario recipe ───────────────────────────────────────────────────────────
@@ -820,7 +830,7 @@ function addScenarioRow(preset?: { t: number; target: string; param: string; val
     <select class="write-input">${opts}</select>
     <input  type="number" value="${preset?.value ?? 0}" step="0.001" class="write-input" />
     <button class="scenario-remove" type="button" title="Remove event">x</button>`;
-  elScenarioTable.appendChild(row);
+  elScenarioTable.insertBefore(row, elScenarioEndRow);
   bindScenarioRow(row);
   return row;
 }
@@ -842,8 +852,16 @@ let batchTimeouts: number[] = [];
 let batchT0 = 0;
 let batchProgressTimer: number | null = null;
 
+function getScenarioEndTime(): number {
+  return Number(elScenarioEndRow.querySelector<HTMLInputElement>("input")!.value) || 0;
+}
+
+function setScenarioEndTime(t: number) {
+  elScenarioEndRow.querySelector<HTMLInputElement>("input")!.value = String(t);
+}
+
 function readScenarioEvents() {
-  return Array.from(elScenarioTable.querySelectorAll<HTMLElement>(".scenario-row"))
+  return Array.from(elScenarioTable.querySelectorAll<HTMLElement>(".scenario-row:not(.scenario-end-row)"))
     .map(row => {
       const inputs  = row.querySelectorAll<HTMLInputElement>("input");
       const selects = row.querySelectorAll<HTMLSelectElement>("select");
@@ -1009,14 +1027,15 @@ async function startScenario() {
     }, ev.t * 1000));
   });
 
-  // Auto-stop half a second after the last event fires
-  const lastT = events[events.length - 1].t;
-  scenarioTimeouts.push(window.setTimeout(() => {
-    const last = events[events.length - 1];
-    last.row.classList.remove("sc-active");
-    last.row.classList.add("sc-done");
+  // Auto-stop at the END row time (clamped to at least 0.5s after the last event)
+  const lastEventT = events.length ? events[events.length - 1].t : 0;
+  const endTime    = Math.max(getScenarioEndTime(), lastEventT + 0.5);
+  scenarioTimeouts.push(window.setTimeout(async () => {
+    events.forEach(ev => { ev.row.classList.remove("sc-active"); ev.row.classList.add("sc-done"); });
     stopScenario();
-  }, (lastT + 0.5) * 1000));
+    const ip = elIp.value.trim();
+    if (ip) { try { await api.StopController(ip); } catch { /* ignore */ } }
+  }, endTime * 1000));
 
   scenarioProgressTimer = window.setInterval(() => {
     const elapsed = (performance.now() - scenarioT0) / 1000;
@@ -1027,12 +1046,24 @@ async function startScenario() {
 // ── Recipe persistence (localStorage) ────────────────────────────────────────
 const RECIPE_KEY = "hil-scenario-recipes";
 
+type RecipeEvent = { t: number; target: string; param: string; value: number };
+type RecipeData  = { events: RecipeEvent[]; endTime: number } | RecipeEvent[];
+
+function parseRecipeData(raw: RecipeData): { events: RecipeEvent[]; endTime: number } {
+  if (Array.isArray(raw)) {
+    const maxT = raw.length ? Math.max(...raw.map(e => e.t)) : 0;
+    return { events: raw, endTime: maxT + 2 };
+  }
+  return { events: raw.events ?? [], endTime: raw.endTime ?? 5 };
+}
+
 function saveRecipe() {
-  const name   = elScenarioName.value.trim() || "default";
-  const events = readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value }));
+  const name    = elScenarioName.value.trim() || "default";
+  const events  = readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value }));
+  const endTime = getScenarioEndTime();
   try {
     const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
-    all[name] = events;
+    all[name] = { events, endTime };
     localStorage.setItem(RECIPE_KEY, JSON.stringify(all));
     const orig = elBtnRecipeSave.textContent!;
     elBtnRecipeSave.textContent = "Saved ✓";
@@ -1043,16 +1074,18 @@ function saveRecipe() {
 function loadRecipe() {
   const name = elScenarioName.value.trim() || "default";
   try {
-    const all    = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
-    const events = all[name] as { t: number; target: string; param: string; value: number }[] | undefined;
-    if (!events?.length) {
+    const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
+    const raw = all[name] as RecipeData | undefined;
+    if (!raw) {
       const orig = elBtnRecipeLoad.textContent!;
       elBtnRecipeLoad.textContent = "Not found";
       window.setTimeout(() => { elBtnRecipeLoad.textContent = orig; }, 1500);
       return;
     }
-    elScenarioTable.querySelectorAll(".scenario-row").forEach(r => r.remove());
+    const { events, endTime } = parseRecipeData(raw);
+    elScenarioTable.querySelectorAll(".scenario-row:not(.scenario-end-row)").forEach(r => r.remove());
     events.forEach(ev => addScenarioRow(ev));
+    setScenarioEndTime(endTime);
   } catch { /* storage not available */ }
 }
 
@@ -1060,7 +1093,7 @@ elBtnRecipeLoad.addEventListener("click", loadRecipe);
 elBtnRecipeSave.addEventListener("click", saveRecipe);
 elBtnRecipeRun.addEventListener("click", startScenario);
 
-elBtnAddBatchItem.addEventListener("click", () => { if (!batchRunning) addBatchRow(); });
+elBtnAddBatchItem.addEventListener("click", () => { if (!batchRunning) { refreshBatchRecipeSelects(); addBatchRow(); } });
 elBtnBatchRun.addEventListener("click", startBatch);
 elBtnBatchStop.addEventListener("click", () => {
   stopBatch();
@@ -2422,43 +2455,70 @@ function getSavedRecipeNames(): string[] {
   } catch { return []; }
 }
 
-function getRecipeByName(name: string): { t: number; target: string; param: string; value: number }[] | null {
+function getRecipeByName(name: string): { events: RecipeEvent[]; endTime: number } | null {
   try {
     const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
-    return all[name] ?? null;
+    const raw = all[name] as RecipeData | undefined;
+    if (!raw) return null;
+    return parseRecipeData(raw);
   } catch { return null; }
+}
+
+function updateBatchEmptyHint() {
+  const hasRows = elBatchTable.querySelectorAll(".batch-row").length > 0;
+  elBatchEmptyHint.style.display = hasRows ? "none" : "";
 }
 
 function addBatchRow(preset?: BatchItem): HTMLElement {
   const names = getSavedRecipeNames();
-  const opts  = names.map(n => `<option${n === preset?.recipeName ? " selected" : ""}>${n}</option>`).join("") ||
-                `<option>${preset?.recipeName ?? "no recipes saved"}</option>`;
-  const row   = document.createElement("div");
-  row.className = "scenario-row";
+  let opts: string;
+  if (names.length === 0) {
+    opts = `<option value="" disabled selected>— save a recipe first —</option>`;
+  } else {
+    const sel = preset?.recipeName ?? names[0];
+    opts = names.map(n => `<option${n === sel ? " selected" : ""}>${n}</option>`).join("");
+  }
+  const row = document.createElement("div");
+  row.className = "batch-row";
   row.innerHTML = `
     <select class="write-input">${opts}</select>
-    <input type="number" value="${preset?.endDelaySec ?? 2}" min="0" step="0.5" class="write-input" style="width:72px" />
-    <span class="batch-status">○</span>
+    <input type="number" value="${preset?.endDelaySec ?? 2}" min="0" step="0.5" class="write-input" />
+    <span class="batch-status" data-status="pending">○</span>
     <button class="scenario-remove" type="button" title="Remove">×</button>`;
   row.querySelector<HTMLButtonElement>(".scenario-remove")
-    ?.addEventListener("click", () => { if (!batchRunning) row.remove(); });
+    ?.addEventListener("click", () => { if (!batchRunning) { row.remove(); updateBatchEmptyHint(); } });
   elBatchTable.appendChild(row);
+  updateBatchEmptyHint();
   return row;
 }
 
+function refreshBatchRecipeSelects() {
+  const names = getSavedRecipeNames();
+  elBatchTable.querySelectorAll<HTMLSelectElement>(".batch-row select").forEach(sel => {
+    const cur = sel.value;
+    if (names.length === 0) {
+      sel.innerHTML = `<option value="" disabled selected>— save a recipe first —</option>`;
+    } else {
+      sel.innerHTML = names.map(n => `<option${n === cur ? " selected" : ""}>${n}</option>`).join("");
+      if (!names.includes(cur) && names.length > 0) sel.value = names[0];
+    }
+  });
+}
+
 function readBatchItems(): BatchItem[] {
-  return Array.from(elBatchTable.querySelectorAll<HTMLElement>(".scenario-row")).map(row => ({
+  return Array.from(elBatchTable.querySelectorAll<HTMLElement>(".batch-row")).map(row => ({
     recipeName:  row.querySelector<HTMLSelectElement>("select")!.value,
     endDelaySec: Number(row.querySelector<HTMLInputElement>("input")!.value) || 2,
   }));
 }
 
 function setBatchItemStatus(rowIndex: number, status: "pending" | "running" | "done" | "error") {
-  const rows = elBatchTable.querySelectorAll<HTMLElement>(".scenario-row");
+  const rows = elBatchTable.querySelectorAll<HTMLElement>(".batch-row");
   const span = rows[rowIndex]?.querySelector<HTMLSpanElement>(".batch-status");
   if (!span) return;
   const icons: Record<string, string> = { pending: "○", running: "▶", done: "✓", error: "✗" };
   span.textContent = icons[status] ?? "○";
+  span.dataset.status = status;
 }
 
 function stopBatch() {
@@ -2472,6 +2532,7 @@ function stopBatch() {
   elBtnAddBatchItem.disabled = false;
   elBatchTable.querySelectorAll<HTMLButtonElement>(".scenario-remove")
     .forEach(b => { b.disabled = false; });
+  updateBatchEmptyHint();
 }
 
 function batchSleep(ms: number): Promise<void> {
@@ -2499,8 +2560,8 @@ async function runBatchSequence() {
     setBatchItemStatus(i, "running");
 
     const item   = items[i];
-    const events = getRecipeByName(item.recipeName);
-    if (!events) {
+    const recipe = getRecipeByName(item.recipeName);
+    if (!recipe) {
       setBatchItemStatus(i, "error");
       setStatus(`Recipe "${item.recipeName}" not found`, "error");
       break;
@@ -2520,13 +2581,15 @@ async function runBatchSequence() {
       captureTelemetry = true;
       capturePwm = true;
 
+      const { events, endTime } = recipe;
       const sorted = [...events].sort((a, b) => a.t - b.t);
       const lastT  = sorted.length ? sorted[sorted.length - 1].t : 0;
       sorted.forEach(ev => {
         const tid = window.setTimeout(() => dispatchScenarioEvent(ev), ev.t * 1000);
         batchTimeouts.push(tid);
       });
-      await batchSleep((lastT + item.endDelaySec) * 1000);
+      // Wait until the recipe's END time (same as the ⏹ END marker), then stop
+      await batchSleep(Math.max(endTime, lastT + 0.5) * 1000);
 
       if (!batchRunning) break;
 
@@ -2547,7 +2610,8 @@ async function runBatchSequence() {
       break;
     }
 
-    await batchSleep(500);
+    // Gap between scenarios (cooldown before starting the next)
+    await batchSleep(item.endDelaySec * 1000);
   }
 
   const allDone = batchRunning && batchIndex >= items.length - 1;
@@ -2570,7 +2634,7 @@ async function startBatch() {
   elBtnAddBatchItem.disabled = true;
   elBatchTable.querySelectorAll<HTMLButtonElement>(".scenario-remove")
     .forEach(b => { b.disabled = true; });
-  elBatchTable.querySelectorAll<HTMLElement>(".scenario-row")
+  elBatchTable.querySelectorAll<HTMLElement>(".batch-row")
     .forEach((_, i) => setBatchItemStatus(i, "pending"));
 
   batchProgressTimer = window.setInterval(() => {
