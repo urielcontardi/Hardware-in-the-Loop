@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
 """Watchdog for hil_controller on EBAZ4205.
-Pings UDP 5005 every 30 s; if unresponsive twice in a row, kills the
-controller via SSH — inittab respawn on the board restarts it automatically.
+Pings UDP 5005 every 30 s; if unresponsive twice in a row, kills and
+restarts the controller via SSH.
 """
 import socket, time, subprocess, logging, sys
 
-BOARD     = "192.168.15.8"
-PORT      = 5005
-INTERVAL  = 30
-THRESHOLD = 2
-SSH_OPTS  = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5"]
+BOARD        = "192.168.15.8"
+PORT         = 5005
+INTERVAL     = 30
+THRESHOLD    = 2
+CONTROLLER   = "/home/petalinux/hil_controller"
+LOG_FILE     = "/tmp/hil_controller.log"
+SSH_OPTS     = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+                "-o", "BatchMode=yes"]
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format="%(asctime)s hil-watchdog %(message)s",
                     datefmt="%Y-%m-%dT%H:%M:%S")
 
-def ping():
+def ssh(cmd: str, timeout: int = 20) -> str:
+    r = subprocess.run(
+        ["sshpass", "-p", "1234", "ssh"] + SSH_OPTS + [f"petalinux@{BOARD}", cmd],
+        timeout=timeout, capture_output=True, text=True)
+    return (r.stdout + r.stderr).strip()
+
+def ping() -> bool:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(2)
     try:
@@ -28,24 +37,38 @@ def ping():
         s.close()
 
 def restart():
-    logging.warning("hil_controller hung — killing via SSH (inittab respawns)")
+    logging.warning("hil_controller unresponsive — killing and restarting")
     try:
-        r = subprocess.run(
-            ["sshpass", "-p", "1234", "ssh"] + SSH_OPTS + [f"petalinux@{BOARD}",
-             'PID=$(ps w | grep "[h]il_controller" | awk \'{print $1}\' | head -1);'
-             '[ -n "$PID" ] && echo 1234 | sudo -S kill -9 "$PID" 2>/dev/null'
-             ' && echo "killed $PID" || echo "not found"'],
-            timeout=15, capture_output=True, text=True)
-        logging.info("SSH: %s", (r.stdout + r.stderr).strip()[:80])
+        # Kill any running instance
+        out = ssh(
+            'PID=$(ps w | grep "[h]il_controller" | awk \'{print $1}\' | head -1);'
+            '[ -n "$PID" ] && echo 1234 | sudo -S kill -9 "$PID" 2>/dev/null'
+            ' && echo "killed $PID" || echo "not running"'
+        )
+        logging.info("kill: %s", out[:80])
+
+        time.sleep(2)
+
+        # Restart as background daemon, output goes to log file
+        out = ssh(
+            f'echo 1234 | sudo -S sh -c '
+            f'"nohup {CONTROLLER} >> {LOG_FILE} 2>&1 &"'
+            f' && echo "started"'
+        )
+        logging.info("start: %s", out[:80])
+
+    except subprocess.TimeoutExpired:
+        logging.error("SSH timed out during restart")
     except Exception as e:
-        logging.error("SSH failed: %s", e)
+        logging.error("restart failed: %s", e)
 
 fails = 0
 logging.info("Watching %s:%d every %ds (threshold=%d)", BOARD, PORT, INTERVAL, THRESHOLD)
 while True:
     time.sleep(INTERVAL)
     if ping():
-        if fails: logging.info("5005 recovered")
+        if fails:
+            logging.info("5005 recovered after %d failure(s)", fails)
         fails = 0
     else:
         fails += 1
@@ -53,4 +76,4 @@ while True:
         if fails >= THRESHOLD:
             restart()
             fails = 0
-            time.sleep(5)
+            time.sleep(10)  # allow time for restart before next ping
