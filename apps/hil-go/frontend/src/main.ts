@@ -835,7 +835,7 @@ function addScenarioRow(preset?: { t: number; target: string; param: string; val
   return row;
 }
 
-document.querySelectorAll<HTMLElement>(".scenario-row").forEach(bindScenarioRow);
+document.querySelectorAll<HTMLElement>(".scenario-row:not(.scenario-end-row)").forEach(bindScenarioRow);
 elBtnAddScenarioEvent.addEventListener("click", () => { if (!scenarioRunning) addScenarioRow(); });
 
 // ── Scenario execution state ──────────────────────────────────────────────────
