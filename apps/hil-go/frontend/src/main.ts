@@ -414,6 +414,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <label title="Momento de inércia">J (kg·m²)</label>
             <input id="motor-j" type="number" value="0.4" min="0.0001" step="0.001" class="write-input" />
           </div>
+          <div class="field-inline">
+            <label title="Torque de carga mecânica aplicado ao rotor">Load Torque (N·m)</label>
+            <input id="torque" type="number" value="0" min="-200" max="200" step="1" class="write-input" />
+          </div>
           <div class="btn-row" style="margin-top:8px">
             <button id="btn-apply-motor" class="btn btn-write" title="Recompute TIM matrices and atomically swap the active motor model at the next solver-safe boundary.">Apply Motor</button>
           </div>
@@ -434,10 +438,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="field-inline">
             <label title="Tempo para rampar 0 -> velocidade nominal">Accel (s)</label>
             <input id="accel-time" type="number" value="1" min="0.1" max="300" step="0.5" class="write-input" />
-          </div>
-          <div class="field-inline">
-            <label title="Torque de carga mecânica aplicado ao rotor">Torque (N·m)</label>
-            <input id="torque" type="number" value="0" min="-200" max="200" step="1" class="write-input" />
           </div>
           <div class="field-inline">
             <label title="Velocidade síncrona nominal — tensão máxima é aplicada aqui">Rated RPM</label>
@@ -464,7 +464,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="panel-title">SCENARIO RECIPE</div>
           <div class="field-inline">
             <label>Name</label>
-            <input id="scenario-name" type="text" value="motor_fault_step" class="write-input" />
+            <input id="scenario-name" type="text" value="speed_load_steps" class="write-input" />
           </div>
           <div class="scenario-toolbar">
             <button id="btn-recipe-load" class="btn btn-sm" type="button">Load</button>
@@ -489,29 +489,86 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               </select>
               <select class="write-input">
                 <option>speed_rpm</option>
-                <option>torque_nm</option>
-                <option>rs</option>
-                <option>rr</option>
-                <option>vdc_v</option>
               </select>
-              <input type="number" value="1800" step="0.001" class="write-input" />
+              <input type="number" value="900" step="0.001" class="write-input" />
               <button class="scenario-remove" type="button" title="Remove event">x</button>
             </div>
             <div class="scenario-row">
               <input type="number" value="2.0" min="0" step="0.001" class="write-input" />
               <select class="write-input">
-                <option>motor</option>
                 <option>control</option>
+                <option>motor</option>
                 <option>load</option>
               </select>
               <select class="write-input">
-                <option>rs</option>
-                <option>rr</option>
-                <option>lm</option>
-                <option>torque_nm</option>
                 <option>speed_rpm</option>
               </select>
-              <input type="number" value="0.9" step="0.001" class="write-input" />
+              <input type="number" value="1800" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="4.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>control</option>
+                <option>motor</option>
+                <option>load</option>
+              </select>
+              <select class="write-input">
+                <option>speed_rpm</option>
+              </select>
+              <input type="number" value="1200" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="6.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>load</option>
+                <option>control</option>
+                <option>motor</option>
+              </select>
+              <select class="write-input">
+                <option>torque_nm</option>
+              </select>
+              <input type="number" value="5" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="8.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>load</option>
+                <option>control</option>
+                <option>motor</option>
+              </select>
+              <select class="write-input">
+                <option>torque_nm</option>
+              </select>
+              <input type="number" value="15" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="10.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>load</option>
+                <option>control</option>
+                <option>motor</option>
+              </select>
+              <select class="write-input">
+                <option>torque_nm</option>
+              </select>
+              <input type="number" value="30" step="0.001" class="write-input" />
+              <button class="scenario-remove" type="button" title="Remove event">x</button>
+            </div>
+            <div class="scenario-row">
+              <input type="number" value="12.0" min="0" step="0.001" class="write-input" />
+              <select class="write-input">
+                <option>load</option>
+                <option>control</option>
+                <option>motor</option>
+              </select>
+              <select class="write-input">
+                <option>torque_nm</option>
+              </select>
+              <input type="number" value="0" step="0.001" class="write-input" />
               <button class="scenario-remove" type="button" title="Remove event">x</button>
             </div>
           </div>
@@ -554,6 +611,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
           </div>
 
+
           <div class="btn-row" style="margin-top:6px">
             <button id="btn-pause" class="btn btn-sm" title="Pause the live view (or use mouse wheel on plot)">Pause</button>
             <button id="btn-latest" class="btn btn-sm" title="Snap to the latest sample and resume live follow">Latest</button>
@@ -583,7 +641,22 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div id="status" class="status-bar">● Idle</div>
     </aside>
 
-    <main class="plot-area" id="plot-area"></main>
+    <main class="graph-shell">
+      <section class="plot-area" id="plot-area"></section>
+      <div class="timeline-control graph-timeline">
+        <div class="timeline-head">
+          <span class="timeline-title">Timeline</span>
+          <span id="timeline-range" class="timeline-range">0.000 - 1.000 s</span>
+        </div>
+        <div id="timeline-track" class="timeline-track">
+          <div id="timeline-window" class="timeline-window">
+            <div id="timeline-left" class="timeline-handle timeline-handle-left"></div>
+            <div class="timeline-grip"></div>
+            <div id="timeline-right" class="timeline-handle timeline-handle-right"></div>
+          </div>
+        </div>
+      </div>
+    </main>
   </div>
 `;
 
@@ -630,6 +703,11 @@ const elStateBadge  = document.querySelector<HTMLDivElement>("#state-badge")!;
 const elWsBadge     = document.querySelector<HTMLDivElement>("#ws-badge")!;
 const elStatus      = document.querySelector<HTMLDivElement>("#status")!;
 const elSampleCount = document.querySelector<HTMLSpanElement>("#sample-count")!;
+const elTimelineRange = document.querySelector<HTMLSpanElement>("#timeline-range")!;
+const elTimelineTrack = document.querySelector<HTMLDivElement>("#timeline-track")!;
+const elTimelineWindow = document.querySelector<HTMLDivElement>("#timeline-window")!;
+const elTimelineLeft = document.querySelector<HTMLDivElement>("#timeline-left")!;
+const elTimelineRight = document.querySelector<HTMLDivElement>("#timeline-right")!;
 const elChList      = document.querySelector<HTMLDivElement>("#ch-list")!;
 const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
 const elScenarioTable    = document.querySelector<HTMLDivElement>("#scenario-table")!;
@@ -735,15 +813,47 @@ function readScenarioEvents() {
     .sort((a, b) => a.t - b.t);
 }
 
+function applyScenarioValueToForm(ev: { target: string; param: string; value: number }) {
+  if (ev.target === "control") {
+    switch (ev.param) {
+      case "speed_rpm":    elRpm.value       = String(ev.value); break;
+      case "vdc_v":        elVdc.value       = String(ev.value); break;
+      case "accel_time_s": elAccelTime.value = String(ev.value); break;
+      case "max_v_pu":     elMaxVPu.value    = String(ev.value); break;
+      case "base_freq_hz": elRatedRpm.value  = String(Math.round(ev.value * 60 / getNpp())); break;
+      case "torque_nm":    elTorque.value    = String(ev.value); break;
+    }
+  } else if (ev.target === "load" && ev.param === "torque_nm") {
+    elTorque.value = String(ev.value);
+  } else if (ev.target === "motor") {
+    switch (ev.param) {
+      case "rs":  elMotorRs.value = String(ev.value); break;
+      case "rr":  elMotorRr.value = String(ev.value); break;
+      case "ls":  elMotorLs.value = String(ev.value); break;
+      case "lr":  elMotorLr.value = String(ev.value); break;
+      case "lm":  elMotorLm.value = String(ev.value); break;
+      case "j":   elMotorJ.value  = String(ev.value); break;
+      case "npp": elNpp.value     = String(ev.value); motorNpp = Math.max(1, ev.value || 2); break;
+    }
+    syncMotorLmLr();
+  }
+}
+
 async function dispatchScenarioEvent(ev: { target: string; param: string; value: number }) {
   const ip = elIp.value.trim();
   if (!ip) return;
   try {
+    applyScenarioValueToForm(ev);
     const p = readParams();
     if (ev.target === "control" || ev.target === "load") {
       // Send only the changed field — never include `enable` so the motor
-      // keeps running. api.SetParams always sends enable:false (bool) which
-      // causes a 400 from the gateway (expects *int). Use postJSON directly.
+      // keeps running. In gateway mode, use postJSON so only the touched field
+      // is sent; in Wails mode, SetParams is the available local bridge.
+      if (isWails) {
+        const s = await api.SetParams(ip, p.freq, p.vdc, p.torque, p.baseFreq, p.maxVPu, p.accelTime, false, false, false);
+        applyResponse(s, { hydrate: false });
+        return;
+      }
       const body: Record<string, unknown> = { ip };
       switch (ev.param) {
         case "speed_rpm":    body.freq_hz      = ev.value * p.npp / 60; break;
@@ -753,16 +863,20 @@ async function dispatchScenarioEvent(ev: { target: string; param: string; value:
         case "max_v_pu":     body.max_v_pu     = ev.value;              break;
         case "base_freq_hz": body.base_freq_hz = ev.value;              break;
       }
-      await postJSON<HilStatus>("/api/set", body);
+      const s = await postJSON<HilStatus>("/api/set", body);
+      applyResponse(s, { hydrate: false });
     } else if (ev.target === "motor") {
       const m: Record<string, number> = {
         rs: p.motorRs, rr: p.motorRr, ls: p.motorLs,
         lr: p.motorLr, lm: p.motorLm, j:  p.motorJ,  npp: p.npp,
       };
       m[ev.param] = ev.value;
-      await api.ProgramMotor(ip, m.rs, m.rr, m.ls, m.lr, m.lm, m.j, m.npp);
+      const s = await api.ProgramMotor(ip, m.rs, m.rr, m.ls, m.lr, m.lm, m.j, m.npp);
+      applyResponse(s, { hydrate: false });
     }
-  } catch { /* scenario continues on transient errors */ }
+  } catch (e) {
+    setStatus(`Scenario event failed: ${String(e)}`, "error");
+  }
 }
 
 function stopScenario() {
@@ -782,24 +896,55 @@ function stopScenario() {
     .forEach(b => { b.disabled = false; });
 }
 
-function startScenario() {
+async function prepareScenarioRun() {
+  let { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
+  if (!ip) throw new Error("missing board IP");
+
+  // Scenario runs should be one-click: resolve a stale saved/default IP before
+  // sending control commands, then keep the input and storage aligned.
+  const found = await api.DiscoverBoard(ip) as DiscoveryResponse;
+  ip = found.ip || ip;
+  applyBoardIP(ip);
+  rememberBoardIP(ip);
+
+  captureTelemetry = false;
+  capturePwm = false;
+  resetPlotBuffer();
+  await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
+  const s = await api.Run(ip) as HilStatus;
+  resetPlotBuffer();
+  captureTelemetry = true;
+  capturePwm = true;
+  applyBoardIP(s.board_ip);
+  rememberBoardIP(s.board_ip || ip);
+  setStatus("Scenario running", "ok");
+  applyResponse(s, { hydrate: false });
+}
+
+async function startScenario() {
   if (scenarioRunning) { stopScenario(); return; }
   const events = readScenarioEvents();
   if (events.length === 0) {
     elScenarioProgress.textContent = "Adicione eventos à receita.";
     return;
   }
-  // If the motor is not already running, start it now so scenario events
-  // take effect immediately instead of leaving the board in PAUSED state.
-  const ip = elIp.value.trim();
-  if (ip && lastBoardState !== "running") {
-    api.Run(ip).catch(() => {});
+  elBtnRecipeRun.disabled = true;
+  elScenarioProgress.textContent = "Starting...";
+  try {
+    await prepareScenarioRun();
+  } catch (e) {
+    elScenarioProgress.textContent = "Start failed";
+    setStatus(`Scenario start failed: ${String(e)}`, "error");
+    showPsStatus(String(e), false);
+    elBtnRecipeRun.disabled = false;
+    return;
   }
 
   scenarioRunning = true;
   scenarioT0 = performance.now();
   scenarioTimeouts = [];
 
+  elBtnRecipeRun.disabled = false;
   elBtnRecipeRun.textContent = "■ Stop";
   elBtnRecipeRun.classList.add("btn-danger");
   elBtnRecipeLoad.disabled = true;
@@ -1022,6 +1167,121 @@ function getSessionSec(): number {
   return 0;
 }
 
+function clampViewEndToTimeZero(endSec = viewEndSec): number {
+  return Math.max(windowSec, endSec);
+}
+
+function latestTimelineSec(): number {
+  const latestTelem = tBuf.length ? tBuf[tBuf.length - 1] : 0;
+  const latestOverview = ovTBuf.length ? ovTBuf[ovTBuf.length - 1] : 0;
+  const latestPwmOverview = pwmOverviewT.length ? pwmOverviewT[pwmOverviewT.length - 1] : 0;
+  const latestPwm = pwmEvents.length ? pwmTime(pwmEvents[pwmEvents.length - 1]) : 0;
+  return Math.max(WINDOW_MIN_SEC, latestTelem, latestOverview, latestPwmOverview, latestPwm, viewEndSec, windowSec);
+}
+
+function formatTimelineSec(t: number): string {
+  if (t < 1) return `${(t * 1000).toFixed(0)} ms`;
+  if (t < 10) return `${t.toFixed(3)} s`;
+  if (t < 60) return `${t.toFixed(2)} s`;
+  const m = Math.floor(t / 60);
+  const s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
+function updateTimelineBar() {
+  const total = latestTimelineSec();
+  const start = Math.max(0, viewEndSec - windowSec);
+  const end = Math.min(total, viewEndSec);
+  const leftPct = clamp(start / total * 100, 0, 100);
+  const rightPct = clamp(end / total * 100, leftPct, 100);
+  elTimelineWindow.style.left = `${leftPct}%`;
+  elTimelineWindow.style.width = `${Math.max(0.5, rightPct - leftPct)}%`;
+  elTimelineRange.textContent = `${formatTimelineSec(start)} - ${formatTimelineSec(end)}`;
+}
+
+function timelineTimeAtClientX(clientX: number): number {
+  const rect = elTimelineTrack.getBoundingClientRect();
+  const ratio = clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+  return ratio * latestTimelineSec();
+}
+
+function freezeTimelineView() {
+  if (paused) return;
+  paused = true;
+  viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
+}
+
+function applyTimelineWindow(start: number, end: number) {
+  const total = latestTimelineSec();
+  const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
+  const clampedEnd = clamp(end, WINDOW_MIN_SEC, total);
+  const clampedStart = clamp(start, 0, clampedEnd - WINDOW_MIN_SEC);
+  windowSec = clamp(clampedEnd - clampedStart, WINDOW_MIN_SEC, maxSec);
+  viewEndSec = clampViewEndToTimeZero(clampedEnd);
+  updateWindowButtons();
+  scheduleRender();
+}
+
+function attachTimelineNavigation() {
+  type DragMode = "window" | "left" | "right";
+  let dragMode: DragMode | null = null;
+  let dragStartX = 0;
+  let dragStartEnd = 0;
+
+  const beginDrag = (mode: DragMode, e: PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    freezeTimelineView();
+    dragMode = mode;
+    dragStartX = e.clientX;
+    dragStartEnd = viewEndSec;
+    elTimelineTrack.setPointerCapture(e.pointerId);
+  };
+
+  elTimelineLeft.addEventListener("pointerdown", e => beginDrag("left", e));
+  elTimelineRight.addEventListener("pointerdown", e => beginDrag("right", e));
+  elTimelineWindow.addEventListener("pointerdown", e => beginDrag("window", e));
+
+  elTimelineTrack.addEventListener("pointerdown", e => {
+    if (e.target !== elTimelineTrack) return;
+    freezeTimelineView();
+    const center = timelineTimeAtClientX(e.clientX);
+    const total = latestTimelineSec();
+    viewEndSec = clamp(center + windowSec / 2, windowSec, total);
+    updateWindowButtons();
+    scheduleRender();
+  });
+
+  elTimelineTrack.addEventListener("pointermove", e => {
+    if (!dragMode) return;
+    const total = latestTimelineSec();
+    if (dragMode === "window") {
+      const rect = elTimelineTrack.getBoundingClientRect();
+      const delta = (e.clientX - dragStartX) / Math.max(1, rect.width) * total;
+      viewEndSec = clamp(dragStartEnd + delta, windowSec, total);
+      scheduleRender();
+      return;
+    }
+
+    const t = timelineTimeAtClientX(e.clientX);
+    const start = Math.max(0, viewEndSec - windowSec);
+    const end = viewEndSec;
+    if (dragMode === "left") {
+      applyTimelineWindow(Math.min(t, end - WINDOW_MIN_SEC), end);
+    } else {
+      applyTimelineWindow(start, Math.max(t, start + WINDOW_MIN_SEC));
+    }
+  });
+
+  const endDrag = (e: PointerEvent) => {
+    if (!dragMode) return;
+    dragMode = null;
+    try { elTimelineTrack.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  };
+  elTimelineTrack.addEventListener("pointerup", endDrag);
+  elTimelineTrack.addEventListener("pointercancel", endDrag);
+}
+
 // Decimate an arbitrary time/sample buffer pair to ~maxPts points in [xMin, xMax].
 // xMin/xMax === null means "use the entire buffer".
 // Decimation works on the VISIBLE slice so zooming in always gives full resolution.
@@ -1172,6 +1432,61 @@ let scaleSyncing = false;
 // All x-scale work is done explicitly in scheduleRender(); we keep the guard
 // flag because cursor.sync still needs to call setScale internally.
 
+function attachPlotNavigation(wrap: HTMLElement) {
+  // Wheel: zoom the time window around the cursor and freeze live-follow while
+  // inspecting history. This handler is shared by telemetry and PWM plots.
+  wrap.addEventListener("wheel", (e: WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 1.25 : 0.8;
+    const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
+    const next = clamp(windowSec * factor, WINDOW_MIN_SEC, maxSec);
+    if (next === windowSec) return;
+
+    if (!paused) {
+      paused = true;
+      viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
+    }
+
+    const plotRect = (wrap.querySelector(".u-over") as HTMLElement | null)?.getBoundingClientRect() ?? wrap.getBoundingClientRect();
+    const mouseRatio = clamp((e.clientX - plotRect.left) / Math.max(1, plotRect.width), 0, 1);
+    const timeCursor = (viewEndSec - windowSec) + mouseRatio * windowSec;
+    windowSec = next;
+    viewEndSec = clampViewEndToTimeZero(timeCursor + (1 - mouseRatio) * next);
+    updateWindowButtons();
+    scheduleRender();
+  }, { passive: false });
+
+  // Drag horizontal: pan in time. If live, first freeze at the latest sample.
+  let dragStartX: number | null = null;
+  let dragStartViewEnd = 0;
+  wrap.addEventListener("mousedown", (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    if (!paused) {
+      paused = true;
+      viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
+      scheduleRender();
+    }
+    dragStartX = e.clientX;
+    dragStartViewEnd = viewEndSec;
+    wrap.style.cursor = "grabbing";
+  });
+  const onMove = (e: MouseEvent) => {
+    if (dragStartX == null) return;
+    const dx = e.clientX - dragStartX;
+    const plotRect = (wrap.querySelector(".u-over") as HTMLElement | null)?.getBoundingClientRect() ?? wrap.getBoundingClientRect();
+    const pxPerSec = plotRect.width / windowSec;
+    viewEndSec = clampViewEndToTimeZero(dragStartViewEnd - dx / pxPerSec);
+    scheduleRender();
+  };
+  const onUp = () => {
+    if (dragStartX == null) return;
+    dragStartX = null;
+    wrap.style.cursor = "";
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
 // ── Build / rebuild all uPlot instances ───────────────────────────────────────
 function buildPlots() {
   if (isBuilding) return;
@@ -1212,66 +1527,7 @@ function buildPlots() {
 
     const yLabel = chIdx.map(ci => CHANNELS[ci].unit).find(Boolean) ?? "Y";
 
-    // ── Wheel: zoom the time window. Window (zoom) and pause (scroll-or-not)
-    // are intentionally orthogonal — wheeling never touches pause state. If
-    // you're live and zoom out, you see more recent history including the
-    // present; if you're paused, the right edge stays where you left it.
-    wrap.addEventListener("wheel", (e: WheelEvent) => {
-      e.preventDefault();
-      const factor = e.deltaY > 0 ? 1.25 : 0.8;
-      const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
-      const next = clamp(windowSec * factor, WINDOW_MIN_SEC, maxSec);
-      if (next === windowSec) return;
-
-      // Freeze live follow so viewEndSec is stable during zoom
-      if (!paused) {
-        paused = true;
-        viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
-      }
-
-      // Keep the time value under the cursor at the same screen position.
-      // mouseRatio: 0 = left edge, 1 = right edge of the plot.
-      const rect = wrap.getBoundingClientRect();
-      const mouseRatio = (e.clientX - rect.left) / rect.width;
-      const timeCursor = (viewEndSec - windowSec) + mouseRatio * windowSec;
-
-      // After zoom: newViewEnd so timeCursor stays at mouseRatio.
-      viewEndSec = timeCursor + (1 - mouseRatio) * next;
-
-      windowSec = next;
-      updateWindowButtons();
-      scheduleRender();
-    }, { passive: false });
-
-    // ── Drag horizontal: pan in time. Active only while paused (in live
-    // mode a pan would fight the auto-scroll, so we ignore drags there).
-    let dragStartX: number | null = null;
-    let dragStartViewEnd = 0;
-    wrap.addEventListener("mousedown", (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      if (!paused) {
-        paused = true;
-        viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
-        scheduleRender();
-      }
-      dragStartX = e.clientX;
-      dragStartViewEnd = viewEndSec;
-      wrap.style.cursor = "grabbing";
-    });
-    const onMove = (e: MouseEvent) => {
-      if (dragStartX == null) return;
-      const dx = e.clientX - dragStartX;
-      const pxPerSec = wrap.clientWidth / windowSec;
-      viewEndSec = dragStartViewEnd - dx / pxPerSec;
-      scheduleRender();
-    };
-    const onUp = () => {
-      if (dragStartX == null) return;
-      dragStartX = null;
-      wrap.style.cursor = "";
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    attachPlotNavigation(wrap);
     wrap.addEventListener("mouseleave", () => { elTooltip.style.display = "none"; });
 
     const p = new uPlot(
@@ -1342,6 +1598,8 @@ function buildPlots() {
 
   const pwmWrap = document.createElement("div");
   pwmWrap.className = "subplot-wrap pwm-subplot-wrap";
+  attachPlotNavigation(pwmWrap);
+  pwmWrap.addEventListener("mouseleave", () => { elTooltip.style.display = "none"; });
   // PWM is the first subplot: insert at the top of the plot area regardless of
   // creation order (DOM position, not uPlot instantiation order, drives layout).
   elPlotArea.prepend(pwmWrap);
@@ -1494,13 +1752,34 @@ function pwmTime(ev: PwmPlotEvent): number {
   return ev.t_sec;
 }
 
+function lowerBoundPwmTime(target: number): number {
+  let lo = 0, hi = pwmEvents.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (pwmEvents[mid].t_sec < target) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+function upperBoundPwmTime(target: number): number {
+  let lo = 0, hi = pwmEvents.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (pwmEvents[mid].t_sec <= target) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
 function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], number[], number[]] {
-  const maxTransitions = Math.max(2000, (elPlotArea.clientWidth || 800) * 8);
+  // Draw real PWM edges while the window is reasonably sparse. If it is too
+  // dense, fall back to a min/max envelope so we keep the -1/0/1 states without
+  // inventing averaged duty-equivalent values.
+  const maxTransitions = Math.max(2000, (elPlotArea.clientWidth || 800) * 4);
   if (pwmEvents.length === 0) return pwmOverviewData(viewStart, viewEnd, maxTransitions);
 
   const firstTime = pwmTime(pwmEvents[0]);
   const lastTime = pwmTime(pwmEvents[pwmEvents.length - 1]);
-  if (viewStart < firstTime || viewEnd - viewStart > 10.0) {
+  if (viewEnd < firstTime) {
     const overview = pwmOverviewData(viewStart, viewEnd, maxTransitions);
     if (overview[0].length > 0) return overview;
   }
@@ -1512,16 +1791,9 @@ function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], n
   const ya: number[] = [];
   const yb: number[] = [];
   const yc: number[] = [];
-  let prevIdx = 0;
-  for (let i = 0; i < pwmEvents.length; i++) {
-    const t = pwmTime(pwmEvents[i]);
-    if (t <= plotStart) prevIdx = i;
-    if (t > plotEnd) break;
-  }
-  let firstIdx = prevIdx;
-  while (firstIdx < pwmEvents.length && pwmTime(pwmEvents[firstIdx]) < plotStart) firstIdx++;
-  let lastIdx = firstIdx;
-  while (lastIdx < pwmEvents.length && pwmTime(pwmEvents[lastIdx]) <= plotEnd) lastIdx++;
+  const firstIdx = lowerBoundPwmTime(plotStart);
+  const prevIdx = Math.max(0, firstIdx - 1);
+  const lastIdx = upperBoundPwmTime(plotEnd);
   const transitionCount = Math.max(0, lastIdx - firstIdx);
   if (transitionCount > maxTransitions) {
     let idx = prevIdx;
@@ -1607,6 +1879,7 @@ function scheduleRender() {
     if (!paused && tBuf.length > 0) {
       viewEndSec = tBuf[tBuf.length - 1];
     }
+    viewEndSec = clampViewEndToTimeZero();
     const viewEnd   = viewEndSec;
     const viewStart = viewEnd - windowSec;
 
@@ -1632,6 +1905,7 @@ function scheduleRender() {
     }
     scaleSyncing = false;
 
+    updateTimelineBar();
     elSampleCount.textContent = `${sampleCount.toLocaleString()} samples`;
     elBtnPause.textContent = paused ? "▶ Resume" : "⏸ Pause";
     elBtnPause.classList.toggle("active", paused);
@@ -2041,11 +2315,14 @@ document.querySelectorAll<HTMLButtonElement>("#window-group button[data-win-ms]"
         const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
         windowSec = clamp(ms / 1000, WINDOW_MIN_SEC, maxSec);
       }
+      viewEndSec = clampViewEndToTimeZero();
       updateWindowButtons();
       scheduleRender();
     });
   });
 updateWindowButtons();
+attachTimelineNavigation();
+updateTimelineBar();
 
 elBtnPause.addEventListener("click", () => {
   if (paused) {

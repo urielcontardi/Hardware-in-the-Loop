@@ -456,9 +456,20 @@ body {
 .status-bar.error { color: var(--danger); }
 
 /* ── PLOT AREA ────────────────────────────────── */
+.graph-shell {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
 .plot-area {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: block;
   overflow: hidden;
   background: var(--bg);
@@ -781,6 +792,104 @@ body {
   border-color: var(--blue);
   color: var(--blue);
 }
+
+
+/* -- TIMELINE CONTROL --------------------------- */
+.timeline-control {
+  margin: 10px 0 8px;
+  padding: 8px 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #07111e;
+}
+
+.graph-timeline {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 7px 18px 8px 72px;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+  background: #060d18;
+}
+
+.graph-timeline .timeline-head {
+  margin-bottom: 5px;
+}
+
+.timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.timeline-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.timeline-range {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.timeline-track {
+  position: relative;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid #17304b;
+  background:
+    linear-gradient(90deg, rgba(79,195,247,0.22) 0 1px, transparent 1px) 0 0 / 12.5% 100%,
+    #040a12;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.timeline-window {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  width: 100%;
+  min-width: 16px;
+  border: 1px solid #4fc3f7;
+  border-radius: 3px;
+  background: rgba(79, 195, 247, 0.18);
+  box-shadow: 0 0 10px rgba(79, 195, 247, 0.12);
+  cursor: grab;
+}
+
+.timeline-window:active { cursor: grabbing; }
+
+.timeline-grip {
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  bottom: 3px;
+  width: 10px;
+  transform: translateX(-50%);
+  opacity: 0.55;
+  background: repeating-linear-gradient(90deg, transparent 0 2px, #9adfff 2px 3px);
+}
+
+.timeline-handle {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 7px;
+  background: #9adfff;
+  cursor: ew-resize;
+}
+
+.timeline-handle-left { left: -1px; border-radius: 3px 0 0 3px; }
+.timeline-handle-right { right: -1px; border-radius: 0 3px 3px 0; }
 
 /* ── CHANNEL SUBPLOT BADGE ────────────────────── */
 .ch-subplot-badge {
