@@ -466,14 +466,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <div class="tab-pane" data-tab-panel="scenario">
         <section class="panel">
           <div class="panel-title">SCENARIO RECIPE</div>
-          <div class="field-inline">
-            <label>Name</label>
-            <input id="scenario-name" type="text" value="speed_load_steps" class="write-input" />
-          </div>
-          <div class="scenario-toolbar">
+          <div class="scenario-name-row">
+            <input id="scenario-name" type="text" value="speed_load_steps" class="write-input scenario-name-input" placeholder="recipe name" />
             <button id="btn-recipe-load" class="btn btn-sm" type="button">Load</button>
             <button id="btn-recipe-save" class="btn btn-sm" type="button">Save</button>
-            <button id="btn-recipe-run"  class="btn btn-sm" type="button">Run recipe</button>
+          </div>
+          <div class="scenario-toolbar">
+            <button id="btn-recipe-add-batch" class="btn btn-sm btn-accent" type="button" title="Save recipe and add to Batch queue">+ Batch</button>
+            <button id="btn-recipe-run"  class="btn btn-sm" type="button">▶ Run</button>
             <span   id="scenario-progress" class="scenario-progress"></span>
           </div>
           <div id="scenario-table" class="scenario-table" aria-label="Scenario event editor">
@@ -751,6 +751,8 @@ const elBtnRecipeRun     = document.querySelector<HTMLButtonElement>("#btn-recip
 const elScenarioName     = document.querySelector<HTMLInputElement>("#scenario-name")!;
 const elScenarioProgress = document.querySelector<HTMLSpanElement>("#scenario-progress")!;
 const elScenarioEndRow   = document.querySelector<HTMLDivElement>("#scenario-end-row")!;
+const elBtnRecipeAddBatch = document.querySelector<HTMLButtonElement>("#btn-recipe-add-batch")!;
+const elSidebar       = document.querySelector<HTMLElement>(".sidebar")!;
 const elBtnSaveRun    = document.querySelector<HTMLButtonElement>("#btn-save-run")!;
 const elBtnLoadRun    = document.querySelector<HTMLButtonElement>("#btn-load-run")!;
 const elLoadFileInput = document.querySelector<HTMLInputElement>("#load-file-input")!;
@@ -783,8 +785,10 @@ tabButtons.forEach(btn => {
   btn.setAttribute("role", "tab");
   btn.setAttribute("aria-selected", btn.classList.contains("active") ? "true" : "false");
   btn.addEventListener("click", () => {
-    setActiveTab(btn.dataset.tab || "plant");
-    if (btn.dataset.tab === "scenario") refreshBatchRecipeSelects();
+    const tab = btn.dataset.tab || "plant";
+    setActiveTab(tab);
+    elSidebar.classList.toggle("sidebar-wide", tab === "scenario");
+    if (tab === "scenario") refreshBatchRecipeSelects();
   });
 });
 
@@ -1065,6 +1069,7 @@ function saveRecipe() {
     const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
     all[name] = { events, endTime };
     localStorage.setItem(RECIPE_KEY, JSON.stringify(all));
+    refreshBatchRecipeSelects();
     const orig = elBtnRecipeSave.textContent!;
     elBtnRecipeSave.textContent = "Saved ✓";
     window.setTimeout(() => { elBtnRecipeSave.textContent = orig; }, 1500);
@@ -1086,12 +1091,22 @@ function loadRecipe() {
     elScenarioTable.querySelectorAll(".scenario-row:not(.scenario-end-row)").forEach(r => r.remove());
     events.forEach(ev => addScenarioRow(ev));
     setScenarioEndTime(endTime);
+    refreshBatchRecipeSelects();
   } catch { /* storage not available */ }
 }
 
 elBtnRecipeLoad.addEventListener("click", loadRecipe);
 elBtnRecipeSave.addEventListener("click", saveRecipe);
 elBtnRecipeRun.addEventListener("click", startScenario);
+
+elBtnRecipeAddBatch.addEventListener("click", () => {
+  saveRecipe();                                           // save (also refreshes dropdowns)
+  const name = elScenarioName.value.trim() || "default";
+  addBatchRow({ recipeName: name, endDelaySec: 2 });      // add to batch immediately
+  const orig = elBtnRecipeAddBatch.textContent!;
+  elBtnRecipeAddBatch.textContent = "Added ✓";
+  window.setTimeout(() => { elBtnRecipeAddBatch.textContent = orig; }, 1500);
+});
 
 elBtnAddBatchItem.addEventListener("click", () => { if (!batchRunning) { refreshBatchRecipeSelects(); addBatchRow(); } });
 elBtnBatchRun.addEventListener("click", startBatch);

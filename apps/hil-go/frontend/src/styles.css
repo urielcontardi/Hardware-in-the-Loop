@@ -1087,12 +1087,40 @@ body {
   background: #36516b;
 }
 
+/* ── Scenario tab: sidebar expands to give more room ──────────────────────── */
+.sidebar.sidebar-wide {
+  width: 360px;
+  min-width: 360px;
+}
+
+.scenario-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px;
+  margin-bottom: 6px;
+  align-items: center;
+}
+
+.scenario-name-input {
+  font-size: 11px !important;
+}
+
 .scenario-toolbar {
   display: grid;
-  grid-template-columns: repeat(3, auto) 1fr;
+  grid-template-columns: auto auto 1fr;
   gap: 6px;
-  margin: 8px 0 10px;
+  margin: 0 0 8px;
   align-items: center;
+}
+
+.btn-accent {
+  border-color: rgba(0, 212, 168, 0.5);
+  color: var(--accent);
+  background: rgba(0, 212, 168, 0.08);
+}
+.btn-accent:hover {
+  border-color: var(--accent);
+  background: rgba(0, 212, 168, 0.18);
 }
 .scenario-progress {
   font: 10px "IBM Plex Mono", monospace;
@@ -1126,7 +1154,20 @@ body {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-top: 8px;
+  margin-top: 4px;
+  max-height: 268px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #1e3a5f transparent;
+}
+
+.scenario-head {
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 1;
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .scenario-head,
@@ -1161,6 +1202,7 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: 0 2px;
+  /* sticky positioning set above */
 }
 
 .scenario-row .write-input {
