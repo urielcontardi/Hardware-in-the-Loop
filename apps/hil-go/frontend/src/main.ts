@@ -3296,3 +3296,77 @@ api.GetLocalIP().then(ip => {
   // suppress unused warning
   void lastBoardState;
 }).catch(() => {});
+
+// ── About modal ───────────────────────────────────────────────────────────────
+type AboutSection = { title: string; text: string; images: { src: string; alt: string; small?: boolean; medium?: boolean }[] };
+const ABOUT_SECTIONS: AboutSection[] = [
+  {
+    title: "Sobre o Projeto",
+    text: "O HIL Monitor é uma interface de monitoramento e controle para simulação Hardware-in-the-Loop (HIL) de motores de indução. Desenvolvido no Laboratório de Sistemas Embarcados (LSE-PPGESE), o sistema emula o comportamento eletromecânico do motor em tempo real utilizando FPGA.",
+    images: [],
+  },
+  {
+    title: "Arquitetura do Sistema",
+    text: "O sistema integra um solver de equações diferenciais implementado em FPGA, um daemon de controle em Go e esta interface web. A telemetria é transmitida via UDP e renderizada em tempo real.",
+    images: [{ src: "/HIL_Diagram.png", alt: "Diagrama do Sistema HIL", medium: true }],
+  },
+  {
+    title: "Como Usar",
+    text: "1. Informe o IP do board e clique em Find/Connect.\n2. Configure os parâmetros do motor na aba Plant.\n3. Defina os setpoints de velocidade e torque na aba Control.\n4. Clique em Run para iniciar a simulação.\n5. Acompanhe os sinais na aba Telemetry.",
+    images: [],
+  },
+  {
+    title: "Equipe & Instituição",
+    text: "Projeto desenvolvido no Laboratório de Sistemas Embarcados (LSE) da Universidade Federal de Santa Catarina (UFSC).",
+    images: [{ src: "/LSE_LOGO.png", alt: "LSE", small: true }],
+  },
+];
+
+function buildAboutModal(): HTMLElement {
+  const overlay = document.createElement("div");
+  overlay.id = "about-overlay";
+  overlay.className = "modal-overlay";
+
+  const sectionsHtml = ABOUT_SECTIONS.map(s => {
+    const textHtml = s.text.split("\n").map(line => `<p>${line}</p>`).join("");
+    const imgsHtml = s.images.length
+      ? `<div class="about-imgs">${s.images.map(img =>
+          `<img src="${img.src}" alt="${img.alt}" class="about-img${img.small ? " about-img-small" : img.medium ? " about-img-medium" : ""}" />`
+        ).join("")}</div>`
+      : "";
+    return `
+      <div class="about-section">
+        <div class="about-section-title">${s.title}</div>
+        <div class="about-section-body">${textHtml}${imgsHtml}</div>
+      </div>`;
+  }).join("");
+
+  overlay.innerHTML = `
+    <div class="modal-box about-modal-box">
+      <div class="modal-header">
+        <span>HIL Monitor — Sobre o Projeto</span>
+        <button id="btn-about-close" class="icon-btn" style="font-size:18px">×</button>
+      </div>
+      <div class="about-modal-body">${sectionsHtml}</div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  function closeAbout() { overlay.classList.add("hidden"); }
+  overlay.addEventListener("click", e => { if (e.target === overlay) closeAbout(); });
+  overlay.querySelector("#btn-about-close")!.addEventListener("click", closeAbout);
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !overlay.classList.contains("hidden")) closeAbout();
+  });
+
+  return overlay;
+}
+
+const aboutOverlay = buildAboutModal();
+
+const elBtnAbout = document.createElement("button");
+elBtnAbout.className = "icon-btn btn-about";
+elBtnAbout.title = "Sobre o projeto";
+elBtnAbout.textContent = "ⓘ";
+document.querySelector(".sidebar-badges")!.appendChild(elBtnAbout);
+elBtnAbout.addEventListener("click", () => aboutOverlay.classList.remove("hidden"));

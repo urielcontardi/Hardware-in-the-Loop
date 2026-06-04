@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -37,9 +38,11 @@ func LocalIP() string {
 }
 
 const (
-	DiscoveryPort = 5004
-	CmdPort       = 5005
-	timeoutMs     = 1500
+	DiscoveryPort  = 5004
+	CmdPort        = 5005
+	SupervisorPort = 5010
+	timeoutMs      = 1500
+	recoveryDelay  = 1200 * time.Millisecond
 
 	discoveryMagic = "HIL_DISCOVER_V1"
 )
@@ -105,8 +108,79 @@ type SetParams struct {
 	TelemDst     string   `json:"telem_dst,omitempty"`
 }
 
+var (
+	recoveryMu      sync.Mutex
+	timeoutMu       sync.Mutex
+	timeoutFailures = map[string]int{}
+)
+
 func sendRecv(ip string, payload []byte) (*HilStatus, error) {
-	return sendRecvTimeout(ip, payload, timeoutMs*time.Millisecond)
+	cmd := payloadCmd(payload)
+	status, err := sendRecvTimeout(ip, payload, timeoutMs*time.Millisecond)
+	if err == nil {
+		clearTimeoutFailure(ip, cmd)
+		return status, nil
+	}
+	if !isTimeoutErr(err) {
+		return nil, err
+	}
+	if !shouldRecover(ip, cmd) {
+		return nil, err
+	}
+
+	if _, recErr := RestartController(ip); recErr != nil {
+		return nil, fmt.Errorf("%w; supervisor recovery failed: %v", err, recErr)
+	}
+	time.Sleep(recoveryDelay)
+
+	if !retryAfterRecovery(cmd) {
+		return nil, fmt.Errorf("%w; controller restarted by supervisor, command %q was not retried", err, cmd)
+	}
+	status, retryErr := sendRecvTimeout(ip, payload, timeoutMs*time.Millisecond)
+	if retryErr == nil {
+		clearTimeoutFailure(ip, cmd)
+	}
+	return status, retryErr
+}
+
+func shouldRecover(ip, cmd string) bool {
+	key := ip + ":" + cmd
+	timeoutMu.Lock()
+	defer timeoutMu.Unlock()
+	timeoutFailures[key]++
+	if cmd == "get" || cmd == "ping" {
+		return timeoutFailures[key] >= 2
+	}
+	return true
+}
+
+func clearTimeoutFailure(ip, cmd string) {
+	key := ip + ":" + cmd
+	timeoutMu.Lock()
+	delete(timeoutFailures, key)
+	timeoutMu.Unlock()
+}
+
+func isTimeoutErr(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func payloadCmd(payload []byte) string {
+	var msg struct {
+		Cmd string `json:"cmd"`
+	}
+	_ = json.Unmarshal(payload, &msg)
+	return msg.Cmd
+}
+
+func retryAfterRecovery(cmd string) bool {
+	switch cmd {
+	case "get", "ping", "set", "motor", "telem", "stop", "reset", "pause":
+		return true
+	default:
+		return false
+	}
 }
 
 func sendRecvTimeout(ip string, payload []byte, timeout time.Duration) (*HilStatus, error) {
@@ -406,7 +480,60 @@ func PingTimeout(ip string, timeout time.Duration) (*HilStatus, error) {
 	return sendRecvTimeout(ip, []byte(`{"cmd":"ping"}`), timeout)
 }
 
+// SupervisorStatus is returned by hil_supervisor on UDP 5010.
+type SupervisorStatus struct {
+	Status              string `json:"status"`
+	Supervisor          string `json:"supervisor"`
+	SupervisorPort      int    `json:"supervisor_port"`
+	UptimeS             int64  `json:"uptime_s"`
+	ControllerPID       int    `json:"controller_pid"`
+	ControllerRunning   int    `json:"controller_running"`
+	ControllerState     string `json:"controller_state"`
+	Cmd5005RxQueueBytes uint32 `json:"cmd5005_rx_queue_bytes"`
+}
+
+func supervisorSendRecv(ip string, payload []byte, timeout time.Duration) (*SupervisorStatus, error) {
+	raddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", ip, SupervisorPort))
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialUDP("udp4", nil, raddr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write(payload); err != nil {
+		return nil, fmt.Errorf("supervisor send: %w", err)
+	}
+
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor recv: %w", err)
+	}
+
+	var s SupervisorStatus
+	if err := json.Unmarshal(buf[:n], &s); err != nil {
+		return nil, fmt.Errorf("supervisor parse: %w — raw: %s", err, buf[:n])
+	}
+	return &s, nil
+}
+
+// Supervisor queries the independent recovery daemon on UDP 5010.
+func Supervisor(ip string) (*SupervisorStatus, error) {
+	return supervisorSendRecv(ip, []byte(`{"cmd":"status"}`), timeoutMs*time.Millisecond)
+}
+
+// RestartController asks hil_supervisor to restart hil_controller.
+func RestartController(ip string) (*SupervisorStatus, error) {
+	recoveryMu.Lock()
+	defer recoveryMu.Unlock()
+	return supervisorSendRecv(ip, []byte(`{"cmd":"restart-controller"}`), 4*time.Second)
+}
+
 // Shutdown terminates the daemon process. Rare — used only for full restarts.
 func Shutdown(ip string) (*HilStatus, error) {
-	return sendRecv(ip, []byte(`{"cmd":"shutdown"}`))
+	return sendRecvTimeout(ip, []byte(`{"cmd":"shutdown"}`), timeoutMs*time.Millisecond)
 }

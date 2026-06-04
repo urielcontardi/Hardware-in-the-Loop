@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -22,6 +24,10 @@ type App struct {
 	ring    *ring.Ring
 	localIP string
 	done    chan struct{}
+
+	stateMu   sync.Mutex
+	lastSet   map[string]hilUDP.SetParams
+	lastMotor map[string]hilUDP.MotorParams
 }
 
 // transportDecim — FPGA AXI-Stream decimation factor (used when DMA path is
@@ -37,8 +43,10 @@ const transportDecim = 375
 
 func NewApp() *App {
 	return &App{
-		ring: ring.New(262144),
-		done: make(chan struct{}),
+		ring:      ring.New(262144),
+		done:      make(chan struct{}),
+		lastSet:   make(map[string]hilUDP.SetParams),
+		lastMotor: make(map[string]hilUDP.MotorParams),
 	}
 }
 
@@ -100,7 +108,13 @@ func (a *App) ProgramMotor(ip string, rs, rr, ls, lr, lm, j, npp float32) (*hilU
 	p := hilUDP.MotorParams{
 		Rs: &rs, Rr: &rr, Ls: &ls, Lr: &lr, Lm: &lm, J: &j, Npp: &npp,
 	}
-	return hilUDP.ProgramMotor(ip, p)
+	status, err := hilUDP.ProgramMotor(ip, p)
+	if err == nil {
+		a.stateMu.Lock()
+		a.lastMotor[ip] = p
+		a.stateMu.Unlock()
+	}
+	return status, err
 }
 
 // SetParams sends control parameters to the PS board.
@@ -133,7 +147,13 @@ func (a *App) SetParams(
 		decim := transportDecim
 		p.Decim = &decim
 	}
-	return hilUDP.Set(ip, p)
+	status, err := hilUDP.Set(ip, p)
+	if err == nil {
+		a.stateMu.Lock()
+		a.lastSet[ip] = p
+		a.stateMu.Unlock()
+	}
+	return status, err
 }
 
 // GetStatus polls the current controller state from the PS board.
@@ -143,6 +163,26 @@ func (a *App) GetStatus(ip string) (*hilUDP.HilStatus, error) {
 
 // Run enables the motor with the last-applied params.
 func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
+	status, err := hilUDP.Run(ip)
+	if err == nil || !strings.Contains(err.Error(), `command "run" was not retried`) {
+		return status, err
+	}
+
+	a.stateMu.Lock()
+	motor, hasMotor := a.lastMotor[ip]
+	params, hasParams := a.lastSet[ip]
+	a.stateMu.Unlock()
+
+	if hasMotor {
+		if _, motorErr := hilUDP.ProgramMotor(ip, motor); motorErr != nil {
+			return nil, motorErr
+		}
+	}
+	if hasParams {
+		if _, setErr := hilUDP.Set(ip, params); setErr != nil {
+			return nil, setErr
+		}
+	}
 	return hilUDP.Run(ip)
 }
 

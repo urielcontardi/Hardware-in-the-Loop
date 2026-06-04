@@ -58,6 +58,11 @@ type server struct {
 	telemTarget string
 	scanMu      sync.Mutex
 	lastScanAt  time.Time
+	subsMu      sync.Mutex
+	subs        map[chan []frame.Sample]struct{}
+	stateMu     sync.Mutex
+	lastSet     map[string]hiludp.SetParams
+	lastMotor   map[string]hiludp.MotorParams
 }
 
 // RunMeta describes a saved .hilbin run file.
@@ -127,11 +132,14 @@ func main() {
 	}
 
 	s := &server{
-		ring:    r,
-		recv:    recv,
-		pwmRecv: pwmRecv,
-		localIP: localIP(),
-		runsDir: runsDir,
+		ring:      r,
+		recv:      recv,
+		pwmRecv:   pwmRecv,
+		localIP:   localIP(),
+		runsDir:   runsDir,
+		subs:      make(map[chan []frame.Sample]struct{}),
+		lastSet:   make(map[string]hiludp.SetParams),
+		lastMotor: make(map[string]hiludp.MotorParams),
 	}
 
 	mux := http.NewServeMux()
@@ -173,6 +181,7 @@ func main() {
 	}
 
 	go s.pwmPump()
+	go s.telemetryPump()
 	go s.telemetryPunchLoop()
 	if err := http.ListenAndServe(addr, logRequests(mux)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
@@ -515,13 +524,17 @@ func (s *server) handleMotor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
-	status, err := hiludp.ProgramMotor(ip, hiludp.MotorParams{
+	motor := hiludp.MotorParams{
 		Rs: req.Rs, Rr: req.Rr, Ls: req.Ls, Lr: req.Lr, Lm: req.Lm, J: req.J, Npp: req.Npp,
-	})
+	}
+	status, err := hiludp.ProgramMotor(ip, motor)
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	s.stateMu.Lock()
+	s.lastMotor[ip] = motor
+	s.stateMu.Unlock()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -564,6 +577,9 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	s.stateMu.Lock()
+	s.lastSet[ip] = p
+	s.stateMu.Unlock()
 	if req.AttachUDP {
 		s.recv.Punch(ip, telemetryPort)
 		s.pwmRecv.Punch(ip, pwmEventsPort)
@@ -586,7 +602,7 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.clearPwmHistory()
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
-	status, err := hiludp.Run(ip)
+	status, err := s.runWithRecovery(ip)
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -594,6 +610,30 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
+}
+
+func (s *server) runWithRecovery(ip string) (*hiludp.HilStatus, error) {
+	status, err := hiludp.Run(ip)
+	if err == nil || !strings.Contains(err.Error(), `command "run" was not retried`) {
+		return status, err
+	}
+
+	s.stateMu.Lock()
+	motor, hasMotor := s.lastMotor[ip]
+	params, hasParams := s.lastSet[ip]
+	s.stateMu.Unlock()
+
+	if hasMotor {
+		if _, motorErr := hiludp.ProgramMotor(ip, motor); motorErr != nil {
+			return nil, motorErr
+		}
+	}
+	if hasParams {
+		if _, setErr := hiludp.Set(ip, params); setErr != nil {
+			return nil, setErr
+		}
+	}
+	return hiludp.Run(ip)
 }
 
 func (s *server) handlePause(w http.ResponseWriter, r *http.Request) {
@@ -719,6 +759,43 @@ func (s *server) pwmHistoryLen() uint64 {
 	return uint64(len(s.pwmHistory))
 }
 
+func (s *server) subscribe() chan []frame.Sample {
+	ch := make(chan []frame.Sample, 8)
+	s.subsMu.Lock()
+	s.subs[ch] = struct{}{}
+	s.subsMu.Unlock()
+	return ch
+}
+
+func (s *server) unsubscribe(ch chan []frame.Sample) {
+	s.subsMu.Lock()
+	delete(s.subs, ch)
+	s.subsMu.Unlock()
+}
+
+// telemetryPump is the single consumer of the SPSC ring. It fans out each
+// batch to all registered SSE subscribers via their individual channels.
+func (s *server) telemetryPump() {
+	ticker := time.NewTicker(16 * time.Millisecond)
+	defer ticker.Stop()
+	scratch := make([]frame.Sample, 4096)
+	for range ticker.C {
+		n := s.ring.PopN(scratch)
+		if n == 0 {
+			continue
+		}
+		batch := append([]frame.Sample(nil), scratch[:n]...)
+		s.subsMu.Lock()
+		for ch := range s.subs {
+			select {
+			case ch <- batch:
+			default: // drop if subscriber is slow rather than blocking the pump
+			}
+		}
+		s.subsMu.Unlock()
+	}
+}
+
 func (s *server) pwmSnapshot() (uint64, []pwmrecv.Event, uint32, uint32) {
 	s.pwmMu.RLock()
 	defer s.pwmMu.RUnlock()
@@ -783,12 +860,10 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	ctx := r.Context()
-	s.ring.Clear()
-	ticker := time.NewTicker(16 * time.Millisecond)
-	defer ticker.Stop()
-	scratch := make([]frame.Sample, 4096)
-	var pwmSeq uint32
+	ch := s.subscribe()
+	defer s.unsubscribe(ch)
 
+	var pwmSeq uint32
 	base, replay, clockHz, status := s.pwmSnapshot()
 	for off := 0; off < len(replay); off += pwmSSEBatchEvents {
 		end := off + pwmSSEBatchEvents
@@ -803,11 +878,27 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	pwmCursor := base + uint64(len(replay))
 	flusher.Flush()
 
+	pwmTicker := time.NewTicker(16 * time.Millisecond)
+	defer pwmTicker.Stop()
+	// Heartbeat keeps reverse proxies (Cloudflare, nginx) from closing an idle
+	// SSE connection when no telemetry is flowing.
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case batch := <-ch:
+			payload, err := json.Marshal(batch)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: telemetry\ndata: %s\n\n", payload); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-pwmTicker.C:
 			for burst := 0; burst < 8; burst++ {
 				var events []pwmrecv.Event
 				pwmCursor, events, clockHz, status = s.pwmSince(pwmCursor, pwmSSEBatchEvents)
@@ -819,17 +910,9 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				}
 				pwmSeq++
 			}
-
-			n := s.ring.PopN(scratch)
-			if n == 0 {
-				flusher.Flush()
-				continue
-			}
-			payload, err := json.Marshal(scratch[:n])
-			if err != nil {
-				continue
-			}
-			if _, err := fmt.Fprintf(w, "event: telemetry\ndata: %s\n\n", payload); err != nil {
+			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := fmt.Fprintf(w, ": keepalive\n\n"); err != nil {
 				return
 			}
 			flusher.Flush()
