@@ -555,6 +555,7 @@ ps-build:
 	@bash -c "source $(PS_SDK_ENV) && \
 		$(MAKE) -C $(PS_APP_DIR)"
 	@echo "  Binary: $(PS_APP_DIR)/hil_controller"
+	@echo "  Binary: $(PS_APP_DIR)/hil_supervisor"
 
 ## Cross-compile FPGA smoke test binary
 ps-build-test:

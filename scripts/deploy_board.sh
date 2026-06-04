@@ -20,6 +20,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VIVADO_BIN="$ROOT_DIR/syn/hil/ebaz4205/ebaz4205.runs/impl_1/ebaz4205_wrapper.bit.bin"
 TEST_FPGA="$ROOT_DIR/src/ps_app/test_fpga"
 HIL_CTRL="$ROOT_DIR/src/ps_app/hil_controller"
+HIL_SUP="$ROOT_DIR/src/ps_app/hil_supervisor"
 
 # ---------------------------------------------------------------------------
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
@@ -69,6 +70,11 @@ if [ ! -f "$HIL_CTRL" ]; then
     make -C "$ROOT_DIR" ps-build
 fi
 
+if [ ! -f "$HIL_SUP" ]; then
+    echo "  hil_supervisor não encontrado — compilando..."
+    make -C "$ROOT_DIR" ps-build
+fi
+
 # Verifica sshpass
 if ! command -v sshpass &>/dev/null; then
     echo "ERRO: sshpass não instalado. Rode: sudo apt-get install sshpass"
@@ -90,15 +96,17 @@ echo ""
 # (não é possível sobrescrever binário em execução no Linux — apagar libera o inode)
 echo "Parando processos e removendo binários anteriores..."
 run_board_sudo "PID=\$(pidof hil_controller); if [ -n \"\$PID\" ]; then kill -9 \$PID; fi; true"
+run_board_sudo "PID=\$(pidof hil_supervisor); if [ -n \"\$PID\" ]; then kill -9 \$PID; fi; true"
 run_board_sudo "PID=\$(pidof test_fpga); if [ -n \"\$PID\" ]; then kill -9 \$PID; fi; true"
 sleep 1
-run_board_sudo "rm -f $BOARD_HOME/hil_controller $BOARD_HOME/test_fpga"
+run_board_sudo "rm -f $BOARD_HOME/hil_controller $BOARD_HOME/hil_supervisor $BOARD_HOME/test_fpga"
 
 # Copia arquivos
 echo "Copiando arquivos..."
 scp_file "$VIVADO_BIN"  "$BOARD_HOME/ebaz4205_wrapper.bin"
 scp_file "$TEST_FPGA"   "$BOARD_HOME/test_fpga"
 scp_file "$HIL_CTRL"    "$BOARD_HOME/hil_controller"
+scp_file "$HIL_SUP"     "$BOARD_HOME/hil_supervisor"
 echo ""
 
 # Carrega bitstream
@@ -109,6 +117,15 @@ else
     run_board_sudo "fpgautil -b $BOARD_HOME/ebaz4205_wrapper.bin"
     echo "  Bitstream carregado."
 fi
+echo "Iniciando hil_supervisor..."
+echo "────────────────────────────────────────────────"
+run_board_sudo "nohup $BOARD_HOME/hil_supervisor > $BOARD_HOME/hil_supervisor.log 2>&1 &"
+sleep 1
+run_board "tail -n 8 $BOARD_HOME/hil_supervisor.log"
+echo "────────────────────────────────────────────────"
+echo "  Supervisor UDP: ${BOARD_IP}:5010"
+echo "  Logs:"
+echo "    ssh ${BOARD_USER}@${BOARD_IP} 'tail -f $BOARD_HOME/hil_supervisor.log'"
 echo ""
 
 # Smoke test

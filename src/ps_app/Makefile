@@ -15,7 +15,9 @@
 
 TARGET      := hil_controller
 TARGET_TEST := test_fpga
+TARGET_SUP  := hil_supervisor
 SRCS        := main.c gpio.c vf_ctrl.c telemetry.c dma_telem.c pwm_events.c
+SUP_SRCS    := supervisor.c
 CFLAGS  := -O2 -Wall -Wextra
 LDFLAGS := -lm -lpthread -lrt
 
@@ -28,10 +30,14 @@ endif
 
 .PHONY: all test native clean deploy deploy-test
 
-all: $(TARGET)
+all: $(TARGET) $(TARGET_SUP)
 
 $(TARGET): $(SRCS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	@echo "Built: $@ ($(shell file $@ | grep -o 'ARM\|x86[^ ]*'))"
+
+$(TARGET_SUP): $(SUP_SRCS)
+	$(CC) $(CFLAGS) -o $@ $^
 	@echo "Built: $@ ($(shell file $@ | grep -o 'ARM\|x86[^ ]*'))"
 
 test: $(TARGET_TEST)
@@ -42,18 +48,21 @@ $(TARGET_TEST): test_fpga.c gpio.c gpio.h
 
 native:
 	gcc $(CFLAGS) -DNATIVE_BUILD -o $(TARGET)_native $(SRCS) $(LDFLAGS)
+	gcc $(CFLAGS) -DNATIVE_BUILD -o $(TARGET_SUP)_native $(SUP_SRCS)
 	@echo "Built native: $(TARGET)_native"
+	@echo "Built native: $(TARGET_SUP)_native"
 
 clean:
-	rm -f $(TARGET) $(TARGET)_native $(TARGET_TEST)
+	rm -f $(TARGET) $(TARGET)_native $(TARGET_SUP) $(TARGET_SUP)_native $(TARGET_TEST)
 
 BOARD_USER ?= petalinux
 BOARD_HOME  = /home/$(BOARD_USER)
 
-deploy: $(TARGET)
+deploy: $(TARGET) $(TARGET_SUP)
 	@if [ -z "$(IP)" ]; then echo "Usage: make deploy IP=<ip>"; exit 1; fi
-	scp $(TARGET) $(BOARD_USER)@$(IP):$(BOARD_HOME)/
+	scp $(TARGET) $(TARGET_SUP) $(BOARD_USER)@$(IP):$(BOARD_HOME)/
 	@echo "Deployed to $(BOARD_USER)@$(IP):$(BOARD_HOME)/$(TARGET)"
+	@echo "Deployed to $(BOARD_USER)@$(IP):$(BOARD_HOME)/$(TARGET_SUP)"
 	@echo "Run on board: sudo $(BOARD_HOME)/$(TARGET)"
 
 deploy-test: $(TARGET_TEST)
