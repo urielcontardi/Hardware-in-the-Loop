@@ -184,7 +184,7 @@ Base: `0x4040_0000`
 ```
 1. PS arma o DMA:
    S2MM_DMACR = 0x0001          (RS=1, iniciar)
-   S2MM_DA    = 0x3E000000      (endereço físico do buffer DDR)
+   S2MM_DA    = 0x0F000000      (endereço físico do buffer DDR)
    S2MM_LENGTH = N * 32         (N amostras × 32 bytes/amostra)
 
 2. PL produz dados (TIM_Solver → HIL_AXI_Top → AXI4-Stream → DMA)
@@ -193,7 +193,7 @@ Base: `0x4040_0000`
    while (S2MM_DMASR & 0x1000 == 0) { /* aguarda IOC_IRQ */ }
 
 4. PS lê buffer DDR via mmap:
-   buffer = mmap(0x3E000000, N*32, ...)
+   buffer = mmap(0x0F000000, N*32, ...)
    for (i = 0; i < N; i++) {
        HilSample s = buffer[i];
        /* processar s.ialpha, s.ibeta, ... */
@@ -302,7 +302,7 @@ void carrier_isr(int sig) {
 #define GPIO_VDC_TRQ 0x40020000
 #define GPIO_MON1    0x40030000
 #define AXI_DMA_BASE 0x40400000
-#define DDR_BUF_PHYS 0x3E000000
+#define DDR_BUF_PHYS 0x0F000000
 #define DDR_BUF_SIZE (1024 * 32)   /* 1024 amostras */
 
 static int mem_fd = -1;
@@ -376,15 +376,15 @@ Adicionar em `system-user.dtsi` (PetaLinux):
         #size-cells = <1>;
         ranges;
 
-        hil_dma_buf: buffer@3e000000 {
-            reg = <0x3e000000 0x01000000>;  /* 16 MB reservados */
+        hil_dma_buf: buffer@0f000000 {
+            reg = <0x0f000000 0x01000000>;  /* 16 MB reservados */
             no-map;
         };
     };
 };
 ```
 
-O endereço físico `0x3E000000` deve ser usado em `S2MM_DA` e no `mmap` do PS.
+O endereço físico `0x0F000000` deve ser usado em `S2MM_DA` e no `mmap` do PS.
 
 ---
 
@@ -440,6 +440,6 @@ sudo ./flash_sd.sh /dev/sdX
 |------|--------|-----------|
 | Fault readback | Ausente | `fault_o`, `fs_fault_o`, `minw_fault_o` do NPCManager não mapeados no PS |
 | DMA interrupt | PL ligado, PS pendente | `s2mm_introut` ligado em `IRQ_F2P[1]`; PS ainda pode trocar polling de `S2MM_DMASR` por UIO/`poll()` |
-| DDR reservation | Manual | Endereço `0x3E000000` hardcoded; device tree não gerado automaticamente |
+| DDR reservation | Manual | Endereço `0x0F000000` hardcoded; device tree não gerado automaticamente |
 | IRQ-driven VF | ISR Linux | Usar `UIO` ou `signal(SIGIO)` para latência determinística |
 | Escala Q real | TBD | Fator de escala exato das saídas do TIM_Solver a confirmar com parâmetros do motor |

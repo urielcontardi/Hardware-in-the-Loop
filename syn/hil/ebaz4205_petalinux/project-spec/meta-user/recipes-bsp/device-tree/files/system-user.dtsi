@@ -1,3 +1,13 @@
 /include/ "system-conf.dtsi"
 / {
+    reserved-memory {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        ranges;
+
+        hil_dma_buf: buffer@0f000000 {
+            reg = <0x0f000000 0x01000000>;
+            no-map;
+        };
+    };
 };

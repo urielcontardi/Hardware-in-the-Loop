@@ -1,0 +1,17 @@
+# Host workaround: this machine cannot create bitbake network namespaces for
+# local image tasks. This skips namespace isolation only for the affected task.
+do_prepare_recipe_sysroot[network] = "1"
+do_rootfs[network] = "1"
+do_write_qemuboot_conf[network] = "1"
+do_flush_pseudodb[network] = "1"
+do_image[network] = "1"
+do_image_complete[network] = "1"
+do_image_cpio[network] = "1"
+do_image_ext4[network] = "1"
+do_image_tar[network] = "1"
+do_image_wic[network] = "1"
+do_create_spdx[network] = "1"
+do_create_runtime_spdx[network] = "1"
+do_rm_work[network] = "1"
+do_populate_lic_deploy[network] = "1"
+do_build[network] = "1"
