@@ -39,7 +39,10 @@ type App struct {
 // and userspace lacks the D-cache invalidate primitive needed before each
 // buffer read. Proper fix is to re-route AXI DMA to S_AXI_ACP in the Vivado
 // design. See src/ps_app/main.c and src/ps_app/dma_telem.c.
-const transportDecim = 375
+const (
+	transportDecim    = 375
+	transportSampleHz = 10000
+)
 
 func NewApp() *App {
 	return &App{
@@ -145,7 +148,9 @@ func (a *App) SetParams(
 	if attachTelem {
 		p.TelemDst = a.localIP
 		decim := transportDecim
+		sampleHz := uint32(transportSampleHz)
 		p.Decim = &decim
+		p.TelemHz = &sampleHz
 	}
 	status, err := hilUDP.Set(ip, p)
 	if err == nil {
@@ -215,7 +220,8 @@ func (a *App) AttachTelemetry(ip string) (*hilUDP.HilStatus, error) {
 		a.ring.Clear()
 	}
 	decim := transportDecim
-	return hilUDP.Set(ip, hilUDP.SetParams{Decim: &decim, TelemDst: a.localIP})
+	sampleHz := uint32(transportSampleHz)
+	return hilUDP.Set(ip, hilUDP.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: a.localIP})
 }
 
 // Ping is a quick health check.

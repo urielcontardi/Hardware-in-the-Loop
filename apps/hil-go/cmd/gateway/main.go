@@ -40,7 +40,8 @@ const (
 	// filter. Lowering this requires re-tuning the IIR. Display-rate
 	// reduction is the host's job (min/max envelope in decimateAndProject),
 	// not the FPGA decimator's.
-	transportDecim = 375
+	transportDecim    = 375
+	transportSampleHz = 10000
 )
 
 type server struct {
@@ -93,6 +94,7 @@ type setRequest struct {
 	AccelTimeSec *float32 `json:"accel_time_s,omitempty"`
 	Enable       *int     `json:"enable,omitempty"`
 	Decim        *int     `json:"decim,omitempty"`
+	TelemHz      *uint32  `json:"telem_hz,omitempty"`
 	AttachUDP    bool     `json:"attach_udp,omitempty"`
 }
 
@@ -171,7 +173,8 @@ func main() {
 			go func() {
 				time.Sleep(2 * time.Second) // let the receiver start
 				decim := transportDecim
-				if _, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemDst: s.localIP}); err != nil {
+				sampleHz := uint32(transportSampleHz)
+				if _, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP}); err != nil {
 					log.Printf("auto-attach to %s failed: %v", ip, err)
 				} else {
 					log.Printf("auto-attached telemetry to %s", ip)
@@ -481,7 +484,8 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
 	decim := transportDecim
-	status, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemDst: s.localIP})
+	sampleHz := uint32(transportSampleHz)
+	status, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -559,11 +563,16 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 		AccelTimeSec: req.AccelTimeSec,
 		Enable:       req.Enable,
 		Decim:        req.Decim,
+		TelemHz:      req.TelemHz,
 	}
 	if req.AttachUDP {
 		if p.Decim == nil {
 			decim := transportDecim
 			p.Decim = &decim
+		}
+		if p.TelemHz == nil {
+			sampleHz := uint32(transportSampleHz)
+			p.TelemHz = &sampleHz
 		}
 		p.TelemDst = s.localIP
 		s.setTelemetryTarget(ip)

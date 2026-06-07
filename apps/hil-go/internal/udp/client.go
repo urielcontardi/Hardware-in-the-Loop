@@ -68,6 +68,8 @@ type HilStatus struct {
 	Enable           int     `json:"enable"`
 	TelemDst         string  `json:"telem_dst"`
 	TelemActive      int     `json:"telem_active"`
+	TelemSource      string  `json:"telem_source"`
+	TelemHz          uint32  `json:"telem_hz"`
 	TelemPacketsSent uint32  `json:"telem_packets_sent"`
 	TelemSendErrors  uint32  `json:"telem_send_errors"`
 	BoardIP          string  `json:"board_ip,omitempty"`
@@ -105,6 +107,7 @@ type SetParams struct {
 	AccelTimeSec *float32 `json:"accel_time_s,omitempty"`
 	Enable       *int     `json:"enable,omitempty"`
 	Decim        *int     `json:"decim,omitempty"`
+	TelemHz      *uint32  `json:"telem_hz,omitempty"`
 	TelemDst     string   `json:"telem_dst,omitempty"`
 }
 
@@ -421,6 +424,9 @@ func Set(ip string, p SetParams) (*HilStatus, error) {
 	}
 	if p.Decim != nil {
 		payload["decim"] = *p.Decim
+	}
+	if p.TelemHz != nil {
+		payload["telem_hz"] = *p.TelemHz
 	}
 	if p.TelemDst != "" {
 		payload["telem_dst"] = p.TelemDst

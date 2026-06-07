@@ -20,6 +20,8 @@ type HilStatus = {
   enable: number;
   telem_dst: string;
   telem_active: number;
+  telem_source?: string;
+  telem_hz?: number;
   telem_packets_sent?: number;
   telem_send_errors?: number;
   board_ip?: string;
