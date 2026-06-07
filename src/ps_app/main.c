@@ -128,10 +128,42 @@ static void cancel_timer(void)
     timer_delete(g_timerid);
 }
 
-/* ── Telemetry thread — reads gpio at 1 kHz, pushes bursts ──────────────── */
+/* ── Telemetry thread — reads solver monitors, pushes UDP bursts ────────── */
+
+#define TELEM_DEFAULT_HZ   10000u
+#define TELEM_MIN_HZ        1000u
+#define TELEM_MAX_GPIO_HZ  50000u
+
+static volatile unsigned telem_sample_hz = TELEM_DEFAULT_HZ;
+static int use_dma = 0;    /* set to 1 if DMA init succeeds */
 
 static pthread_t telem_tid;
 static volatile int telem_active = 0;
+
+static unsigned clamp_telem_hz(unsigned hz)
+{
+    if (hz == 0) return TELEM_DEFAULT_HZ;
+    if (hz < TELEM_MIN_HZ) return TELEM_MIN_HZ;
+    if (hz > TELEM_MAX_GPIO_HZ) return TELEM_MAX_GPIO_HZ;
+    return hz;
+}
+
+static void set_telem_hz(unsigned hz)
+{
+    telem_sample_hz = clamp_telem_hz(hz);
+}
+
+static long telem_period_ns(void)
+{
+    unsigned hz = telem_sample_hz;
+    if (hz == 0) hz = TELEM_DEFAULT_HZ;
+    return (long)(1000000000ULL / (uint64_t)hz);
+}
+
+static const char *telem_source_name(void)
+{
+    return use_dma ? "dma" : "gpio";
+}
 
 /*
  * DMA telemetry thread — transfers DMA_BURST_FRAMES samples per DMA call,
@@ -142,8 +174,6 @@ static volatile int telem_active = 0;
  *   DMA burst = DMA_BURST_FRAMES at ~10 kHz.
  *   Each DMA sample is forwarded through the existing UDP telemetry path.
  */
-static int use_dma = 0;    /* set to 1 if DMA init succeeds */
-
 static void *telem_thread_fn(void *arg)
 {
     (void)arg;
@@ -156,6 +186,10 @@ static void *telem_thread_fn(void *arg)
         /* ── DMA double-buffer path ────────────────────────────────── */
         dma_sample_t dma_buf[DMA_BURST_FRAMES];
         int dma_errors = 0;
+
+        /* Burst-to-burst timestamp anchor (hil_time, 100 MHz run-local). */
+        uint32_t dma_prev_time  = 0;
+        int      dma_prev_epoch = -1;
 
         while (running && telem_active) {
             /* dma_telem_next: waits for active buffer, re-arms the other,
@@ -180,8 +214,31 @@ static void *telem_thread_fn(void *arg)
             uint8_t flags = (uint8_t)((p.enable & 0x01)
                            | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
 
+            /* Timestamp interpolation. The DMA decode loop runs in ~25 µs but
+             * the burst represents ~12.5 ms of hardware time, so all 128 samples
+             * must be spread across the interval, not stamped with one value.
+             *
+             * hil_time is the FPGA run-local counter (100 MHz, resets to 0 on
+             * each Run/epoch). We spread the burst evenly between the previous
+             * burst's end time and the current one, using modular uint32
+             * arithmetic so a single 32-bit wrap is handled correctly. On an
+             * epoch change the counter restarted at 0, so we re-anchor there —
+             * this also avoids the underflow-to-~2^32 that the frontend would
+             * misread as a counter wrap (jumping the timeline by ~42.9 s). */
+            uint32_t t_end   = gpio_hil_time();
+            uint16_t t_epoch = gpio_hil_epoch();
+
+            if ((int)t_epoch != dma_prev_epoch) {
+                dma_prev_epoch = (int)t_epoch;
+                dma_prev_time  = 0;   /* run-local counter restarts at 0 */
+            }
+            uint32_t t_delta = t_end - dma_prev_time;  /* modular; spans 1 wrap */
+
             for (int i = 0; i < n && telem_active; i++) {
-                telem_push(gpio_hil_time(), gpio_hil_epoch(),
+                uint32_t t = dma_prev_time
+                    + (uint32_t)(((uint64_t)t_delta * (uint32_t)(i + 1))
+                                 / (uint32_t)n);
+                telem_push(t, t_epoch,
                            dma_buf[i].ialpha,
                            dma_buf[i].ibeta,
                            dma_buf[i].flux_alpha,
@@ -190,6 +247,7 @@ static void *telem_thread_fn(void *arg)
                            flags);
                 pwm_events_poll();
             }
+            dma_prev_time = t_end;   /* anchor for the next burst */
         }
     }
 
@@ -201,20 +259,20 @@ static void *telem_thread_fn(void *arg)
          * sees the value the FPGA wrote, no cache coherency issue (unlike
          * the AXI DMA HP-slave path).
          *
-         * Pacing: clock_nanosleep(TIMER_ABSTIME) on CLOCK_MONOTONIC keeps
-         * the deadline absolute — drift from one iteration doesn't cascade.
-         * Target period 100 µs (10 kHz). Linux non-RT scheduler will jitter
-         * by tens of µs, but the *average* rate stays at 10 kHz over time.
+         * Pacing: clock_nanosleep(TIMER_ABSTIME) on CLOCK_MONOTONIC keeps the
+         * deadline absolute - drift from one iteration does not cascade. The
+         * rate is configurable via {"telem_hz":...}; Linux non-RT scheduling
+         * adds jitter, so this is high-rate monitoring, not deterministic
+         * capture of every solver step.
          */
-        const long period_ns = 100000L;  /* 100 µs → 10 kHz */
         struct timespec next;
         clock_gettime(CLOCK_MONOTONIC, &next);
 
         while (running && telem_active) {
-            next.tv_nsec += period_ns;
+            next.tv_nsec += telem_period_ns();
             if (next.tv_nsec >= 1000000000L) {
-                next.tv_nsec -= 1000000000L;
-                next.tv_sec  += 1;
+                next.tv_sec += next.tv_nsec / 1000000000L;
+                next.tv_nsec %= 1000000000L;
             }
             clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
 
@@ -327,9 +385,11 @@ static void apply_stop(void)
  * Protocol (JSON text). All responses include "state" so the client can sync.
  *
  *   SET:      {"cmd":"set","freq_hz":..,"vdc_v":..,"torque_nm":..,"decim":..,
- *               "enable":0|1,"telem_dst":"<ip>"}
+ *               "telem_hz":..,"enable":0|1,"telem_dst":"<ip>"}
  *               ↳ all fields optional. "enable" forces state RUNNING/PAUSED.
  *               ↳ "telem_dst" configures/retargets telemetry push.
+ *               ↳ "telem_hz" configures GPIO polling telemetry rate
+ *                 (1000..50000 Hz, 0=default).
  *   MOTOR:    {"cmd":"motor","rs":..,"rr":..,"ls":..,"lr":..,"lm":..,"j":..,"npp":..}
  *               ↳ computes TIM matrices on PS and writes A/B/Y coefficients.
  *   GET:      {"cmd":"get"}
@@ -449,6 +509,8 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
         "\"enable\":%d,"
         "\"telem_dst\":\"%s\","
         "\"telem_active\":%d,"
+        "\"telem_source\":\"%s\","
+        "\"telem_hz\":%u,"
         "\"telem_packets_sent\":%u,"
         "\"telem_send_errors\":%u}",
         status_msg,
@@ -464,6 +526,8 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
         p.enable,
         telem_dst_ip,
         telem_active,
+        telem_source_name(),
+        telem_sample_hz,
         ts.packets_sent,
         ts.send_errors);
 }
@@ -489,6 +553,7 @@ static void handle_packet(int sock, const char *buf,
         if ((ptr = strstr(buf, "\"max_v_pu\":")))      sscanf(ptr + 11, "%f", &p.max_v_pu);
         if ((ptr = strstr(buf, "\"accel_time_s\":")))  sscanf(ptr + 15, "%f", &p.accel_time_s);
         if ((ptr = strstr(buf, "\"decim\":")))        { int d; sscanf(ptr + 8, "%d", &d); p.decim = d; }
+        if ((ptr = strstr(buf, "\"telem_hz\":")))     { unsigned hz; sscanf(ptr + 11, "%u", &hz); set_telem_hz(hz); }
         if ((ptr = strstr(buf, "\"enable\":")))       { sscanf(ptr + 9, "%d", &new_enable); explicit_enable = 1; }
 
         if (explicit_enable) p.enable = new_enable ? 1 : 0;
@@ -499,8 +564,9 @@ static void handle_packet(int sock, const char *buf,
         else if (hil_state == HIL_IDLE || hil_state == HIL_STOPPED)
             hil_state = HIL_PAUSED;  /* configured but not enabled yet */
 
-        printf("[SET] freq=%.2fHz vdc=%.2fV torque=%.4fNm accel=%.1fs enable=%d state=%s\n",
-               p.freq_hz, p.vdc_v, p.torque_nm, p.accel_time_s, p.enable, state_name(hil_state));
+        printf("[SET] freq=%.2fHz vdc=%.2fV torque=%.4fNm accel=%.1fs enable=%d telem=%uHz state=%s\n",
+               p.freq_hz, p.vdc_v, p.torque_nm, p.accel_time_s, p.enable,
+               telem_sample_hz, state_name(hil_state));
 
         /* Auto-configure telemetry destination if provided */
         char ip[INET_ADDRSTRLEN] = {0};
@@ -748,17 +814,15 @@ int main(void)
 
     if (setup_1khz_timer() < 0) return 1;
 
-    /* DIAGNOSTIC: forcibly disable DMA to isolate cache-coherency bug.
-     * AXI DMA HP-slave path is NOT cache-coherent with Cortex-A9; userspace
-     * lacks the D-cache invalidate operation needed before each buffer read.
-     * GPIO polling reads via /dev/mem with O_SYNC (uncached) and is provably
-     * coherent. If signals come back clean on this fallback, the bug is in
-     * dma_telem coherency and the proper fix is to re-route AXI DMA to
-     * S_AXI_ACP in the Vivado design (cache-coherent port) or to use a
-     * kernel module that exposes a D-cache invalidate ioctl. */
-    use_dma = 0;
-    printf("Telemetry: GPIO polling 10 kHz (DMA disabled for coherency)\n");
-    (void)0; /* dma_telem_init not called */
+    if (dma_telem_init() == 0) {
+        use_dma = 1;
+        printf("Telemetry: DMA S2MM -> reserved DDR enabled (fallback GPIO %u..%u Hz)\n",
+               TELEM_MIN_HZ, TELEM_MAX_GPIO_HZ);
+    } else {
+        use_dma = 0;
+        fprintf(stderr, "Telemetry: DMA unavailable; falling back to GPIO polling default %u Hz\n",
+                TELEM_DEFAULT_HZ);
+    }
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return 1; }

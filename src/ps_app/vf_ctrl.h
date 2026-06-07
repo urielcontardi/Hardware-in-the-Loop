@@ -18,7 +18,8 @@
  *   max_v_pu     — tensão máxima de modulação [pu]  (default 1.0)
  *   accel_time_s — tempo para rampar 0→base_freq [s]
  *   enable       — 0=desligado, 1=ligado
- *   decim        — decimation ratio (0 = default 375 → ~10 kHz DMA output)
+ *   decim        — decimation ratio do caminho DMA/AXI-Stream
+ *   telem_hz     — taxa de polling GPIO para telemetria (1000..50000 Hz)
  *
  * Escala das referências de tensão enviadas à FPGA:
  *   vrefs: signed int32 em ±CARRIER_MAX = ±(CLK_FREQ/PWM_FREQ/2)

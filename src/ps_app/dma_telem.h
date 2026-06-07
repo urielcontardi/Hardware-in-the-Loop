@@ -38,8 +38,8 @@ typedef struct {
 } dma_sample_t;
 
 /*
- * dma_telem_init — open /dev/mem, mmap DMA regs, allocate two DMA-coherent
- *                  buffers (double-buffer) and arm the first transfer.
+ * dma_telem_init — open /dev/mem, mmap DMA regs and split the reserved DDR
+ *                  telemetry window into two DMA buffers before arming S2MM.
  * Returns 0 on success, -1 on error.
  */
 int  dma_telem_init(void);

@@ -82,7 +82,7 @@ A aplicação escuta na porta UDP **5005**.
 ### POST — configurar parâmetros
 
 ```json
-{"cmd":"set","freq_hz":30.0,"vdc_v":300.0,"torque_nm":0.0,"enable":1,"decim":0}
+{"cmd":"set","freq_hz":30.0,"vdc_v":300.0,"torque_nm":0.0,"enable":1,"decim":0,"telem_hz":20000}
 ```
 
 | Campo        | Tipo  | Descrição                                              |
@@ -91,7 +91,8 @@ A aplicação escuta na porta UDP **5005**.
 | `vdc_v`      | float | Tensão DC do barramento [V]                            |
 | `torque_nm`  | float | Torque de carga [N·m] (passado ao solver)              |
 | `enable`     | int   | 0 = desligado, 1 = ligado                              |
-| `decim`      | int   | Decimation ratio do DMA (0 = default 375 → 10 kHz)    |
+| `decim`      | int   | Decimation ratio do DMA/AXI-Stream (0 = default)       |
+| `telem_hz`   | int   | Taxa do polling GPIO para telemetria (1000..50000 Hz)  |
 
 Resposta: `{"status":"ok"}`
 

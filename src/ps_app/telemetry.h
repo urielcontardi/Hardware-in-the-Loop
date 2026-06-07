@@ -15,7 +15,7 @@
  *                         ia ib flux_a flux_b speed (float32 LE each)
  *  [last-1..last]     CRC16/CCITT-FALSE LE
  *
- * Total for burst of 32: 4+4+1+1+(32×20)+2 = 652 bytes
+ * Total for burst of 32: 4+4+1+1+(32×26)+2 = 844 bytes
  */
 
 #define TELEM_SYNC_0  0x48u
