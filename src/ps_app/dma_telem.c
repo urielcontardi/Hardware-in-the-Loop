@@ -242,7 +242,11 @@ int dma_telem_next(dma_sample_t *out, int timeout_ms)
             return -1;
         }
 
-        usleep(200);  /* ~0.2 ms poll interval — burst is ~13 ms */
+        /* Busy-poll: simple-mode S2MM stops between transfers, so the window
+         * from IOC to re-arm is dead time where samples are dropped. At 100 kHz
+         * a burst is only ~1.28 ms, so the old 200 µs sleep left a ~6 % gap.
+         * Spinning on DMASR cuts the re-arm latency to a few µs (<1 sample).
+         * This thread is dedicated to telemetry and the Zynq has a spare core. */
     }
 
     /*

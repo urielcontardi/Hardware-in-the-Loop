@@ -245,8 +245,12 @@ static void *telem_thread_fn(void *arg)
                            dma_buf[i].flux_beta,
                            dma_buf[i].speed,
                            flags);
-                pwm_events_poll();
             }
+            /* PWM FIFO is drained by its own background thread (pwm_events_start);
+             * one extra drain per burst (~1.28 ms @100 kHz) is cheap insurance
+             * against the 2048-deep FIFO overflowing. Calling it per-sample was
+             * the dominant PS overhead that capped the sustainable rate. */
+            pwm_events_poll();
             dma_prev_time = t_end;   /* anchor for the next burst */
         }
     }
