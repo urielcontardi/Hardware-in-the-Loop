@@ -31,7 +31,9 @@ The gateway (hil-gateway) must be stopped first — it holds UDP port 5006.
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import select
 import socket
 import struct
 import sys
@@ -46,7 +48,12 @@ from models.im_reference_model import IMPhysicalParams, InductionMotorReferenceM
 # ── Protocol constants (mirror telemetry.h / main.c) ────────────────────────
 CMD_PORT   = 5005
 TELEM_PORT = 5006
+PWM_PORT   = 5007                              # pwm_events JSON stream
 TELEM_SYNC = bytes((0x48, 0x49, 0x4C, 0x5A))  # "HILZ"
+
+# NPC gate-state encoding (NPCManager.vhd): 0011→+Vdc/2, 1100→−Vdc/2, else 0
+NPC_POS = 0b0011
+NPC_NEG = 0b1100
 TELEM_BURST = 32
 SAMPLE_BYTES = 26                              # u32 t_cycles + u16 epoch + 5×f32
 HDR_SIZE = 10
@@ -125,8 +132,25 @@ def send_cmd(board_ip: str, obj: str, wait=0.3) -> None:
     time.sleep(wait)
 
 
-# ── Live telemetry capture ──────────────────────────────────────────────────
-def capture_fpga(board_ip, my_ip, freq, base_freq, vdc, max_v_pu, accel, duration):
+def unwrap_cycles(raw):
+    """32-bit run-local counter (cycles) → seconds, handling wraps. The counter
+    resets to 0 at Run, so the result is absolute run-local time shared by the
+    telemetry and PWM-event streams."""
+    raw = np.asarray(raw, dtype=np.int64)
+    t = np.empty(len(raw), dtype=np.float64)
+    off = 0
+    prev = None
+    for i, r in enumerate(raw):
+        if prev is not None and r < prev and prev - r > (1 << 31):
+            off += 1 << 32
+        prev = r
+        t[i] = (off + r) / HW_CLOCK_HZ
+    return t
+
+
+# ── Live capture: telemetry (5006) + PWM events (5007) ──────────────────────
+def capture_fpga(board_ip, my_ip, freq, base_freq, vdc, max_v_pu, accel,
+                 duration, want_pwm=False):
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -136,14 +160,21 @@ def capture_fpga(board_ip, my_ip, freq, base_freq, vdc, max_v_pu, accel, duratio
             f"Cannot bind UDP {TELEM_PORT} ({e}). Stop the hil-gateway first "
             f"(it holds this port): kill it in its terminal, then re-run."
         )
-    rx.settimeout(0.5)
+    socks = [rx]
+    rxp = None
+    if want_pwm:
+        rxp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        rxp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        rxp.bind(("", PWM_PORT))
+        socks.append(rxp)
 
-    # Punch a hole so stateful firewalls/NAT allow the reverse telemetry stream:
-    # send from our :5006 socket to board:5006, exactly like the gateway does
-    # (receiver.go Punch). Without this the board's sendto succeeds but the host
-    # firewall drops the inbound datagrams.
+    # Punch holes so stateful firewalls/NAT allow the reverse streams (the board
+    # sendto() succeeds but the host firewall drops inbound otherwise) — exactly
+    # like the gateway (receiver.go / pwmrecv.go Punch).
     def punch():
         rx.sendto(b"HIL_TELEM_PUNCH", (board_ip, TELEM_PORT))
+        if rxp is not None:
+            rxp.sendto(b"HIL_PWM_PUNCH", (board_ip, PWM_PORT))
 
     # Fresh run: stop → configure → run (epoch increments, counter resets to 0)
     punch()
@@ -160,70 +191,86 @@ def capture_fpga(board_ip, my_ip, freq, base_freq, vdc, max_v_pu, accel, duratio
     t0 = time.time()
     last_punch = t0
     last_rx = t0
-    recs = []  # (t_cycles_raw, epoch, ia, ib, flux_a, flux_b, speed)
+    recs = []   # (t_cycles, epoch, ia, ib, flux_a, flux_b, speed)
+    pwm = []    # (t_cycles, epoch, a, b, c)
     bad_crc = 0
+    pwm_overflow = False
     while time.time() - t0 < duration + 0.5:
         now = time.time()
-        if now - last_punch > 0.5:        # keep the conntrack hole open
+        if now - last_punch > 0.5:
             punch()
             last_punch = now
-        try:
-            data, _ = rx.recvfrom(2048)
-            last_rx = now
-        except socket.timeout:
-            if now - last_rx > 2.0:       # give up only after a real stall
+        ready, _, _ = select.select(socks, [], [], 0.5)
+        if not ready:
+            if now - last_rx > 2.0:
                 break
             continue
-        if len(data) < HDR_SIZE + 2 or data[:4] != TELEM_SYNC:
-            continue
-        n = data[9]
-        need = HDR_SIZE + n * SAMPLE_BYTES + 2
-        if len(data) < need:
-            continue
-        crc_rx = data[need - 2] | (data[need - 1] << 8)
-        if crc16(data[: need - 2]) != crc_rx:
-            bad_crc += 1
-            continue
-        pos = HDR_SIZE
-        for _ in range(n):
-            tc, ep = struct.unpack_from("<IH", data, pos)
-            ia, ib, fa, fb, sp = struct.unpack_from("<fffff", data, pos + 6)
-            recs.append((tc, ep, ia, ib, fa, fb, sp))
-            pos += SAMPLE_BYTES
+        for s in ready:
+            data, _ = s.recvfrom(65535)
+            last_rx = now
+            if s is rx:
+                if len(data) < HDR_SIZE + 2 or data[:4] != TELEM_SYNC:
+                    continue
+                n = data[9]
+                need = HDR_SIZE + n * SAMPLE_BYTES + 2
+                if len(data) < need:
+                    continue
+                if crc16(data[: need - 2]) != (data[need - 2] | (data[need - 1] << 8)):
+                    bad_crc += 1
+                    continue
+                pos = HDR_SIZE
+                for _ in range(n):
+                    tc, ep = struct.unpack_from("<IH", data, pos)
+                    ia, ib, fa, fb, sp = struct.unpack_from("<fffff", data, pos + 6)
+                    recs.append((tc, ep, ia, ib, fa, fb, sp))
+                    pos += SAMPLE_BYTES
+            else:  # PWM events — JSON
+                try:
+                    obj = json.loads(data)
+                except ValueError:
+                    continue
+                if obj.get("type") != "pwm_events":
+                    continue
+                if obj.get("status", 0) & 0x2:   # FIFO overflow bit
+                    pwm_overflow = True
+                for ev in obj.get("events", []):
+                    # [t, a, b, c, mask, epoch]
+                    pwm.append((ev[0], ev[5], ev[1], ev[2], ev[3]))
 
     send_cmd(board_ip, '{"cmd":"stop"}', wait=0.0)
     rx.close()
+    if rxp is not None:
+        rxp.close()
     if not recs:
         raise SystemExit("No telemetry received. Is the board running and reachable?")
 
     arr = np.array(recs, dtype=np.float64)
     epoch = arr[:, 1].astype(np.int64)
-    # Keep only the dominant (latest) epoch = this run
-    run_epoch = np.bincount(epoch - epoch.min()).argmax() + epoch.min()
-    m = epoch == run_epoch
-    arr = arr[m]
+    run_epoch = int(np.bincount(epoch - epoch.min()).argmax() + epoch.min())
+    arr = arr[epoch == run_epoch]
 
-    # Reconstruct absolute time from the 32-bit run-local counter (handle wrap)
-    raw = arr[:, 0].astype(np.uint32).astype(np.int64)
-    t = np.empty(len(raw))
-    off = 0
-    prev = None
-    for i, r in enumerate(raw):
-        if prev is not None and r < prev and prev - r > (1 << 31):
-            off += 1 << 32
-        prev = r
-        t[i] = (off + r) / HW_CLOCK_HZ
-    t -= t[0]
-
-    order = np.argsort(t, kind="stable")
-    t = t[order]
+    t_abs = unwrap_cycles(arr[:, 0].astype(np.uint32))   # shared run-local clock
+    order = np.argsort(t_abs, kind="stable")
+    t_abs = t_abs[order]
     out = {
-        "t": t,
+        "t": t_abs - t_abs[0],   # zeroed (ideal-stimulus mode)
+        "t_abs": t_abs,          # run-local origin (shared with PWM stream)
         "ia": arr[order, 2], "ib": arr[order, 3],
         "flux_a": arr[order, 4], "flux_b": arr[order, 5],
         "speed": arr[order, 6],
         "bad_crc": bad_crc,
     }
+
+    if want_pwm and pwm:
+        parr = np.array(pwm, dtype=np.int64)
+        parr = parr[parr[:, 1] == run_epoch]            # same run
+        pt = unwrap_cycles(parr[:, 0].astype(np.uint32))
+        po = np.argsort(pt, kind="stable")
+        out["pwm"] = {
+            "t": pt[po],
+            "a": parr[po, 2], "b": parr[po, 3], "c": parr[po, 4],
+            "overflow": pwm_overflow, "n": len(parr),
+        }
     return out
 
 
@@ -253,6 +300,78 @@ def run_c_model(freq, base_freq, vdc, max_v_pu, accel, duration, params):
         "flux_a": np.array(FA), "flux_b": np.array(FB), "speed": np.array(SP),
         "backend": model.backend_name,
     }
+
+
+# ── C reference fed with the REAL captured PWM voltage (Option B) ────────────
+def _gate_to_v(g, vhalf):
+    if g == NPC_POS:
+        return vhalf
+    if g == NPC_NEG:
+        return -vhalf
+    return 0.0
+
+
+def run_c_model_pwm_fed(pwm, vdc, params):
+    """Feed the C model the *same* switched voltage the FPGA solver saw,
+    reconstructed from the captured gate states. Both then carry identical PWM
+    ripple, so the residual is purely solver arithmetic / quantisation.
+
+    The gate stream and telemetry share the hil_time counter, so the C output is
+    produced on that same absolute timeline (no separate epoch handling needed).
+    """
+    model = InductionMotorReferenceModel(params=params, backend="auto")
+    vhalf = vdc / 2.0
+    store_every = max(1, round((1.0 / 10_000.0) / SOLVER_TS))  # decimate → ~10 kHz
+
+    tev = pwm["t"]
+    va = np.array([_gate_to_v(g, vhalf) for g in pwm["a"]])
+    vb = np.array([_gate_to_v(g, vhalf) for g in pwm["b"]])
+    vc = np.array([_gate_to_v(g, vhalf) for g in pwm["c"]])
+
+    T, IA, IB, FA, FB, SP = [], [], [], [], [], []
+    t = float(tev[0])
+    k = 0
+    for j in range(len(tev) - 1):
+        dt = float(tev[j + 1] - tev[j])
+        n_steps = int(round(dt / SOLVER_TS))
+        if n_steps <= 0 or n_steps > 5_000_000:   # skip absurd gaps (overflow)
+            continue
+        vva, vvb, vvc = va[j], vb[j], vc[j]
+        for _ in range(n_steps):
+            st = model.step(vva, vvb, vvc, 0.0)
+            if k % store_every == 0:
+                T.append(t); IA.append(st.i_alpha); IB.append(st.i_beta)
+                FA.append(st.flux_alpha); FB.append(st.flux_beta); SP.append(st.speed_mech)
+            t += SOLVER_TS
+            k += 1
+    return {
+        "t": np.array(T), "ia": np.array(IA), "ib": np.array(IB),
+        "flux_a": np.array(FA), "flux_b": np.array(FB), "speed": np.array(SP),
+        "backend": model.backend_name,
+    }
+
+
+# ── Phase alignment (cross-correlation) ─────────────────────────────────────
+def best_lag(t_ref, x_ref, t_dut, x_dut, max_lag_s=0.02):
+    """Find the time shift to add to t_dut that best aligns x_dut to x_ref,
+    via cross-correlation on a common uniform grid. Returns lag in seconds."""
+    t_lo = max(t_ref[0], t_dut[0])
+    t_hi = min(t_ref[-1], t_dut[-1])
+    if t_hi - t_lo < 4 * max_lag_s:
+        return 0.0
+    dt = 1.0 / 10_000.0
+    grid = np.arange(t_lo, t_hi, dt)
+    r = np.interp(grid, t_ref, x_ref)
+    d = np.interp(grid, t_dut, x_dut)
+    r = r - r.mean()
+    d = d - d.mean()
+    max_k = int(max_lag_s / dt)
+    xc = np.correlate(r, d, mode="full")
+    mid = len(d) - 1
+    lo, hi = mid - max_k, mid + max_k + 1
+    seg = xc[lo:hi]
+    k = int(np.argmax(seg)) - max_k
+    return k * dt   # add to t_dut
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────────
@@ -299,15 +418,10 @@ def compare(fpga, cmod, label, t_lo, t_hi):
         ("speed", "ωm", "mae", "rad/s"),
     ):
         c = np.interp(tf, cmod["t"], cmod[key])
-        f_raw = fpga[key][mf]
-        f_filt = lowpass(f_raw, tf)
-        if metric == "nrmse":
-            v_raw, v_filt = nrmse(c, f_raw), nrmse(c, f_filt)
-            print(f"    {name:3s} NRMSE: raw={v_raw:6.2f}{unit}  filtrado={v_filt:6.2f}{unit}")
-        else:
-            v_raw, v_filt = mae(c, f_raw), mae(c, f_filt)
-            print(f"    {name:3s} MAE:   raw={v_raw:.4g}{unit}  filtrado={v_filt:.4g}{unit}")
-    # Steady-state fundamental amplitude (ia) + mean speed
+        f = fpga[key][mf]
+        v = nrmse(c, f) if metric == "nrmse" else mae(c, f)
+        u = f"{v:6.2f}{unit}" if metric == "nrmse" else f"{v:.4g} {unit}"
+        print(f"    {name:3s} {metric.upper():5s}: {u}")
     a_f = fundamental_amp(fpga["ia"][mf])
     a_c = fundamental_amp(np.interp(tf, cmod["t"], cmod["ia"]))
     print(f"    |iα| fundamental: FPGA={a_f:.3f} A  C={a_c:.3f} A  "
@@ -352,33 +466,59 @@ def main():
     ap.add_argument("--accel", type=float, default=1.0, help="accel_time_s")
     ap.add_argument("--duration", type=float, default=3.0)
     ap.add_argument("--scenario", choices=["steady", "ramp", "both"], default="both")
+    ap.add_argument("--pwm-fed", action="store_true",
+                    help="feed the C model the captured PWM voltage (isolates the solver)")
+    ap.add_argument("--no-align", action="store_true", help="skip phase alignment")
     ap.add_argument("--out", default=str(REPORTS_DIR / "fpga_vs_c.html"))
     args = ap.parse_args()
 
     my_ip = args.my_ip or detect_my_ip(args.board_ip)
+    mode = "PWM-fed (isola o solver)" if args.pwm_fed else "estímulo ideal (sistema)"
     print(f"Board {args.board_ip} → telemetria para {my_ip}:{TELEM_PORT}")
+    print(f"Modo: {mode}")
     print(f"V/F: freq={args.freq} base={args.base_freq} vdc={args.vdc} "
           f"max_v_pu={args.max_v_pu} accel={args.accel}s  dur={args.duration}s")
 
     print("\nCapturando FPGA ao vivo...")
     fpga = capture_fpga(args.board_ip, my_ip, args.freq, args.base_freq,
-                        args.vdc, args.max_v_pu, args.accel, args.duration)
-    print(f"  {fpga['ia'].size} amostras, span {fpga['t'][-1]:.3f}s, "
+                        args.vdc, args.max_v_pu, args.accel, args.duration,
+                        want_pwm=args.pwm_fed)
+    print(f"  telemetria: {fpga['ia'].size} amostras, span {fpga['t'][-1]:.3f}s, "
           f"CRC inválidos={fpga['bad_crc']}")
 
-    print("Rodando modelo C (mesmo estímulo, Ts=130ns)...")
     params = IMPhysicalParams.defaults()
-    cmod = run_c_model(args.freq, args.base_freq, args.vdc, args.max_v_pu,
-                       args.accel, args.duration, params)
+    if args.pwm_fed:
+        if "pwm" not in fpga:
+            raise SystemExit("Nenhum evento PWM capturado (5007). PWM capture ativo?")
+        pw = fpga["pwm"]
+        print(f"  PWM: {pw['n']} eventos, overflow={'SIM' if pw['overflow'] else 'nao'}")
+        if pw["overflow"]:
+            print("  AVISO: FIFO de PWM transbordou — janelas podem ter gaps.")
+        # Put telemetry on the shared run-local clock (same origin as PWM events)
+        origin = min(fpga["t_abs"][0], pw["t"][0])
+        fpga["t"] = fpga["t_abs"] - origin
+        pw["t"] = pw["t"] - origin
+        print("Rodando modelo C com a tensão PWM REAL capturada (Ts=130ns)...")
+        cmod = run_c_model_pwm_fed(pw, args.vdc, params)
+    else:
+        print("Rodando modelo C (estímulo ideal, Ts=130ns)...")
+        cmod = run_c_model(args.freq, args.base_freq, args.vdc, args.max_v_pu,
+                           args.accel, args.duration, params)
     print(f"  backend={cmod['backend']}, {cmod['ia'].size} amostras")
     if cmod["backend"] != "c":
-        print("  AVISO: usando fallback Python (modelo C não compilou) — "
-              "ainda válido, mas não é o IM_Model.c.")
+        print("  AVISO: fallback Python (IM_Model.c não compilou).")
+
+    # Phase alignment: remove residual lag (CDC, read-time vs sample-time) so the
+    # comparison is in phase, as requested.
+    if not args.no_align:
+        lag = best_lag(fpga["t"], fpga["ia"], cmod["t"], cmod["ia"])
+        cmod["t"] = cmod["t"] + lag
+        print(f"  alinhamento de fase: lag aplicado ao C = {lag*1e3:+.3f} ms")
 
     tend = min(fpga["t"][-1], cmod["t"][-1])
     ramp_end = min(args.accel * (args.freq / args.base_freq) + 0.3, tend)
     if args.scenario in ("ramp", "both"):
-        compare(fpga, cmod, "PARTIDA / RAMPA", 0.0, ramp_end)
+        compare(fpga, cmod, "PARTIDA / RAMPA", max(0.0, cmod["t"][0]), ramp_end)
     if args.scenario in ("steady", "both"):
         compare(fpga, cmod, "REGIME PERMANENTE", max(0.0, tend - 0.2), tend)
 
