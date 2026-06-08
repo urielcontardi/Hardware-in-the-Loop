@@ -15,12 +15,19 @@ set_param general.maxThreads 4
 
 open_project $proj_file
 
-# Ensure IIRFilter.vhd (anti-aliasing filter for AXI Stream decimator) is in
-# the project sources. Idempotent: add_files warns on duplicate, no failure.
+# Ensure the anti-aliasing filters are in the project sources. Idempotent.
 set iir_path "[file normalize [file join [file dirname [info script]] ../../src/rtl/IIRFilter.vhd]]"
 if {[lsearch -exact [get_files] $iir_path] == -1} {
     puts "Adding IIRFilter.vhd to project sources..."
     add_files -fileset sources_1 -norecurse $iir_path
+    update_compile_order -fileset sources_1
+}
+# SVFilter.vhd: 2nd-order Butterworth SVF that replaced IIRFilter on the
+# telemetry path (HIL_AXI_Top now instantiates work.SVFilter).
+set svf_path "[file normalize [file join [file dirname [info script]] ../../src/rtl/SVFilter.vhd]]"
+if {[lsearch -exact [get_files] $svf_path] == -1} {
+    puts "Adding SVFilter.vhd to project sources..."
+    add_files -fileset sources_1 -norecurse $svf_path
     update_compile_order -fileset sources_1
 }
 

@@ -566,36 +566,36 @@ Begin
 
     --------------------------------------------------------------------------
     -- Anti-aliasing low-pass para o caminho de DECIMADOR + monitores GPIO.
-    --   α = 2^-9  →  τ ≈ 138 µs  →  fc ≈ 1.15 kHz @ fs = 3.704 MHz
+    --   Butterworth 2ª ordem (Chamberlin SVF, multiplier-less), fc ≈ 40 kHz.
     --
-    -- Dimensionamento: Nyquist do decimador (3.704 MHz → 10 kHz) é 5 kHz;
-    -- fc=1.15 kHz garante AA sem distorcer o fundamental do motor (≤ ~100 Hz
-    -- elétrico). NÃO precisa ser mais agressivo: a própria indutância do
-    -- motor (|jωL|=19.7 Ω @1kHz vs Rs=0.435 Ω) já filtra o ripple PWM ~45×
-    -- na geração da corrente — confirmado pela simulação offline (cocotb).
+    -- Dimensionamento: a telemetria DMA decima 7.69 MHz → 100 kHz (Nyquist
+    -- 50 kHz). fc=40 kHz passa o ripple PWM real (carrier 1 kHz + harmônicos)
+    -- e corta antes do Nyquist: −3 dB @40 kHz, −16.6 dB @100 kHz, −28.5 dB
+    -- @200 kHz. Ao contrário do IIR de 1ª ordem/1.15 kHz anterior, este NÃO
+    -- mascara o ripple físico — só remove o que a amostragem não representa.
     --------------------------------------------------------------------------
-    IIR_aa_ialpha : entity work.IIRFilter
-        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+    IIR_aa_ialpha : entity work.SVFilter
+        generic map (DATA_WIDTH => TIM_DW)
         port map (clk => clk, reset_n => rst_n,
                   data_valid => data_valid_axi, x_i => ialpha_raw_axi, y_o => ialpha_aa_axi);
 
-    IIR_aa_ibeta : entity work.IIRFilter
-        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+    IIR_aa_ibeta : entity work.SVFilter
+        generic map (DATA_WIDTH => TIM_DW)
         port map (clk => clk, reset_n => rst_n,
                   data_valid => data_valid_axi, x_i => ibeta_raw_axi, y_o => ibeta_aa_axi);
 
-    IIR_aa_flux_alpha : entity work.IIRFilter
-        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+    IIR_aa_flux_alpha : entity work.SVFilter
+        generic map (DATA_WIDTH => TIM_DW)
         port map (clk => clk, reset_n => rst_n,
                   data_valid => data_valid_axi, x_i => flux_alpha_raw_axi, y_o => flux_alpha_aa_axi);
 
-    IIR_aa_flux_beta : entity work.IIRFilter
-        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+    IIR_aa_flux_beta : entity work.SVFilter
+        generic map (DATA_WIDTH => TIM_DW)
         port map (clk => clk, reset_n => rst_n,
                   data_valid => data_valid_axi, x_i => flux_beta_raw_axi, y_o => flux_beta_aa_axi);
 
-    IIR_aa_speed : entity work.IIRFilter
-        generic map (DATA_WIDTH => TIM_DW, ALPHA_BITS => 9)
+    IIR_aa_speed : entity work.SVFilter
+        generic map (DATA_WIDTH => TIM_DW)
         port map (clk => clk, reset_n => rst_n,
                   data_valid => data_valid_axi, x_i => speed_raw_axi, y_o => speed_aa_axi);
 
@@ -916,7 +916,7 @@ Begin
     --------------------------------------------------------------------------
     decim_ratio <= resize(unsigned(pwm_ctrl_i(31 downto 3)), 30) when
                    unsigned(pwm_ctrl_i(31 downto 3)) /= 0 else
-                   to_unsigned(750, 30);
+                   to_unsigned(77, 30);   -- 7.69 MHz / 77 ≈ 100 kHz telemetry
 
     --------------------------------------------------------------------------
     -- AXI4-Stream com decimador:

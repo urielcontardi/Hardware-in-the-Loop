@@ -35,12 +35,12 @@ const (
 	pwmEventsPort       = 5007
 	pwmHistoryMaxEvents = 2_000_000
 	pwmSSEBatchEvents   = 4096
-	// transportDecim — FPGA AXI-Stream decimation factor. 375 → ~9.876 kHz.
-	// On-chip IIR (ALPHA_BITS=9, fc ≈ 1.15 kHz) is the anti-aliasing pre-
-	// filter. Lowering this requires re-tuning the IIR. Display-rate
-	// reduction is the host's job (min/max envelope in decimateAndProject),
-	// not the FPGA decimator's.
-	transportDecim    = 375
+	// transportDecim — FPGA AXI-Stream decimation factor. 77 → ~100 kHz.
+	// On-chip anti-aliasing is the 2nd-order Butterworth SVFilter (fc ≈ 40 kHz),
+	// matched to this rate's 50 kHz Nyquist. Moving the rate far from 100 kHz
+	// means re-tuning the SVF cutoff. Display-rate reduction is the host's job
+	// (min/max envelope in decimateAndProject), not the FPGA decimator's.
+	transportDecim    = 77
 	transportSampleHz = 10000
 )
 

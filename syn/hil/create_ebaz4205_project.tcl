@@ -720,9 +720,13 @@ add_files -fileset sources_1 -norecurse \
 add_files -fileset sources_1 -norecurse \
     $root_dir/src/rtl/TIM_Solver.vhd
 
-# IIR Filter (anti-aliasing pre-filter for the AXI Stream decimator path)
+# Anti-aliasing pre-filters for the AXI Stream decimator path.
+# IIRFilter (legacy 1st-order) kept for reference; HIL_AXI_Top instantiates
+# SVFilter (2nd-order Butterworth, fc≈40 kHz) on the telemetry path.
 add_files -fileset sources_1 -norecurse \
     $root_dir/src/rtl/IIRFilter.vhd
+add_files -fileset sources_1 -norecurse \
+    $root_dir/src/rtl/SVFilter.vhd
 
 # HIL AXI Top (wrapper com interface PS↔PL)
 add_files -fileset sources_1 -norecurse \
