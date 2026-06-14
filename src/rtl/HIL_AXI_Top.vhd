@@ -306,6 +306,29 @@ Architecture rtl of HIL_AXI_Top is
     signal decim_ratio    : unsigned(29 downto 0);
 
     --------------------------------------------------------------------------
+    -- Anti-aliasing filter — 2nd-order Butterworth, 5 channels on ONE shared
+    -- datapath (inlined to avoid a block-design module-reference dependency on a
+    -- separate sub-module). Chamberlin SVF, multiplier-less: f1=2^-5,
+    -- q1=1.40625. Decoupled recurrence (lp[n], bp[n] from old state only),
+    -- 3-stage pipeline, one channel fed per clock after data_valid.
+    --   lp[n] = lp + bp/32
+    --   bp[n] = bp + x/32 - lp/32 - (bp*1.4375)/32
+    --------------------------------------------------------------------------
+    constant SVF_GUARD : natural := 4;
+    constant SVF_FSH   : natural := 5;
+    constant SVF_W     : natural := TIM_DW + SVF_GUARD + 2;   -- 48-bit state
+    type svf_state_t is array (0 to 4) of signed(SVF_W-1 downto 0);
+    type svf_in_t    is array (0 to 4) of std_logic_vector(TIM_DW-1 downto 0);
+    signal svf_lp, svf_bp : svf_state_t := (others => (others => '0'));
+    signal svf_xin        : svf_in_t;
+    signal svf_feeding    : std_logic := '0';
+    signal svf_fcnt       : integer range 0 to 4 := 0;
+    signal svf_s1_v, svf_s2_v   : std_logic := '0';
+    signal svf_s1_ch, svf_s2_ch : integer range 0 to 4 := 0;
+    signal svf_s1_lpnew, svf_s1_Ka, svf_s1_Kb, svf_s1_bx, svf_s1_lp5 : signed(SVF_W-1 downto 0) := (others => '0');
+    signal svf_s2_lpnew, svf_s2_Kbp, svf_s2_bx : signed(SVF_W-1 downto 0) := (others => '0');
+
+    --------------------------------------------------------------------------
     -- PWM transition capture FIFO (100 MHz clock domain).
     --------------------------------------------------------------------------
     constant PWM_CAP_DEPTH_C : natural := 2048;
@@ -574,30 +597,73 @@ Begin
     -- @200 kHz. Ao contrário do IIR de 1ª ordem/1.15 kHz anterior, este NÃO
     -- mascara o ripple físico — só remove o que a amostragem não representa.
     --------------------------------------------------------------------------
-    IIR_aa_ialpha : entity work.SVFilter
-        generic map (DATA_WIDTH => TIM_DW)
-        port map (clk => clk, reset_n => rst_n,
-                  data_valid => data_valid_axi, x_i => ialpha_raw_axi, y_o => ialpha_aa_axi);
+    -- One shared SVF datapath serves all 5 channels (multiplexed) to keep the
+    -- filter logic small — 5 separate instances added enough congestion to push
+    -- the 200 MHz solver path into a timing violation. Inlined (no sub-module)
+    -- so the block-design module reference reliably picks up the change.
+    svf_xin(0) <= ialpha_raw_axi;
+    svf_xin(1) <= ibeta_raw_axi;
+    svf_xin(2) <= flux_alpha_raw_axi;
+    svf_xin(3) <= flux_beta_raw_axi;
+    svf_xin(4) <= speed_raw_axi;
 
-    IIR_aa_ibeta : entity work.SVFilter
-        generic map (DATA_WIDTH => TIM_DW)
-        port map (clk => clk, reset_n => rst_n,
-                  data_valid => data_valid_axi, x_i => ibeta_raw_axi, y_o => ibeta_aa_axi);
+    ialpha_aa_axi     <= std_logic_vector(resize(shift_right(svf_lp(0), SVF_GUARD), TIM_DW));
+    ibeta_aa_axi      <= std_logic_vector(resize(shift_right(svf_lp(1), SVF_GUARD), TIM_DW));
+    flux_alpha_aa_axi <= std_logic_vector(resize(shift_right(svf_lp(2), SVF_GUARD), TIM_DW));
+    flux_beta_aa_axi  <= std_logic_vector(resize(shift_right(svf_lp(3), SVF_GUARD), TIM_DW));
+    speed_aa_axi      <= std_logic_vector(resize(shift_right(svf_lp(4), SVF_GUARD), TIM_DW));
 
-    IIR_aa_flux_alpha : entity work.SVFilter
-        generic map (DATA_WIDTH => TIM_DW)
-        port map (clk => clk, reset_n => rst_n,
-                  data_valid => data_valid_axi, x_i => flux_alpha_raw_axi, y_o => flux_alpha_aa_axi);
+    SVF_Filter : process(clk, rst_n)
+        variable xext : signed(SVF_W-1 downto 0);
+        variable lpc, bpc : signed(SVF_W-1 downto 0);
+    begin
+        if rst_n = '0' then
+            svf_lp <= (others => (others => '0'));
+            svf_bp <= (others => (others => '0'));
+            svf_feeding <= '0'; svf_fcnt <= 0;
+            svf_s1_v <= '0'; svf_s2_v <= '0';
+        elsif rising_edge(clk) then
+            -- Stage 3: write back final state
+            if svf_s2_v = '1' then
+                svf_lp(svf_s2_ch) <= svf_s2_lpnew;
+                svf_bp(svf_s2_ch) <= svf_s2_bx - shift_right(svf_s2_Kbp, SVF_FSH);
+            end if;
+            svf_s2_v <= svf_s1_v;
 
-    IIR_aa_flux_beta : entity work.SVFilter
-        generic map (DATA_WIDTH => TIM_DW)
-        port map (clk => clk, reset_n => rst_n,
-                  data_valid => data_valid_axi, x_i => flux_beta_raw_axi, y_o => flux_beta_aa_axi);
+            -- Stage 2: combine partials
+            if svf_s1_v = '1' then
+                svf_s2_ch    <= svf_s1_ch;
+                svf_s2_lpnew <= svf_s1_lpnew;
+                svf_s2_Kbp   <= svf_s1_Ka + svf_s1_Kb;
+                svf_s2_bx    <= svf_s1_bx - svf_s1_lp5;
+            end if;
 
-    IIR_aa_speed : entity work.SVFilter
-        generic map (DATA_WIDTH => TIM_DW)
-        port map (clk => clk, reset_n => rst_n,
-                  data_valid => data_valid_axi, x_i => speed_raw_axi, y_o => speed_aa_axi);
+            -- Stage 1: read one channel, level-1 parallel adds
+            svf_s1_v <= svf_feeding;
+            if svf_feeding = '1' then
+                lpc  := svf_lp(svf_fcnt);
+                bpc  := svf_bp(svf_fcnt);
+                xext := shift_left(resize(signed(svf_xin(svf_fcnt)), SVF_W), SVF_GUARD);
+                svf_s1_ch    <= svf_fcnt;
+                svf_s1_lpnew <= lpc + shift_right(bpc, SVF_FSH);
+                svf_s1_Ka    <= bpc + shift_right(bpc, 2);
+                svf_s1_Kb    <= shift_right(bpc, 3) + shift_right(bpc, 4);
+                svf_s1_bx    <= bpc + shift_right(xext, SVF_FSH);
+                svf_s1_lp5   <= shift_right(lpc, SVF_FSH);
+                if svf_fcnt = 4 then
+                    svf_feeding <= '0';
+                else
+                    svf_fcnt <= svf_fcnt + 1;
+                end if;
+            end if;
+
+            -- Start the per-sample sweep on data_valid
+            if data_valid_axi = '1' then
+                svf_feeding <= '1';
+                svf_fcnt    <= 0;
+            end if;
+        end if;
+    end process SVF_Filter;
 
     --------------------------------------------------------------------------
     -- CDC 200 MHz -> 100 MHz: publica uma amostra filtrada por toggle.

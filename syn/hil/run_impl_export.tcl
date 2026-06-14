@@ -15,19 +15,13 @@ set_param general.maxThreads 4
 
 open_project $proj_file
 
-# Ensure the anti-aliasing filters are in the project sources. Idempotent.
+# Ensure the legacy IIRFilter is in the project sources (idempotent). The active
+# anti-alias filter (2nd-order Butterworth) is inlined in HIL_AXI_Top, so there
+# is no separate filter sub-module to add here.
 set iir_path "[file normalize [file join [file dirname [info script]] ../../src/rtl/IIRFilter.vhd]]"
 if {[lsearch -exact [get_files] $iir_path] == -1} {
     puts "Adding IIRFilter.vhd to project sources..."
     add_files -fileset sources_1 -norecurse $iir_path
-    update_compile_order -fileset sources_1
-}
-# SVFilter.vhd: 2nd-order Butterworth SVF that replaced IIRFilter on the
-# telemetry path (HIL_AXI_Top now instantiates work.SVFilter).
-set svf_path "[file normalize [file join [file dirname [info script]] ../../src/rtl/SVFilter.vhd]]"
-if {[lsearch -exact [get_files] $svf_path] == -1} {
-    puts "Adding SVFilter.vhd to project sources..."
-    add_files -fileset sources_1 -norecurse $svf_path
     update_compile_order -fileset sources_1
 }
 
@@ -49,8 +43,19 @@ if {[llength $bd_files] > 0} {
         set_property synth_checkpoint_mode None $bd_file
         set_property generate_synth_checkpoint false $bd_file
     }
-    generate_target all $bd_files
+    generate_target -force all $bd_files
     export_ip_user_files -of_objects $bd_files -no_script -sync -force -quiet
+
+    # Regenerate the HDL wrapper and pin the top. On a fresh clone (or after the
+    # .gen products are wiped) the BD wrapper must be (re)created from the .bd and
+    # the project top explicitly set, otherwise Vivado's automatic hierarchy
+    # update can pick the wrong top (e.g. HIL_AXI_Top with ~1066 ports → IO
+    # overutilization at place_design).
+    set wrap [make_wrapper -files $bd_files -top -force]
+    add_files -norecurse -quiet $wrap
+    set_property top ebaz4205_wrapper [current_fileset]
+    update_compile_order -fileset sources_1
+    puts "Top fileset module: [get_property top [current_fileset]]"
 }
 
 set ooc_runs [get_runs -filter {IS_SYNTHESIS && NAME != synth_1}]
