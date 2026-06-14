@@ -17,12 +17,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"hil.local/daemon/internal/derive"
 	"hil.local/daemon/internal/frame"
+	"hil.local/daemon/internal/overview"
 	"hil.local/daemon/internal/pwmrecv"
+	"hil.local/daemon/internal/rawbuf"
 	"hil.local/daemon/internal/receiver"
+	"hil.local/daemon/internal/record"
 	"hil.local/daemon/internal/ring"
+	"hil.local/daemon/internal/series"
+	"hil.local/daemon/internal/sessionstore"
 	hiludp "hil.local/daemon/internal/udp"
 )
 
@@ -41,7 +48,8 @@ const (
 	// means re-tuning the SVF cutoff. Display-rate reduction is the host's job
 	// (min/max envelope in decimateAndProject), not the FPGA decimator's.
 	transportDecim    = 77
-	transportSampleHz = 10000
+	gpioFallbackHz    = 10000
+	displayBucketSize = 1000 // low-rate JSON fallback; raw detail uses /api/raw
 )
 
 type server struct {
@@ -61,10 +69,26 @@ type server struct {
 	lastScanAt  time.Time
 	subsMu      sync.Mutex
 	subs        map[chan []frame.Sample]struct{}
+	display     *frame.DisplayReducer
+	recorder    *record.Recorder
+	raw         *rawbuf.Buffer
 	stateMu     sync.Mutex
 	lastSet     map[string]hiludp.SetParams
 	lastMotor   map[string]hiludp.MotorParams
+
+	// ingest state: written by the single receiver goroutine and swapped by
+	// HTTP handlers (resetSession/setMotor). ingestMu guards all of it; the
+	// receiver locks once per UDP burst, not per sample.
+	ingestMu sync.Mutex
+	store    *sessionstore.Store
+	overview *overview.Overview
+	motor    derive.Motor
+	clk      sampleClock
 }
+
+// srvRef lets the SetSampleHandler closure (installed before the server value
+// exists) reach the server lazily.
+var srvRef atomic.Pointer[server]
 
 // RunMeta describes a saved .hilbin run file.
 type RunMeta struct {
@@ -133,6 +157,32 @@ func main() {
 		log.Printf("warning: could not create runs dir %q: %v", runsDir, err)
 	}
 
+	recorder := record.New(runsDir)
+	defer recorder.Close()
+	raw := rawbuf.New(300_000)
+	ov := overview.New(0.050)
+	store, err := sessionstore.Open(filepath.Join(runsDir, "live_session.bin"), 4096)
+	if err != nil {
+		log.Fatalf("session store: %v", err)
+	}
+	store.SetMaxSamples(180_000_000) // ~30 min @ 100 kHz guardrail
+	recv.SetSampleHandler(func(samples []frame.Sample) {
+		recorder.Submit(samples)
+		raw.Append(samples)
+		cur := srvRef.Load()
+		if cur == nil {
+			return
+		}
+		cur.ingestMu.Lock()
+		m := cur.motor
+		for _, smp := range samples {
+			t := cur.clk.seconds(smp.TCycles, smp.Epoch)
+			cur.store.Append(t, smp)
+			cur.overview.Push(t, m.Compute(smp).Values())
+		}
+		cur.ingestMu.Unlock()
+	})
+
 	s := &server{
 		ring:      r,
 		recv:      recv,
@@ -140,9 +190,16 @@ func main() {
 		localIP:   localIP(),
 		runsDir:   runsDir,
 		subs:      make(map[chan []frame.Sample]struct{}),
+		display:   frame.NewDisplayReducer(displayBucketSize),
+		recorder:  recorder,
+		raw:       raw,
+		store:     store,
+		overview:  ov,
+		motor:     derive.DefaultMotor,
 		lastSet:   make(map[string]hiludp.SetParams),
 		lastMotor: make(map[string]hiludp.MotorParams),
 	}
+	srvRef.Store(s)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", s.staticHandler())
@@ -158,6 +215,9 @@ func main() {
 	mux.HandleFunc("/api/stop", s.handleStop)
 	mux.HandleFunc("/api/reset", s.handleReset)
 	mux.HandleFunc("/api/stats", s.handleStats)
+	mux.HandleFunc("/api/raw", s.handleRaw)
+	mux.HandleFunc("/api/series", s.handleSeries)
+	mux.HandleFunc("/api/tail", s.handleRaw) // tail reuses the cursor transport
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunsDownload)
 	mux.HandleFunc("/events", s.handleEvents)
@@ -173,7 +233,7 @@ func main() {
 			go func() {
 				time.Sleep(2 * time.Second) // let the receiver start
 				decim := transportDecim
-				sampleHz := uint32(transportSampleHz)
+				sampleHz := uint32(gpioFallbackHz)
 				if _, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP}); err != nil {
 					log.Printf("auto-attach to %s failed: %v", ip, err)
 				} else {
@@ -186,6 +246,20 @@ func main() {
 	go s.pwmPump()
 	go s.telemetryPump()
 	go s.telemetryPunchLoop()
+	go func() {
+		for range time.Tick(5 * time.Second) {
+			cur := srvRef.Load()
+			if cur == nil {
+				continue
+			}
+			cur.ingestMu.Lock()
+			st := cur.store
+			cur.ingestMu.Unlock()
+			if st != nil && st.OverCap() {
+				log.Printf("session store over guardrail cap; oldest history may be trimmed")
+			}
+		}
+	}()
 	if err := http.ListenAndServe(addr, logRequests(mux)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
@@ -481,10 +555,12 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setTelemetryTarget(ip)
 	s.ring.Clear()
+	s.display.Reset()
+	s.resetSession()
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
 	decim := transportDecim
-	sampleHz := uint32(transportSampleHz)
+	sampleHz := uint32(gpioFallbackHz)
 	status, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP})
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
@@ -507,12 +583,19 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.TelemOff(ip)
+	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	if recordErr != nil {
+		writeError(w, http.StatusInternalServerError, recordErr)
+		return
+	}
 	s.setTelemetryTarget("")
 	s.ring.Clear()
+	s.display.Reset()
+	s.raw.Reset()
 	s.clearPwmHistory()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
@@ -539,6 +622,7 @@ func (s *server) handleMotor(w http.ResponseWriter, r *http.Request) {
 	s.stateMu.Lock()
 	s.lastMotor[ip] = motor
 	s.stateMu.Unlock()
+	s.setMotor(derive.MotorFromParams(motor.Npp, motor.Lm, motor.Lr))
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -571,12 +655,13 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 			p.Decim = &decim
 		}
 		if p.TelemHz == nil {
-			sampleHz := uint32(transportSampleHz)
+			sampleHz := uint32(gpioFallbackHz)
 			p.TelemHz = &sampleHz
 		}
 		p.TelemDst = s.localIP
 		s.setTelemetryTarget(ip)
 		s.ring.Clear()
+		s.display.Reset()
 		s.recv.Punch(ip, telemetryPort)
 		s.pwmRecv.Punch(ip, pwmEventsPort)
 	}
@@ -608,11 +693,19 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ring.Clear()
+	s.display.Reset()
+	s.raw.Reset()
+	s.resetSession()
 	s.clearPwmHistory()
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
+	if _, err := s.recorder.Start(""); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("start raw recorder: %w", err))
+		return
+	}
 	status, err := s.runWithRecovery(ip)
 	if err != nil {
+		_ = s.recorder.Stop()
 		writeError(w, http.StatusConflict, err)
 		return
 	}
@@ -665,11 +758,17 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.Stop(ip)
+	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	if recordErr != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("stop raw recorder: %w", recordErr))
+		return
+	}
 	s.ring.Clear()
+	s.display.Reset()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -692,7 +791,96 @@ func (s *server) forwardCommand(w http.ResponseWriter, r *http.Request, fn func(
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
+// setMotor updates the live motor model used to derive Te/abc at full rate.
+func (s *server) setMotor(m derive.Motor) {
+	s.ingestMu.Lock()
+	s.motor = m
+	s.ingestMu.Unlock()
+}
+
+// currentMotor returns the live motor model.
+func (s *server) currentMotor() derive.Motor {
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	return s.motor
+}
+
+// resetSession closes the current full-rate session file and opens a fresh one
+// (called on a new run/attach so old samples never bleed into the new view).
+func (s *server) resetSession() {
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	if s.store != nil {
+		_ = s.store.Close()
+	}
+	st, err := sessionstore.Open(filepath.Join(s.runsDir, "live_session.bin"), 4096)
+	if err != nil {
+		log.Printf("session store reopen: %v", err)
+		return
+	}
+	st.SetMaxSamples(180_000_000)
+	s.store = st
+	s.overview.Reset()
+	s.clk = sampleClock{}
+}
+
+// handleSeries answers a viewport query: per channel, a faithful min/max
+// envelope (or raw samples when the window is small) over [from,to] at the
+// requested pixel width, with derived channels applied at full rate.
+func (s *server) handleSeries(w http.ResponseWriter, r *http.Request) {
+	from := parseFloat(r.URL.Query().Get("from"), 0)
+	to := parseFloat(r.URL.Query().Get("to"), 0)
+	width, _ := strconv.Atoi(r.URL.Query().Get("width"))
+	if width <= 0 || width > 4000 {
+		width = 1500
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+
+	s.ingestMu.Lock()
+	st := s.store
+	s.ingestMu.Unlock()
+	if st == nil {
+		_, _ = w.Write(series.Encode(nil))
+		return
+	}
+	if to <= from {
+		_, last := st.Span()
+		to, from = last, last-1
+	}
+	ts, ss := st.ReadWindow(from, to)
+	cols := series.ReduceWindow(s.currentMotor(), ts, ss, width)
+	_, _ = w.Write(series.Encode(cols))
+}
+
+func parseFloat(str string, def float64) float64 {
+	if v, err := strconv.ParseFloat(str, 64); err == nil {
+		return v
+	}
+	return def
+}
+
+func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
+	cursor, _ := strconv.ParseUint(r.URL.Query().Get("cursor"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 20_000 {
+		limit = 20_000
+	}
+	batch := s.raw.Since(cursor, limit)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(rawbuf.Encode(batch))
+}
+
+func boolToUint64(v bool) uint64 {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
+	recording, recordWritten, recordDropped := s.recorder.Stats()
 	writeJSON(w, http.StatusOK, map[string]uint64{
 		"packets_raw":     s.recv.Stats.PacketsRaw.Load(),
 		"samples_rx":      s.recv.Stats.SamplesRx.Load(),
@@ -706,6 +894,9 @@ func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"pwm_events_rx":   s.pwmRecv.Stats.EventsRx.Load(),
 		"pwm_dropped":     s.pwmRecv.Stats.Dropped.Load(),
 		"pwm_history_len": s.pwmHistoryLen(),
+		"recording":       boolToUint64(recording),
+		"record_written":  recordWritten,
+		"record_dropped":  recordDropped,
 	})
 }
 
@@ -742,6 +933,7 @@ func (s *server) storePwmBatch(b pwmrecv.Batch) {
 	if len(b.Events) == 0 {
 		return
 	}
+	s.recorder.SubmitPWM(b.ClockHz, b.Events)
 	s.pwmMu.Lock()
 	defer s.pwmMu.Unlock()
 
@@ -793,7 +985,10 @@ func (s *server) telemetryPump() {
 		if n == 0 {
 			continue
 		}
-		batch := append([]frame.Sample(nil), scratch[:n]...)
+		batch := s.display.Push(scratch[:n])
+		if len(batch) == 0 {
+			continue
+		}
 		s.subsMu.Lock()
 		for ch := range s.subs {
 			select {
@@ -972,12 +1167,20 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(name, ".hilbin") {
 			name += ".hilbin"
 		}
+		path := filepath.Join(s.runsDir, filepath.Base(name))
+		if copied, copyErr := s.recorder.CopyLatest(path); copyErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("copy raw capture: %w", copyErr))
+			return
+		} else if copied {
+			fi, _ := os.Stat(path)
+			writeJSON(w, http.StatusOK, RunMeta{Name: name, Size: fi.Size(), Modified: fi.ModTime().UTC().Format(time.RFC3339)})
+			return
+		}
 		data, err := io.ReadAll(io.LimitReader(r.Body, 512<<20))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("read body: %w", err))
 			return
 		}
-		path := filepath.Join(s.runsDir, filepath.Base(name))
 		if err := os.WriteFile(path, data, 0644); err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("write file: %w", err))
 			return
