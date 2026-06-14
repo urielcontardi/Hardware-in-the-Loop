@@ -94,6 +94,9 @@ scripts/board.sh
 build/
 src/ps_app/hil_controller
 src/ps_app/test_fpga
+src/ps_app/hil_controller_native
+src/ps_app/hil_supervisor_native
+apps/hil-go/gateway
 
 # HIL Monitor (Wails/Go)
 apps/hil-go/frontend/node_modules/
@@ -101,3 +104,6 @@ apps/hil-go/frontend/dist/
 apps/hil-go/frontend/wailsjs/
 apps/hil-go/build/
 apps/hil-go/runs/
+
+# always-on full-rate live telemetry session (runtime artifact)
+apps/hil-go/runs/live_session.bin
