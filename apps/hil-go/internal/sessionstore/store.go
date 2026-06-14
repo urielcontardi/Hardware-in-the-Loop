@@ -159,3 +159,18 @@ func (s *Store) Close() error {
 	}
 	return nil
 }
+
+// SetMaxSamples sets the guardrail cap (0 = unlimited). When exceeded, OverCap
+// reports true so the caller can warn/rotate.
+func (s *Store) SetMaxSamples(n int64) {
+	s.mu.Lock()
+	s.maxSamples = n
+	s.mu.Unlock()
+}
+
+// OverCap reports whether the session exceeded the configured sample cap.
+func (s *Store) OverCap() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxSamples > 0 && s.n > s.maxSamples
+}
