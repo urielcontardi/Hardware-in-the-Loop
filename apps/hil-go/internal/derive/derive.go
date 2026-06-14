@@ -43,3 +43,40 @@ func (m Motor) Compute(s frame.Sample) Derived {
 		Te:    1.5 * m.Npp * (m.Lm / m.LrTotal) * (fa*ib - fb*ia),
 	}
 }
+
+// NumChannels is the count of derived display channels.
+const NumChannels = 8
+
+// Channels is the canonical, index-stable channel order used by the overview
+// tier and the query API.
+var Channels = [NumChannels]string{
+	"Ia", "Ib", "Ic", "FluxA", "FluxB", "FluxC", "Speed", "Te",
+}
+
+// Values returns the channel values in Channels order.
+func (d Derived) Values() [NumChannels]float64 {
+	return [NumChannels]float64{
+		d.Ia, d.Ib, d.Ic, d.FluxA, d.FluxB, d.FluxC, d.Speed, d.Te,
+	}
+}
+
+// MotorFromParams builds a Motor from optional live params, defaulting any
+// missing field to the firmware default. npp/lm are direct; lrLeak is added to
+// lm to form LrTotal.
+func MotorFromParams(npp, lm, lrLeak *float32) Motor {
+	m := DefaultMotor
+	if npp != nil {
+		m.Npp = float64(*npp)
+	}
+	lmv := m.Lm
+	if lm != nil {
+		lmv = float64(*lm)
+	}
+	leak := 0.0063264
+	if lrLeak != nil {
+		leak = float64(*lrLeak)
+	}
+	m.Lm = lmv
+	m.LrTotal = lmv + leak
+	return m
+}
