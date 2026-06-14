@@ -3,6 +3,8 @@ import "./styles.css";
 import uPlot from "uplot";
 import * as WailsRuntime from "../wailsjs/runtime/runtime";
 import * as WailsApp from "../wailsjs/go/main/App";
+import { decodeSeries, type SeriesColumns } from "./series";
+import { ViewportController } from "./viewport";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Sample = { t_cycles?: number; epoch?: number; Ia: number; Ib: number; FluxA: number; FluxB: number; Speed: number; TL?: number };
@@ -250,13 +252,14 @@ const DISPLAY_MODE_STORAGE_KEY = "hil-display-mode";
 let displayMode: "ab" | "abc" = (localStorage.getItem(DISPLAY_MODE_STORAGE_KEY) as "ab" | "abc") || "abc";
 let CHANNELS: ChDef[] = displayMode === "abc" ? CHANNELS_ABC : CHANNELS_AB;
 let N_CH = CHANNELS.length;
-const MAX_SAMPLES = 600_000;
-// Overview buffer: stores min+max of channel-0 (Iα) per 1000-sample bucket.
-// At 10 kHz / 1000 = 10 Hz decimation rate; each 100 ms bucket captures ~6
-// full electrical cycles of a 60 Hz motor, so the min/max pair preserves the
-// signal envelope accurately at any zoom level without aliasing.
-// 2 pts/bucket × 10 Hz × 7200 s ≈ 144 000 pts → ~2 h of session history.
-const OVERVIEW_EVERY = 1_000;
+// Full-rate detail arrives through the cursor-based raw transport. The SSE
+// extrema stream is only a low-rate fallback if that transport is unavailable.
+const TELEM_DISPLAY_HZ = 100_000;
+const MAX_SAMPLES = 600_000;  // approximately 6 s of full-rate detail
+// Long-history overview: one 100 ms bucket contains about six 60 Hz cycles.
+// Each bucket keeps extrema from every independent raw state, so derived ABC
+// channels and flux are not projected from Ialpha extrema only.
+const OVERVIEW_EVERY = 10_000;
 const MAX_OVERVIEW_SAMPLES = 144_000;
 // Both telemetry samples and PWM events are timestamped by the SAME run-local
 // FPGA counter (hil_time <= pwm_cap_time in RTL). Using hardware time for both
@@ -266,20 +269,31 @@ const MAX_OVERVIEW_SAMPLES = 144_000;
 //   • Counter resets to 0 on each run (epoch++) → clear telemetry buffers
 //     on epoch change so old samples never bleed into the new run's view.
 const HW_CLOCK_HZ             = 100_000_000;
-const TELEM_NOMINAL_PERIOD_S  = 1 / 9_876;   // ≈ 100 µs at transportDecim=375
+const TELEM_NOMINAL_PERIOD_S  = 1 / TELEM_DISPLAY_HZ;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 const tBuf: number[]      = [];
-const samplesBuf: Sample[] = [];   // raw αβ samples paralelos a tBuf
+const samplesBuf: Sample[] = [];   // display-rate αβ samples parallel to tBuf
 // Overview buffers — min+max envelope pairs per OVERVIEW_EVERY raw samples.
 // Used for rendering when the view extends further back than the high-res buffer.
 const ovTBuf: number[]    = [];
 const ovSBuf:  Sample[]   = [];
 let   ovCounter            = 0;
-// Per-bucket accumulators (reset each time ovCounter reaches OVERVIEW_EVERY).
-let ovBucketMinV = Infinity,  ovBucketMaxV = -Infinity;
-let ovBucketMinT = 0,         ovBucketMaxT = 0;
-let ovBucketMinS: Sample | null = null, ovBucketMaxS: Sample | null = null;
+// Extrema are tracked for the independent raw solver states. Derived ABC and
+// torque channels are reconstructed from the retained complete samples.
+const OVERVIEW_READERS = [
+  (s: Sample) => s.Ia,
+  (s: Sample) => s.Ib,
+  (s: Sample) => s.FluxA,
+  (s: Sample) => s.FluxB,
+  (s: Sample) => s.Speed,
+];
+let ovBucketMinV = Array(OVERVIEW_READERS.length).fill(Infinity) as number[];
+let ovBucketMaxV = Array(OVERVIEW_READERS.length).fill(-Infinity) as number[];
+let ovBucketMinT = Array(OVERVIEW_READERS.length).fill(0) as number[];
+let ovBucketMaxT = Array(OVERVIEW_READERS.length).fill(0) as number[];
+let ovBucketMinS = Array<Sample | null>(OVERVIEW_READERS.length).fill(null);
+let ovBucketMaxS = Array<Sample | null>(OVERVIEW_READERS.length).fill(null);
 let sampleCount = 0;
 let lastBoardState: string = "idle";
 let lastSampleAt = 0;             // ms — for stream stalled detection
@@ -327,7 +341,7 @@ let pwmViewEndSec = 0;
 let pwmTelemOffset = 0;
 const WINDOW_PRESETS_MS = [500, 1000, 5000, 30000, 60000];
 const WINDOW_MIN_SEC = 0.01;     //  10 ms — finest zoom
-const WINDOW_MAX_SEC = 60.0;     //  60 s  — full buffer width (= MAX_SAMPLES/fs)
+const WINDOW_MAX_SEC = 60.0;     // overview may span 60 s; raw detail retains about 6 s
 
 // Subplot state — derived from each channel's defaultSubplot.
 let nSubplots = 4;  // currents, flux, speed, torque (load)
@@ -787,6 +801,73 @@ const elTimelineLeft = document.querySelector<HTMLDivElement>("#timeline-left")!
 const elTimelineRight = document.querySelector<HTMLDivElement>("#timeline-right")!;
 const elChList      = document.querySelector<HTMLDivElement>("#ch-list")!;
 const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
+
+// ── Faithful viewport rendering via /api/series (min/max envelope) ──────────────
+// The gateway serves a per-pixel min/max envelope over the full-rate session on
+// disk, with Te/abc derived at full rate. This is the primary plot source; the
+// client-side buffers remain a fallback until the endpoint returns data, and for
+// the αβ display mode (the envelope is wired for the abc channel set).
+const PLOT_TO_SERIES: Record<string, number> = {
+  Ia: 0, Ib: 1, Ic: 2, "Φa": 3, "Φb": 4, "Φc": 5, Speed: 6, Te: 7,
+};
+const RPM_PER_RAD_S = 60 / (2 * Math.PI);
+let latestSeries: SeriesColumns | null = null;
+let seriesActive = false;
+
+const seriesViewport = new ViewportController(async (from, to, width) => {
+  try {
+    const res = await fetch(
+      gatewayURL(`/api/series?from=${from}&to=${to}&width=${Math.round(width)}`),
+      { cache: "no-store" },
+    );
+    if (!res.ok) return { t: [], min: [], max: [] };
+    return decodeSeries(await res.arrayBuffer());
+  } catch {
+    return { t: [], min: [], max: [] };
+  }
+}, 60);
+seriesViewport.onData = (c) => {
+  if (c.t.length > 0) { latestSeries = c; seriesActive = true; scheduleRender(); }
+};
+
+// Convert a min/max envelope into AlignedData aligned to the live CHANNELS order.
+// Two x points per column (min then max) draw the envelope as vertical strokes,
+// matching the existing single-series-per-channel render (no triangle collapse).
+function seriesToProjected(cols: SeriesColumns): { xs: number[]; ys: number[][] } {
+  const n = cols.t.length;
+  const xs: number[] = new Array(n * 2);
+  const ys: number[][] = CHANNELS.map(() => new Array<number>(n * 2));
+  const tl = Number(elTorque.value) || 0;
+  for (let i = 0; i < n; i++) {
+    xs[i * 2] = cols.t[i];
+    xs[i * 2 + 1] = cols.t[i];
+    for (let k = 0; k < CHANNELS.length; k++) {
+      const si = PLOT_TO_SERIES[CHANNELS[k].name];
+      let mn: number, mx: number;
+      if (si === undefined) {
+        const v = CHANNELS[k].name === "TL" ? tl : NaN;
+        mn = v; mx = v;
+      } else {
+        mn = cols.min[si][i]; mx = cols.max[si][i];
+        if (CHANNELS[k].name === "Speed") { mn *= RPM_PER_RAD_S; mx *= RPM_PER_RAD_S; }
+      }
+      ys[k][i * 2] = mn;
+      ys[k][i * 2 + 1] = mx;
+    }
+  }
+  return { xs, ys };
+}
+
+// Poll the visible window for the faithful envelope, independent of the render
+// cadence (the controller debounces). viewEndSec/windowSec track the live edge
+// via the existing /api/raw tail poll; only the abc channel set is wired.
+setInterval(() => {
+  if (plots.length === 0 || displayMode !== "abc") return;
+  const viewEnd = viewEndSec;
+  const viewStart = viewEnd - windowSec;
+  const w = elPlotArea.clientWidth || 800;
+  seriesViewport.request(viewStart, viewEnd, Math.max(600, w * 2));
+}, 100);
 const elScenarioTable    = document.querySelector<HTMLDivElement>("#scenario-table")!;
 const elBtnAddScenarioEvent = document.querySelector<HTMLButtonElement>("#btn-add-scenario-event")!;
 const elBtnRecipeLoad    = document.querySelector<HTMLButtonElement>("#btn-recipe-load")!;
@@ -1399,9 +1480,9 @@ function setNSubplots(n: number) {
 // Min/max decimation: for each bucket, emit the sample at the min AND max of
 // the primary channel (channel 0) in time order. This preserves the signal
 // envelope so AC waveforms don't alias into jagged noise at low zoom levels.
-// smoothWin > 1 activates a moving-average pre-filter that removes PWM
-// switching ripple. Win=10 ≈ one 1 kHz PWM period at 10 kHz sample rate.
-let smoothWin = 10;  // default: remove 1 kHz PWM ripple (10 samples = 1 PWM period)
+// FPGA filtering and gateway extrema reduction already prepare display data.
+// Averaging the extrema envelope would cancel alternating peaks.
+let smoothWin = 1;
 
 // Binary search: first index i with buf[i] >= target.
 function lowerBound(target: number, buf = tBuf): number {
@@ -1541,6 +1622,7 @@ function attachTimelineNavigation() {
 function decimateFrom(
   tbuf: number[], sbuf: Sample[],
   maxPts: number, xMin: number | null, xMax: number | null,
+  smoothingWindow = smoothWin,
 ): { xs: number[]; ys: number[][] } {
   const total = tbuf.length;
   if (total === 0) return { xs: [], ys: Array.from({ length: N_CH }, () => []) };
@@ -1550,10 +1632,10 @@ function decimateFrom(
   const n = Math.max(0, iEnd - iStart);
   if (n === 0) return { xs: [], ys: Array.from({ length: N_CH }, () => []) };
 
-  const smoothed = smoothWin <= 1
+  const smoothed = smoothingWindow <= 1
     ? (c: number, i: number) => CHANNELS[c].read(sbuf[i])
     : (c: number, i: number) => {
-        const half = Math.floor(smoothWin / 2);
+        const half = Math.floor(smoothingWindow / 2);
         const lo = Math.max(0, i - half);
         const hi = Math.min(total - 1, i + half);
         let sum = 0;
@@ -1571,7 +1653,8 @@ function decimateFrom(
     return { xs, ys };
   }
 
-  const buckets = Math.max(1, Math.floor(maxPts / 2));
+  const extremaPerBucket = Math.max(2, 2 * N_CH);
+  const buckets = Math.max(1, Math.floor(maxPts / extremaPerBucket));
   const bucketSize = n / buckets;
   const xs: number[] = [];
   const ys: number[][] = Array.from({ length: N_CH }, () => []);
@@ -1581,21 +1664,22 @@ function decimateFrom(
     const i1 = Math.min(iStart + Math.floor((b + 1) * bucketSize), iEnd) - 1;
     if (i0 > i1) continue;
 
-    let minIdx = i0, maxIdx = i0;
-    let minV = smoothed(0, i0);
-    let maxV = minV;
-    for (let i = i0 + 1; i <= i1; i++) {
-      const v = smoothed(0, i);
-      if (v < minV) { minV = v; minIdx = i; }
-      if (v > maxV) { maxV = v; maxIdx = i; }
+    const extrema = new Set<number>();
+    for (let c = 0; c < N_CH; c++) {
+      let minIdx = i0, maxIdx = i0;
+      let minV = smoothed(c, i0), maxV = minV;
+      for (let i = i0 + 1; i <= i1; i++) {
+        const value = smoothed(c, i);
+        if (value < minV) { minV = value; minIdx = i; }
+        if (value > maxV) { maxV = value; maxIdx = i; }
+      }
+      extrema.add(minIdx); extrema.add(maxIdx);
     }
 
-    const [first, second] = minIdx <= maxIdx ? [minIdx, maxIdx] : [maxIdx, minIdx];
-    xs.push(tbuf[first]);
-    for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, first));
-    if (first !== second) {
-      xs.push(tbuf[second]);
-      for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, second));
+    const ordered = [...extrema].sort((a, b) => a - b);
+    for (const idx of ordered) {
+      xs.push(tbuf[idx]);
+      for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, idx));
     }
   }
 
@@ -1605,7 +1689,7 @@ function decimateFrom(
 // Route to the overview (downsampled) buffer only when the high-res buffer has
 // actually rolled (tBuf filled to capacity and started dropping old samples) AND
 // the view extends before the surviving high-res window. While the session is
-// younger than MAX_SAMPLES/fs (60 s), tBuf still holds every sample since t=0
+// younger than MAX_SAMPLES/fs (~6 s), tBuf still holds every sample since t=0
 // and the overview is never needed — bypassing this avoids the zigzag artifact
 // that appears when viewStart goes slightly negative on a fresh session.
 function decimateAndProject(
@@ -1624,6 +1708,7 @@ function decimateAndProject(
     useOverview ? ovTBuf : tBuf,
     useOverview ? ovSBuf : samplesBuf,
     maxPts, xMin, xMax,
+    useOverview ? 1 : smoothWin,
   );
 }
 
@@ -2105,6 +2190,34 @@ function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], n
 
 // ── Render ────────────────────────────────────────────────────────────────────
 let renderPending = false;
+let lastRenderAt = 0;
+const RENDER_INTERVAL_MS = 50;
+
+function resetOverviewBucket() {
+  ovBucketMinV.fill(Infinity); ovBucketMaxV.fill(-Infinity);
+  ovBucketMinT.fill(0); ovBucketMaxT.fill(0);
+  ovBucketMinS.fill(null); ovBucketMaxS.fill(null);
+}
+
+function flushOverviewBucket() {
+  const points: { t: number; s: Sample }[] = [];
+  for (let i = 0; i < OVERVIEW_READERS.length; i++) {
+    if (ovBucketMinS[i] !== null) points.push({ t: ovBucketMinT[i], s: ovBucketMinS[i]! });
+    if (ovBucketMaxS[i] !== null) points.push({ t: ovBucketMaxT[i], s: ovBucketMaxS[i]! });
+  }
+  points.sort((a, b) => a.t - b.t);
+  let lastT = -Infinity;
+  for (const point of points) {
+    if (point.t === lastT) continue;
+    ovTBuf.push(point.t); ovSBuf.push(point.s);
+    lastT = point.t;
+  }
+  if (ovTBuf.length > MAX_OVERVIEW_SAMPLES) {
+    const trim = ovTBuf.length - MAX_OVERVIEW_SAMPLES;
+    ovTBuf.splice(0, trim); ovSBuf.splice(0, trim);
+  }
+  resetOverviewBucket();
+}
 
 // Wipes only the telemetry data buffers — called when the FPGA epoch changes
 // (new Run) so stale pre-run samples at the frozen counter value are removed
@@ -2115,8 +2228,7 @@ function clearTelemBuffers() {
   ovTBuf.length = 0;
   ovSBuf.length = 0;
   ovCounter = 0;
-  ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
-  ovBucketMinS = null;     ovBucketMaxS = null;
+  resetOverviewBucket();
   lastTelemPlotTime = 0;
   sampleCount = 0;
 }
@@ -2124,8 +2236,10 @@ function clearTelemBuffers() {
 function scheduleRender() {
   if (renderPending) return;
   renderPending = true;
-  requestAnimationFrame(() => {
+  const delay = Math.max(0, RENDER_INTERVAL_MS - (performance.now() - lastRenderAt));
+  window.setTimeout(() => requestAnimationFrame(() => {
     renderPending = false;
+    lastRenderAt = performance.now();
 
     // Resolve the visible window. While running live we keep the right edge
     // glued to the most recent sample; while paused viewEndSec is whatever
@@ -2139,7 +2253,11 @@ function scheduleRender() {
 
     const w = elPlotArea.clientWidth || 800;
     const maxPts = Math.max(600, w * 2);
-    const { xs, ys } = decimateAndProject(maxPts, viewStart, viewEnd);
+    const useSeries = seriesActive && displayMode === "abc"
+      && latestSeries != null && latestSeries.t.length > 0;
+    const { xs, ys } = useSeries
+      ? seriesToProjected(latestSeries!)
+      : decimateAndProject(maxPts, viewStart, viewEnd);
 
     scaleSyncing = true;
     plots.forEach((p, s) => {
@@ -2164,11 +2282,11 @@ function scheduleRender() {
     elBtnPause.textContent = paused ? "▶ Resume" : "⏸ Pause";
     elBtnPause.classList.toggle("active", paused);
     elBtnLatest.disabled = !paused;
-  });
+  }), delay);
 }
 
 // ── Telemetry events ──────────────────────────────────────────────────────────
-api.onTelemetry((samples: Sample[]) => {
+function ingestTelemetry(samples: Sample[]) {
   if (!captureTelemetry || !Array.isArray(samples) || samples.length === 0) return;
   lastSampleAt = performance.now();
 
@@ -2209,25 +2327,18 @@ api.onTelemetry((samples: Sample[]) => {
     tBuf.push(sampleTime);
     samplesBuf.push(s);
 
-    // Track min+max of Iα within the current overview bucket (s.Ia = Iα).
-    const v0 = s.Ia;
-    if (v0 < ovBucketMinV) { ovBucketMinV = v0; ovBucketMinT = sampleTime; ovBucketMinS = s; }
-    if (v0 > ovBucketMaxV) { ovBucketMaxV = v0; ovBucketMaxT = sampleTime; ovBucketMaxS = s; }
+    for (let i = 0; i < OVERVIEW_READERS.length; i++) {
+      const value = OVERVIEW_READERS[i](s);
+      if (value < ovBucketMinV[i]) {
+        ovBucketMinV[i] = value; ovBucketMinT[i] = sampleTime; ovBucketMinS[i] = s;
+      }
+      if (value > ovBucketMaxV[i]) {
+        ovBucketMaxV[i] = value; ovBucketMaxT[i] = sampleTime; ovBucketMaxS[i] = s;
+      }
+    }
     if (++ovCounter >= OVERVIEW_EVERY) {
       ovCounter = 0;
-      if (ovBucketMinS !== null) {
-        const [fT, fS, sT, sS] = ovBucketMinT <= ovBucketMaxT
-          ? [ovBucketMinT, ovBucketMinS, ovBucketMaxT, ovBucketMaxS!]
-          : [ovBucketMaxT, ovBucketMaxS!, ovBucketMinT, ovBucketMinS];
-        ovTBuf.push(fT); ovSBuf.push(fS);
-        if (fT !== sT) { ovTBuf.push(sT); ovSBuf.push(sS); }
-        if (ovTBuf.length > MAX_OVERVIEW_SAMPLES) {
-          const trim = ovTBuf.length - MAX_OVERVIEW_SAMPLES;
-          ovTBuf.splice(0, trim); ovSBuf.splice(0, trim);
-        }
-      }
-      ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
-      ovBucketMinS = null;     ovBucketMaxS = null;
+      flushOverviewBucket();
     }
     sampleCount++;
   }
@@ -2244,7 +2355,72 @@ api.onTelemetry((samples: Sample[]) => {
   });
 
   scheduleRender();
+}
+
+let rawCursor = 0;
+let rawTransportHealthy = true;
+let rawEverWorked = false;
+let reducedFallbackUsed = false;
+
+api.onTelemetry((samples: Sample[]) => {
+  if (!rawTransportHealthy && !rawEverWorked) {
+    reducedFallbackUsed = true;
+    ingestTelemetry(samples);
+  }
 });
+
+async function pollRawTelemetry() {
+  try {
+    const requestedCursor = rawCursor;
+    let data: ArrayBuffer;
+    if (isWails) {
+      const encoded = await (window as any).go.main.App.GetRawTelemetry(rawCursor, 20_000) as string;
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      data = bytes.buffer;
+    } else {
+      const response = await fetch(gatewayURL(`/api/raw?cursor=${rawCursor}&limit=20000`), { cache: "no-store" });
+      if (!response.ok) throw new Error(`raw telemetry HTTP ${response.status}`);
+      data = await response.arrayBuffer();
+    }
+    const view = new DataView(data);
+    if (data.byteLength < 12) throw new Error("truncated raw telemetry batch");
+    rawCursor = Number(view.getBigUint64(0, true));
+    const count = view.getUint32(8, true);
+    if (data.byteLength !== 12 + count * 26) throw new Error("invalid raw telemetry batch");
+    const samples = new Array<Sample>(count);
+    let off = 12;
+    for (let i = 0; i < count; i++, off += 26) {
+      samples[i] = {
+        t_cycles: view.getUint32(off, true),
+        epoch: view.getUint16(off + 4, true),
+        Ia: view.getFloat32(off + 6, true),
+        Ib: view.getFloat32(off + 10, true),
+        FluxA: view.getFloat32(off + 14, true),
+        FluxB: view.getFloat32(off + 18, true),
+        Speed: view.getFloat32(off + 22, true),
+      };
+    }
+    const batchStartCursor = rawCursor - samples.length;
+    if (rawEverWorked && batchStartCursor !== requestedCursor) {
+      clearTelemBuffers();
+    }
+    if (!rawEverWorked && reducedFallbackUsed) {
+      clearTelemBuffers();
+      reducedFallbackUsed = false;
+    }
+    rawEverWorked = true;
+    rawTransportHealthy = true;
+    if (samples.length > 0) ingestTelemetry(samples);
+  } catch {
+    rawTransportHealthy = rawEverWorked;
+  } finally {
+    window.setTimeout(pollRawTelemetry, rawTransportHealthy ? 20 : 500);
+  }
+}
+
+void pollRawTelemetry();
 
 api.onPwmEvents((batch: PwmEventBatch) => {
   if (!capturePwm || !batch || !Array.isArray(batch.events) || batch.events.length === 0) return;
@@ -2399,8 +2575,7 @@ function resetPlotBuffer() {
   ovTBuf.length = 0;
   ovSBuf.length = 0;
   ovCounter = 0;
-  ovBucketMinV = Infinity; ovBucketMaxV = -Infinity;
-  ovBucketMinS = null;     ovBucketMaxS = null;
+  resetOverviewBucket();
   sampleCount = 0;
   lastTelemPlotTime = 0;
   telemLastRawCycles = null;
