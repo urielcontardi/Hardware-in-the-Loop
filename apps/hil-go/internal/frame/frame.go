@@ -79,6 +79,9 @@ func Decode(buf []byte) (*Frame, error) {
 	seq := binary.LittleEndian.Uint32(buf[4:8])
 	flags := buf[8]
 	n := int(buf[9])
+	if n < 1 || n > MaxBurst {
+		return nil, ErrTruncated
+	}
 
 	need := HeaderSize + n*SampleBytes + 2
 	if len(buf) < need {

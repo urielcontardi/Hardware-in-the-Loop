@@ -49,7 +49,6 @@ const (
 	// (min/max envelope in decimateAndProject), not the FPGA decimator's.
 	transportDecim    = 77
 	gpioFallbackHz    = 10000
-	displayBucketSize = 1000 // low-rate JSON fallback; raw detail uses /api/raw
 )
 
 type server struct {
@@ -69,7 +68,6 @@ type server struct {
 	lastScanAt  time.Time
 	subsMu      sync.Mutex
 	subs        map[chan []frame.Sample]struct{}
-	display     *frame.DisplayReducer
 	recorder    *record.Recorder
 	raw         *rawbuf.Buffer
 	stateMu     sync.Mutex
@@ -190,7 +188,6 @@ func main() {
 		localIP:   localIP(),
 		runsDir:   runsDir,
 		subs:      make(map[chan []frame.Sample]struct{}),
-		display:   frame.NewDisplayReducer(displayBucketSize),
 		recorder:  recorder,
 		raw:       raw,
 		store:     store,
@@ -555,7 +552,6 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setTelemetryTarget(ip)
 	s.ring.Clear()
-	s.display.Reset()
 	s.resetSession()
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
@@ -594,7 +590,6 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setTelemetryTarget("")
 	s.ring.Clear()
-	s.display.Reset()
 	s.raw.Reset()
 	s.clearPwmHistory()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
@@ -661,7 +656,6 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 		p.TelemDst = s.localIP
 		s.setTelemetryTarget(ip)
 		s.ring.Clear()
-		s.display.Reset()
 		s.recv.Punch(ip, telemetryPort)
 		s.pwmRecv.Punch(ip, pwmEventsPort)
 	}
@@ -693,7 +687,6 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ring.Clear()
-	s.display.Reset()
 	s.raw.Reset()
 	s.resetSession()
 	s.clearPwmHistory()
@@ -768,7 +761,6 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ring.Clear()
-	s.display.Reset()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -985,10 +977,9 @@ func (s *server) telemetryPump() {
 		if n == 0 {
 			continue
 		}
-		batch := s.display.Push(scratch[:n])
-		if len(batch) == 0 {
-			continue
-		}
+		// SSE is a full-rate fallback for when the /api/raw + /api/series
+		// transport is unavailable; copy out of the reused scratch buffer.
+		batch := append([]frame.Sample(nil), scratch[:n]...)
 		s.subsMu.Lock()
 		for ch := range s.subs {
 			select {

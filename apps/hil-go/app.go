@@ -12,7 +12,9 @@ import (
 
 	"hil.local/daemon/internal/frame"
 	"hil.local/daemon/internal/pwmrecv"
+	"hil.local/daemon/internal/rawbuf"
 	"hil.local/daemon/internal/receiver"
+	"hil.local/daemon/internal/record"
 	"hil.local/daemon/internal/ring"
 	hilUDP "hil.local/daemon/internal/udp"
 )
@@ -28,20 +30,15 @@ type App struct {
 	stateMu   sync.Mutex
 	lastSet   map[string]hilUDP.SetParams
 	lastMotor map[string]hilUDP.MotorParams
+	recorder  *record.Recorder
+	raw       *rawbuf.Buffer
 }
 
-// transportDecim — FPGA AXI-Stream decimation factor (used when DMA path is
-// enabled). 375 → 3.704 MHz / 375 = ~9.876 kHz. The on-chip IIR
-// (ALPHA_BITS=9, fc ≈ 1.15 kHz) is the anti-aliasing pre-filter for this rate.
-//
-// NOTE: As of this commit the PS-side falls back to GPIO polling (10 kHz)
-// because the AXI DMA HP-slave path is not cache-coherent with the Cortex-A9
-// and userspace lacks the D-cache invalidate primitive needed before each
-// buffer read. Proper fix is to re-route AXI DMA to S_AXI_ACP in the Vivado
-// design. See src/ps_app/main.c and src/ps_app/dma_telem.c.
+// Keep the native app on the same acquisition and display contract as the
+// gateway: about 100 ksample/s from DMA, reduced only for the UI.
 const (
-	transportDecim    = 375
-	transportSampleHz = 10000
+	transportDecim    = 77
+	gpioFallbackHz    = 10000
 )
 
 func NewApp() *App {
@@ -50,6 +47,8 @@ func NewApp() *App {
 		done:      make(chan struct{}),
 		lastSet:   make(map[string]hilUDP.SetParams),
 		lastMotor: make(map[string]hilUDP.MotorParams),
+		recorder:  record.New("./runs"),
+		raw:       rawbuf.New(300_000),
 	}
 }
 
@@ -63,6 +62,10 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	a.recv = recv
+	recv.SetSampleHandler(func(samples []frame.Sample) {
+		a.recorder.Submit(samples)
+		a.raw.Append(samples)
+	})
 
 	pwmRecv := pwmrecv.New(5007)
 	if err := pwmRecv.Start(); err != nil {
@@ -83,6 +86,9 @@ func (a *App) shutdown(_ context.Context) {
 	if a.pwmRecv != nil {
 		a.pwmRecv.Stop()
 	}
+	if a.recorder != nil {
+		_ = a.recorder.Close()
+	}
 }
 
 func (a *App) broadcastLoop() {
@@ -95,12 +101,15 @@ func (a *App) broadcastLoop() {
 		case <-a.done:
 			return
 		case b := <-a.pwmRecv.C:
+			a.recorder.SubmitPWM(b.ClockHz, b.Events)
 			runtime.EventsEmit(a.ctx, "pwm_events", b)
 		case <-ticker.C:
 			n := a.ring.PopN(scratch)
 			if n > 0 {
 				batch := append([]frame.Sample(nil), scratch[:n]...)
-				runtime.EventsEmit(a.ctx, "telemetry", batch)
+				if len(batch) > 0 {
+					runtime.EventsEmit(a.ctx, "telemetry", batch)
+				}
 			}
 		}
 	}
@@ -148,7 +157,7 @@ func (a *App) SetParams(
 	if attachTelem {
 		p.TelemDst = a.localIP
 		decim := transportDecim
-		sampleHz := uint32(transportSampleHz)
+		sampleHz := uint32(gpioFallbackHz)
 		p.Decim = &decim
 		p.TelemHz = &sampleHz
 	}
@@ -161,6 +170,13 @@ func (a *App) SetParams(
 	return status, err
 }
 
+func (a *App) GetRawTelemetry(cursor uint64, limit int) string {
+	if limit <= 0 || limit > 20_000 {
+		limit = 20_000
+	}
+	return base64.StdEncoding.EncodeToString(rawbuf.Encode(a.raw.Since(cursor, limit)))
+}
+
 // GetStatus polls the current controller state from the PS board.
 func (a *App) GetStatus(ip string) (*hilUDP.HilStatus, error) {
 	return hilUDP.Get(ip)
@@ -168,8 +184,16 @@ func (a *App) GetStatus(ip string) (*hilUDP.HilStatus, error) {
 
 // Run enables the motor with the last-applied params.
 func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
+	a.raw.Reset()
+	if _, err := a.recorder.Start(""); err != nil {
+		return nil, err
+	}
 	status, err := hilUDP.Run(ip)
-	if err == nil || !strings.Contains(err.Error(), `command "run" was not retried`) {
+	if err == nil {
+		return status, nil
+	}
+	if !strings.Contains(err.Error(), `command "run" was not retried`) {
+		_ = a.recorder.Stop()
 		return status, err
 	}
 
@@ -180,15 +204,21 @@ func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
 
 	if hasMotor {
 		if _, motorErr := hilUDP.ProgramMotor(ip, motor); motorErr != nil {
+			_ = a.recorder.Stop()
 			return nil, motorErr
 		}
 	}
 	if hasParams {
 		if _, setErr := hilUDP.Set(ip, params); setErr != nil {
+			_ = a.recorder.Stop()
 			return nil, setErr
 		}
 	}
-	return hilUDP.Run(ip)
+	status, err = hilUDP.Run(ip)
+	if err != nil {
+		_ = a.recorder.Stop()
+	}
+	return status, err
 }
 
 // Pause disables the motor but keeps the params.
@@ -200,6 +230,9 @@ func (a *App) Pause(ip string) (*hilUDP.HilStatus, error) {
 // The PS daemon stays alive.
 func (a *App) StopController(ip string) (*hilUDP.HilStatus, error) {
 	status, err := hilUDP.Stop(ip)
+	if stopErr := a.recorder.Stop(); err == nil && stopErr != nil {
+		err = stopErr
+	}
 	_, _ = hilUDP.TelemOff(ip)
 	if a.ring != nil {
 		a.ring.Clear()
@@ -220,7 +253,7 @@ func (a *App) AttachTelemetry(ip string) (*hilUDP.HilStatus, error) {
 		a.ring.Clear()
 	}
 	decim := transportDecim
-	sampleHz := uint32(transportSampleHz)
+	sampleHz := uint32(gpioFallbackHz)
 	return hilUDP.Set(ip, hilUDP.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: a.localIP})
 }
 
@@ -240,19 +273,30 @@ func (a *App) DiscoverBoard() (*hilUDP.DiscoveryResponse, error) {
 }
 
 // GetStats returns receiver statistics.
+func boolToUint64(v bool) uint64 {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func (a *App) GetStats() map[string]uint64 {
 	if a.recv == nil {
 		return map[string]uint64{}
 	}
+	recording, recordWritten, recordDropped := a.recorder.Stats()
 	return map[string]uint64{
-		"packets_raw": a.recv.Stats.PacketsRaw.Load(),
-		"samples_rx":  a.recv.Stats.SamplesRx.Load(),
-		"packets_rx":  a.recv.Stats.PacketsRx.Load(),
-		"dropped":     a.recv.Stats.Dropped.Load(),
-		"crc_errors":  a.recv.Stats.CRCErrors.Load(),
-		"invalid":     a.recv.Stats.Invalid.Load(),
-		"seq_missed":  a.recv.Stats.SeqMissed.Load(),
-		"ring_len":    uint64(a.ring.Len()),
+		"packets_raw":    a.recv.Stats.PacketsRaw.Load(),
+		"samples_rx":     a.recv.Stats.SamplesRx.Load(),
+		"packets_rx":     a.recv.Stats.PacketsRx.Load(),
+		"dropped":        a.recv.Stats.Dropped.Load(),
+		"crc_errors":     a.recv.Stats.CRCErrors.Load(),
+		"invalid":        a.recv.Stats.Invalid.Load(),
+		"seq_missed":     a.recv.Stats.SeqMissed.Load(),
+		"ring_len":       uint64(a.ring.Len()),
+		"recording":      boolToUint64(recording),
+		"record_written": recordWritten,
+		"record_dropped": recordDropped,
 		"pwm_packets_rx": func() uint64 {
 			if a.pwmRecv != nil {
 				return a.pwmRecv.Stats.PacketsRx.Load()
@@ -276,10 +320,6 @@ func (a *App) GetLocalIP() string {
 // SaveRun opens a native save dialog and writes the provided base64-encoded
 // .hilbin data to the chosen path.
 func (a *App) SaveRun(dataB64 string, suggestedName string) error {
-	data, err := base64.StdEncoding.DecodeString(dataB64)
-	if err != nil {
-		return err
-	}
 	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		DefaultFilename: suggestedName,
 		Filters: []runtime.FileFilter{
@@ -287,6 +327,15 @@ func (a *App) SaveRun(dataB64 string, suggestedName string) error {
 		},
 	})
 	if err != nil || path == "" {
+		return err
+	}
+	if copied, copyErr := a.recorder.CopyLatest(path); copyErr != nil {
+		return copyErr
+	} else if copied {
+		return nil
+	}
+	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
