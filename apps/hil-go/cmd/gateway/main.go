@@ -219,6 +219,7 @@ func main() {
 	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/api/raw", s.handleRaw)
 	mux.HandleFunc("/api/tail", s.handleRaw) // tail reuses the cursor transport
+	mux.HandleFunc("/api/tiers", s.handleTiers)
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunsDownload)
 	mux.HandleFunc("/events", s.handleEvents)
@@ -356,6 +357,46 @@ func (s *server) handleLegacyIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(indexHTML))
+}
+
+type tierMeta struct {
+	Tier      int     `json:"tier"`
+	BucketSec float64 `json:"bucketSec"`
+}
+
+type tiersMeta struct {
+	SampleRateHz   float64    `json:"sampleRateHz"`
+	BucketsPerTile int        `json:"bucketsPerTile"`
+	TFirst         float64    `json:"tFirst"`
+	TLast          float64    `json:"tLast"`
+	Tiers          []tierMeta `json:"tiers"`
+}
+
+// handleTiers reports the pyramid layout and current session span so the front
+// can pick a tier for a given zoom and compute which tile indices to fetch.
+func (s *server) handleTiers(w http.ResponseWriter, r *http.Request) {
+	s.ingestMu.Lock()
+	p := s.pyramid
+	st := s.store
+	s.ingestMu.Unlock()
+
+	meta := tiersMeta{
+		SampleRateHz:   p.SampleRateHz(),
+		BucketsPerTile: pyramid.BucketsPerTile,
+	}
+	for i := 0; i < p.NumTiers(); i++ {
+		meta.Tiers = append(meta.Tiers, tierMeta{Tier: i, BucketSec: p.Tier(i).BucketSec()})
+	}
+	if st != nil {
+		meta.TFirst, meta.TLast = st.Span()
+	} else if bs := p.TierBuckets(0); len(bs) > 0 {
+		// No session store wired up (e.g. unit tests exercising the pyramid
+		// directly): fall back to the finest tier's own last bucket so callers
+		// still see a non-zero session span.
+		meta.TFirst = bs[0].TStart
+		meta.TLast = bs[len(bs)-1].TStart + p.Tier(0).BucketSec()
+	}
+	writeJSON(w, http.StatusOK, meta)
 }
 
 func (s *server) handleLocalIP(w http.ResponseWriter, r *http.Request) {
