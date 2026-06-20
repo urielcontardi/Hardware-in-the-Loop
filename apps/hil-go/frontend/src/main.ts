@@ -257,11 +257,6 @@ let N_CH = CHANNELS.length;
 // extrema stream is only a low-rate fallback if that transport is unavailable.
 const TELEM_DISPLAY_HZ = 100_000;
 const MAX_SAMPLES = 600_000;  // approximately 6 s of full-rate detail
-// Long-history overview: one 100 ms bucket contains about six 60 Hz cycles.
-// Each bucket keeps extrema from every independent raw state, so derived ABC
-// channels and flux are not projected from Ialpha extrema only.
-const OVERVIEW_EVERY = 10_000;
-const MAX_OVERVIEW_SAMPLES = 144_000;
 // Both telemetry samples and PWM events are timestamped by the SAME run-local
 // FPGA counter (hil_time <= pwm_cap_time in RTL). Using hardware time for both
 // gives exact alignment. Two edge-cases are handled:
@@ -275,26 +270,6 @@ const TELEM_NOMINAL_PERIOD_S  = 1 / TELEM_DISPLAY_HZ;
 // ── App state ─────────────────────────────────────────────────────────────────
 const tBuf: number[]      = [];
 const samplesBuf: Sample[] = [];   // display-rate αβ samples parallel to tBuf
-// Overview buffers — min+max envelope pairs per OVERVIEW_EVERY raw samples.
-// Used for rendering when the view extends further back than the high-res buffer.
-const ovTBuf: number[]    = [];
-const ovSBuf:  Sample[]   = [];
-let   ovCounter            = 0;
-// Extrema are tracked for the independent raw solver states. Derived ABC and
-// torque channels are reconstructed from the retained complete samples.
-const OVERVIEW_READERS = [
-  (s: Sample) => s.Ia,
-  (s: Sample) => s.Ib,
-  (s: Sample) => s.FluxA,
-  (s: Sample) => s.FluxB,
-  (s: Sample) => s.Speed,
-];
-let ovBucketMinV = Array(OVERVIEW_READERS.length).fill(Infinity) as number[];
-let ovBucketMaxV = Array(OVERVIEW_READERS.length).fill(-Infinity) as number[];
-let ovBucketMinT = Array(OVERVIEW_READERS.length).fill(0) as number[];
-let ovBucketMaxT = Array(OVERVIEW_READERS.length).fill(0) as number[];
-let ovBucketMinS = Array<Sample | null>(OVERVIEW_READERS.length).fill(null);
-let ovBucketMaxS = Array<Sample | null>(OVERVIEW_READERS.length).fill(null);
 let sampleCount = 0;
 let lastBoardState: string = "idle";
 let lastSampleAt = 0;             // ms — for stream stalled detection
@@ -678,14 +653,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
 
           <div class="subplot-layout-row">
-            <span class="subplot-layout-label">Signal</span>
-            <div class="subplot-n-group" id="render-group">
-              <button class="subplot-n-btn active" data-render="trend" title="Centerline view for readable long windows; raw capture is unchanged">Trend</button>
-              <button class="subplot-n-btn" data-render="raw" title="Show min/max envelope from the 100 ksample/s stream">Raw</button>
-            </div>
-          </div>
-
-          <div class="subplot-layout-row">
             <span class="subplot-layout-label">Subplots</span>
             <div class="subplot-n-group">
               <button class="subplot-n-btn" data-n="1">1</button>
@@ -823,9 +790,6 @@ const PLOT_TO_SERIES: Record<string, number> = {
   Ia: 0, Ib: 1, Ic: 2, "Φa": 3, "Φb": 4, "Φc": 5, Speed: 6, Te: 7,
 };
 const RPM_PER_RAD_S = 60 / (2 * Math.PI);
-type RenderMode = "trend" | "raw";
-let renderMode: RenderMode = "trend";
-void renderMode;
 
 // Pyramid tile state: tier layout + the most recently fetched window of tiles.
 let tierMeta: TierMeta[] = [];
@@ -1403,17 +1367,6 @@ document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-mode]").forEac
   btn.addEventListener("click", () => setDisplayMode(btn.dataset.mode as "ab" | "abc"));
 });
 
-// ── Trend/raw plot rendering toggle ─────────────────────────────────────────
-document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-render]").forEach(btn => {
-  btn.addEventListener("click", () => {
-    renderMode = btn.dataset.render === "raw" ? "raw" : "trend";
-    document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-render]").forEach(b => {
-      b.classList.toggle("active", b === btn);
-    });
-    scheduleRender();
-  });
-});
-
 // ── Channel list ──────────────────────────────────────────────────────────────
 let valSpans: HTMLSpanElement[]     = [];
 let subplotBadges: HTMLButtonElement[] = [];
@@ -1548,19 +1501,17 @@ function lowerBound(target: number, buf = tBuf): number {
   return lo;
 }
 
-// Returns total session duration in seconds (from overview if available).
+// Returns total session duration in seconds.
 function getSessionSec(): number {
-  if (ovTBuf.length > 1) return ovTBuf[ovTBuf.length - 1] - ovTBuf[0];
-  if (tBuf.length  > 1) return tBuf[tBuf.length - 1]  - tBuf[0];
+  if (tBuf.length > 1) return tBuf[tBuf.length - 1] - tBuf[0];
   return 0;
 }
 
 function latestDataSec(): number {
   const latestTelem = tBuf.length ? tBuf[tBuf.length - 1] : 0;
-  const latestOverview = ovTBuf.length ? ovTBuf[ovTBuf.length - 1] : 0;
   const latestPwmOverview = pwmOverviewT.length ? pwmOverviewT[pwmOverviewT.length - 1] : 0;
   const latestPwm = pwmEvents.length ? pwmTime(pwmEvents[pwmEvents.length - 1]) : 0;
-  return Math.max(latestTelem, latestOverview, latestPwmOverview, latestPwm);
+  return Math.max(latestTelem, latestPwmOverview, latestPwm);
 }
 
 function latestTimelineSec(): number {
@@ -1745,30 +1696,12 @@ function decimateFrom(
   return { xs, ys };
 }
 
-// Route to the overview (downsampled) buffer only when the high-res buffer has
-// actually rolled (tBuf filled to capacity and started dropping old samples) AND
-// the view extends before the surviving high-res window. While the session is
-// younger than MAX_SAMPLES/fs (~6 s), tBuf still holds every sample since t=0
-// and the overview is never needed — bypassing this avoids the zigzag artifact
-// that appears when viewStart goes slightly negative on a fresh session.
 function decimateAndProject(
   maxPts: number,
   xMin: number | null = null,
   xMax: number | null = null,
 ): { xs: number[]; ys: number[][] } {
-  const hiResRolled = tBuf.length >= MAX_SAMPLES;
-  const hiResStart  = tBuf.length > 0 ? tBuf[0] : null;
-  const useOverview = hiResRolled
-    && ovTBuf.length > 1
-    && hiResStart != null
-    && xMin != null
-    && xMin < hiResStart - 1.0;
-  return decimateFrom(
-    useOverview ? ovTBuf : tBuf,
-    useOverview ? ovSBuf : samplesBuf,
-    maxPts, xMin, xMax,
-    useOverview ? 1 : smoothWin,
-  );
+  return decimateFrom(tBuf, samplesBuf, maxPts, xMin, xMax, smoothWin);
 }
 
 // Shared cursor sync key — all subplots show the cursor at the same x position.
@@ -2249,42 +2182,12 @@ let renderPending = false;
 let lastRenderAt = 0;
 const RENDER_INTERVAL_MS = 50;
 
-function resetOverviewBucket() {
-  ovBucketMinV.fill(Infinity); ovBucketMaxV.fill(-Infinity);
-  ovBucketMinT.fill(0); ovBucketMaxT.fill(0);
-  ovBucketMinS.fill(null); ovBucketMaxS.fill(null);
-}
-
-function flushOverviewBucket() {
-  const points: { t: number; s: Sample }[] = [];
-  for (let i = 0; i < OVERVIEW_READERS.length; i++) {
-    if (ovBucketMinS[i] !== null) points.push({ t: ovBucketMinT[i], s: ovBucketMinS[i]! });
-    if (ovBucketMaxS[i] !== null) points.push({ t: ovBucketMaxT[i], s: ovBucketMaxS[i]! });
-  }
-  points.sort((a, b) => a.t - b.t);
-  let lastT = -Infinity;
-  for (const point of points) {
-    if (point.t === lastT) continue;
-    ovTBuf.push(point.t); ovSBuf.push(point.s);
-    lastT = point.t;
-  }
-  if (ovTBuf.length > MAX_OVERVIEW_SAMPLES) {
-    const trim = ovTBuf.length - MAX_OVERVIEW_SAMPLES;
-    ovTBuf.splice(0, trim); ovSBuf.splice(0, trim);
-  }
-  resetOverviewBucket();
-}
-
 // Wipes only the telemetry data buffers — called when the FPGA epoch changes
 // (new Run) so stale pre-run samples at the frozen counter value are removed
 // before the fresh run's samples arrive at t≈0.
 function clearTelemBuffers() {
   tBuf.length = 0;
   samplesBuf.length = 0;
-  ovTBuf.length = 0;
-  ovSBuf.length = 0;
-  ovCounter = 0;
-  resetOverviewBucket();
   lastTelemPlotTime = -Infinity;
   sampleCount = 0;
 }
@@ -2385,20 +2288,6 @@ function ingestTelemetry(samples: Sample[]) {
     const sampleTime = hwSec;
     tBuf.push(sampleTime);
     samplesBuf.push(s);
-
-    for (let i = 0; i < OVERVIEW_READERS.length; i++) {
-      const value = OVERVIEW_READERS[i](s);
-      if (value < ovBucketMinV[i]) {
-        ovBucketMinV[i] = value; ovBucketMinT[i] = sampleTime; ovBucketMinS[i] = s;
-      }
-      if (value > ovBucketMaxV[i]) {
-        ovBucketMaxV[i] = value; ovBucketMaxT[i] = sampleTime; ovBucketMaxS[i] = s;
-      }
-    }
-    if (++ovCounter >= OVERVIEW_EVERY) {
-      ovCounter = 0;
-      flushOverviewBucket();
-    }
     sampleCount++;
   }
 
@@ -2639,10 +2528,6 @@ function resetPlotBuffer() {
   pwmTelemOffset = 0;
   tBuf.length = 0;
   samplesBuf.length = 0;
-  ovTBuf.length = 0;
-  ovSBuf.length = 0;
-  ovCounter = 0;
-  resetOverviewBucket();
   sampleCount = 0;
   rawCursor = 0;
   rawEverWorked = false;
@@ -3468,9 +3353,7 @@ document.querySelectorAll<HTMLButtonElement>("#window-group button[data-win-ms]"
         const session = getSessionSec();
         windowSec = session > 0 ? Math.max(session, WINDOW_MIN_SEC) : WINDOW_MAX_SEC;
         paused = true;
-        viewEndSec = ovTBuf.length > 0
-          ? ovTBuf[ovTBuf.length - 1]
-          : (tBuf.length > 0 ? tBuf[tBuf.length - 1] : 0);
+        viewEndSec = tBuf.length > 0 ? tBuf[tBuf.length - 1] : 0;
       } else {
         const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
         windowSec = clamp(ms / 1000, WINDOW_MIN_SEC, maxSec);
