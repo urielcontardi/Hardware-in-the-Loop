@@ -45,3 +45,44 @@ func TestResetClearsAllTiers(t *testing.T) {
 		t.Fatalf("after Reset T1 not empty")
 	}
 }
+
+func TestSelectTierByZoom(t *testing.T) {
+	p := New(10000)
+	// bucketSec tiers: 0.001, 0.020, 0.500, 10.0
+	if got := p.SelectTier(0.0001); got != -1 { // muito zoom: usa raw
+		t.Errorf("SelectTier(0.0001)=%d, want -1", got)
+	}
+	if got := p.SelectTier(0.002); got != 0 { // 1ms cabe
+		t.Errorf("SelectTier(0.002)=%d, want 0", got)
+	}
+	if got := p.SelectTier(0.6); got != 2 { // 500ms cabe, 10s nao
+		t.Errorf("SelectTier(0.6)=%d, want 2", got)
+	}
+	if got := p.SelectTier(100); got != 3 { // coarsest
+		t.Errorf("SelectTier(100)=%d, want 3", got)
+	}
+}
+
+func TestTileWindowingAndSealed(t *testing.T) {
+	p := New(10000)
+	// T1 (1ms). Tile 0 covers buckets [0,1024) -> t in [0, 1.024).
+	// Push samples up to t=1.5s so tile 0 is fully in the past (sealed).
+	for i := 0; i < 1600; i++ {
+		p.Push(float64(i)*0.001, ch(float64(i)))
+	}
+	buckets, sealed := p.Tile(0, 0)
+	if !sealed {
+		t.Errorf("tile 0 should be sealed once data passed its end")
+	}
+	if len(buckets) != 1024 {
+		t.Fatalf("tile 0 buckets = %d, want 1024", len(buckets))
+	}
+	if buckets[0].TStart != 0 {
+		t.Errorf("tile0 first TStart = %v, want 0", buckets[0].TStart)
+	}
+	// The trailing tile (index 1) is not sealed yet.
+	_, sealed1 := p.Tile(0, 1)
+	if sealed1 {
+		t.Errorf("trailing tile 1 should not be sealed")
+	}
+}

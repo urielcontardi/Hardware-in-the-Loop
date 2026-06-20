@@ -5,6 +5,7 @@
 package pyramid
 
 import (
+	"sort"
 	"sync"
 
 	"hil.local/daemon/internal/derive"
@@ -108,4 +109,45 @@ func (p *Pyramid) Reset() {
 	for _, tr := range p.tiers {
 		tr.cols, tr.curIndex, tr.have = nil, -1, false
 	}
+}
+
+// SelectTier returns the coarsest tier whose bucket is <= secPerPx (so it still
+// yields at least one bucket per pixel). Returns -1 when even the finest tier is
+// coarser than the zoom, meaning the caller should fall back to raw (T0).
+func (p *Pyramid) SelectTier(secPerPx float64) int {
+	best := -1
+	for i, tr := range p.tiers {
+		if tr.bucketSec <= secPerPx {
+			best = i
+		}
+	}
+	return best
+}
+
+// Tile returns the buckets of tile `index` on `tier` (1024 buckets per tile,
+// fixed time boundaries) and whether the tile is sealed (immutable: newer data
+// already exists past the tile's end, so it will never change again).
+func (p *Pyramid) Tile(tier, index int) ([]Bucket, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if tier < 0 || tier >= len(p.tiers) || index < 0 {
+		return nil, false
+	}
+	tr := p.tiers[tier]
+	startT := float64(int64(index)*BucketsPerTile) * tr.bucketSec
+	endT := float64(int64(index+1)*BucketsPerTile) * tr.bucketSec
+	lo := sort.Search(len(tr.cols), func(i int) bool { return tr.cols[i].TStart >= startT })
+	hi := sort.Search(len(tr.cols), func(i int) bool { return tr.cols[i].TStart >= endT })
+	out := make([]Bucket, hi-lo)
+	copy(out, tr.cols[lo:hi])
+	sealed := tr.have && tr.cols[len(tr.cols)-1].TStart >= endT
+	return out, sealed
+}
+
+// TileStartSec returns the nominal start time of tile `index` on `tier`.
+func (p *Pyramid) TileStartSec(tier, index int) float64 {
+	if tier < 0 || tier >= len(p.tiers) {
+		return 0
+	}
+	return float64(int64(index)*BucketsPerTile) * p.tiers[tier].bucketSec
 }
