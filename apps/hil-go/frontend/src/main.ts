@@ -3,8 +3,9 @@ import "./styles.css";
 import uPlot from "uplot";
 import * as WailsRuntime from "../wailsjs/runtime/runtime";
 import * as WailsApp from "../wailsjs/go/main/App";
-import { decodeSeries, type SeriesColumns } from "./series";
-import { ViewportController } from "./viewport";
+import { ViewportController, selectTier, indicesForWindow, type TierMeta } from "./viewport";
+import { TileCache, type FetchedTile } from "./tilecache";
+import { type TileData } from "./tile";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Sample = { t_cycles?: number; epoch?: number; Ia: number; Ib: number; FluxA: number; FluxB: number; Speed: number; TL?: number };
@@ -820,68 +821,77 @@ const PLOT_TO_SERIES: Record<string, number> = {
   Ia: 0, Ib: 1, Ic: 2, "Φa": 3, "Φb": 4, "Φc": 5, Speed: 6, Te: 7,
 };
 const RPM_PER_RAD_S = 60 / (2 * Math.PI);
-let latestSeries: SeriesColumns | null = null;
-let seriesActive = false;
 type RenderMode = "trend" | "raw";
 let renderMode: RenderMode = "trend";
+void renderMode;
 
-const seriesViewport = new ViewportController(async (from, to, width) => {
+// Pyramid tile state: tier layout + the most recently fetched window of tiles.
+let tierMeta: TierMeta[] = [];
+let bucketsPerTile = 1024;
+let tilesActive = false;
+let latestTiles: TileData[] = [];
+
+async function loadTierMeta(): Promise<void> {
   try {
-    const res = await fetch(
-      gatewayURL(`/api/series?from=${from}&to=${to}&width=${Math.round(width)}`),
-      { cache: "no-store" },
-    );
-    if (!res.ok) return { t: [], min: [], max: [] };
-    return decodeSeries(await res.arrayBuffer());
-  } catch {
-    return { t: [], min: [], max: [] };
-  }
+    const res = await fetch(gatewayURL("/api/tiers"), { cache: "no-store" });
+    if (!res.ok) return;
+    const meta = await res.json();
+    tierMeta = meta.tiers as TierMeta[];
+    bucketsPerTile = meta.bucketsPerTile ?? 1024;
+  } catch { /* gateway not ready yet */ }
+}
+
+const tileCache = new TileCache(
+  async (tier, index): Promise<FetchedTile> => {
+    const res = await fetch(gatewayURL(`/api/tiles?tier=${tier}&index=${index}`), { cache: "default" });
+    return { data: await res.arrayBuffer(), sealed: res.headers.get("Cache-Control")?.includes("immutable") ?? false };
+  },
+  bucketsPerTile, 200,
+);
+
+const tileViewport = new ViewportController<TileData[]>(async (from, to, width) => {
+  if (tierMeta.length === 0) await loadTierMeta();
+  const secPerPx = (to - from) / Math.max(1, width);
+  const tIdx = selectTier(tierMeta, secPerPx);
+  if (tIdx < 0) return []; // raw: render direto do tBuf
+  const meta = tierMeta[tIdx];
+  const indices = indicesForWindow(meta.bucketSec, bucketsPerTile, from, to);
+  await tileCache.ensure(tIdx, indices);
+  return tileCache.window(tIdx, indices);
 }, 60);
-seriesViewport.onData = (c) => {
-  latestSeries = c;
-  seriesActive = c.t.length > 0;
+tileViewport.onData = (tiles) => {
+  latestTiles = tiles;
+  tilesActive = tiles.length > 0;
   scheduleRender();
 };
 
-// Convert a min/max envelope into AlignedData aligned to the live CHANNELS order.
-// Raw mode draws min/max vertical strokes. Trend mode draws the centerline of
-// each full-rate bucket so long windows remain readable without changing the
-// acquisition path or the recorded .hilbin data.
-function seriesToProjected(cols: SeriesColumns): { xs: number[]; ys: number[][] } {
-  const n = cols.t.length;
-  const rawEnvelope = renderMode === "raw";
-  const pointsPerCol = rawEnvelope ? 2 : 1;
-  const xs: number[] = new Array(n * pointsPerCol);
-  const ys: number[][] = CHANNELS.map(() => new Array<number>(n * pointsPerCol));
+// Flatten loaded tiles into AlignedData: min/max vertical strokes per bucket
+// (raw envelope) plus a mean centerline, in the live CHANNELS order.
+function tilesToProjected(tiles: TileData[]): { xs: number[]; ys: number[][] } {
+  let n = 0;
+  for (const t of tiles) n += t.t.length;
+  const xs: number[] = new Array(n * 2);
+  const ys: number[][] = CHANNELS.map(() => new Array<number>(n * 2));
   const tl = Number(elTorque.value) || 0;
-  for (let i = 0; i < n; i++) {
-    const base = i * pointsPerCol;
-    xs[base] = cols.t[i];
-    if (rawEnvelope) xs[base + 1] = cols.t[i];
-    for (let k = 0; k < CHANNELS.length; k++) {
-      const si = PLOT_TO_SERIES[CHANNELS[k].name];
-      let mn: number, mx: number;
-      if (si === undefined) {
-        const v = CHANNELS[k].name === "TL" ? tl : NaN;
-        mn = v; mx = v;
-      } else {
-        mn = cols.min[si][i]; mx = cols.max[si][i];
-        let mean = cols.mean[si]?.[i] ?? (mn + mx) / 2;
-        if (CHANNELS[k].name === "Speed") { mn *= RPM_PER_RAD_S; mx *= RPM_PER_RAD_S; mean *= RPM_PER_RAD_S; }
-        if (rawEnvelope) {
-          ys[k][base] = mn;
-          if (rawEnvelope) ys[k][base + 1] = mx;
-        } else {
-          ys[k][base] = mean;
+  let w = 0;
+  for (const tile of tiles) {
+    for (let i = 0; i < tile.t.length; i++) {
+      const base = w * 2;
+      xs[base] = tile.t[i];
+      xs[base + 1] = tile.t[i];
+      for (let k = 0; k < CHANNELS.length; k++) {
+        const si = PLOT_TO_SERIES[CHANNELS[k].name];
+        if (si === undefined) {
+          const v = CHANNELS[k].name === "TL" ? tl : NaN;
+          ys[k][base] = v; ys[k][base + 1] = v;
+          continue;
         }
-        continue;
-      }
-      if (rawEnvelope) {
+        let mn = tile.min[si][i], mx = tile.max[si][i];
+        if (CHANNELS[k].name === "Speed") { mn *= RPM_PER_RAD_S; mx *= RPM_PER_RAD_S; }
         ys[k][base] = mn;
         ys[k][base + 1] = mx;
-      } else {
-        ys[k][base] = (mn + mx) / 2;
       }
+      w++;
     }
   }
   return { xs, ys };
@@ -895,9 +905,9 @@ setInterval(() => {
   const hiResStart = tBuf.length > 0 ? tBuf[0] : Infinity;
   const viewEnd = viewEndSec;
   const viewStart = Math.max(0, viewEnd - windowSec);
-  if (!paused || viewStart >= hiResStart) return;
+  if (!paused || viewStart >= hiResStart) return; // dentro do tail raw: render local
   const w = elPlotArea.clientWidth || 800;
-  seriesViewport.request(viewStart, viewEnd, Math.max(600, w * 2));
+  tileViewport.request(viewStart, viewEnd, Math.max(600, w * 2));
 }, 100);
 const elScenarioTable    = document.querySelector<HTMLDivElement>("#scenario-table")!;
 const elBtnAddScenarioEvent = document.querySelector<HTMLButtonElement>("#btn-add-scenario-event")!;
@@ -2302,11 +2312,10 @@ function scheduleRender() {
     const w = elPlotArea.clientWidth || 800;
     const maxPts = Math.max(600, w * 2);
     const hiResStart = tBuf.length > 0 ? tBuf[0] : Infinity;
-    const needHistoricalSeries = paused && viewStart < hiResStart;
-    const useSeries = needHistoricalSeries && seriesActive && displayMode === "abc"
-      && latestSeries != null && latestSeries.t.length > 0;
-    const { xs, ys } = useSeries
-      ? seriesToProjected(latestSeries!)
+    const needHistorical = paused && viewStart < hiResStart;
+    const useTiles = needHistorical && tilesActive && displayMode === "abc" && latestTiles.length > 0;
+    const { xs, ys } = useTiles
+      ? tilesToProjected(latestTiles)
       : decimateAndProject(maxPts, viewStart, viewEnd);
 
     scaleSyncing = true;
@@ -2477,6 +2486,7 @@ async function pollRawTelemetry() {
 }
 
 void pollRawTelemetry();
+void loadTierMeta();
 
 api.onPwmEvents((batch: PwmEventBatch) => {
   if (!capturePwm || !batch || !Array.isArray(batch.events) || batch.events.length === 0) return;
@@ -2640,8 +2650,10 @@ function resetPlotBuffer() {
   rawEverWorked = false;
   rawTransportHealthy = true;
   reducedFallbackUsed = false;
-  latestSeries = null;
-  seriesActive = false;
+  tileCache.clear();
+  tierMeta = [];
+  latestTiles = [];
+  tilesActive = false;
   lastTelemPlotTime = -Infinity;
   telemLastRawCycles = null;
   telemWrapOffsetCycles = 0;
