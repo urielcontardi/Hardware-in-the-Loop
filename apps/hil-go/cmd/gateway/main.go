@@ -220,6 +220,7 @@ func main() {
 	mux.HandleFunc("/api/raw", s.handleRaw)
 	mux.HandleFunc("/api/tail", s.handleRaw) // tail reuses the cursor transport
 	mux.HandleFunc("/api/tiers", s.handleTiers)
+	mux.HandleFunc("/api/tiles", s.handleTiles)
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunsDownload)
 	mux.HandleFunc("/events", s.handleEvents)
@@ -397,6 +398,29 @@ func (s *server) handleTiers(w http.ResponseWriter, r *http.Request) {
 		meta.TLast = bs[len(bs)-1].TStart + p.Tier(0).BucketSec()
 	}
 	writeJSON(w, http.StatusOK, meta)
+}
+
+// handleTiles answers GET /api/tiles?tier=T&index=I with one encoded tile.
+// Sealed tiles are immutable and cached aggressively; the trailing tile is
+// no-store because it is still growing.
+func (s *server) handleTiles(w http.ResponseWriter, r *http.Request) {
+	tier, errT := strconv.Atoi(r.URL.Query().Get("tier"))
+	index, errI := strconv.Atoi(r.URL.Query().Get("index"))
+	s.ingestMu.Lock()
+	p := s.pyramid
+	s.ingestMu.Unlock()
+	if errT != nil || errI != nil || tier < 0 || tier >= p.NumTiers() || index < 0 {
+		http.Error(w, "bad tier/index", http.StatusBadRequest)
+		return
+	}
+	buckets, sealed := p.Tile(tier, index)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if sealed {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	_, _ = w.Write(pyramid.EncodeTile(tier, p.Tier(tier).BucketSec(), p.TileStartSec(tier, index), buckets))
 }
 
 func (s *server) handleLocalIP(w http.ResponseWriter, r *http.Request) {

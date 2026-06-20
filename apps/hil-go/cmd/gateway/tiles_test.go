@@ -48,3 +48,45 @@ func TestHandleTiersJSON(t *testing.T) {
 		t.Errorf("tLast = %v, want >= 0.5", meta.TLast)
 	}
 }
+
+func TestHandleTilesBytesAndCache(t *testing.T) {
+	s := newTestServer()
+	var v [derive.NumChannels]float64
+	// Fill past tile 0 of T1 so it is sealed.
+	for i := 0; i < 1600; i++ {
+		v[0] = float64(i)
+		s.pyramid.Push(float64(i)*0.001, v)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/tiles?tier=0&index=0", nil)
+	rec := httptest.NewRecorder()
+	s.handleTiles(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.Bytes()
+	if body[0] != 0 {
+		t.Errorf("tier byte = %d, want 0", body[0])
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc == "" || cc == "no-store" {
+		t.Errorf("sealed tile Cache-Control = %q, want immutable", cc)
+	}
+
+	// Trailing tile must be no-store.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/tiles?tier=0&index=1", nil)
+	rec2 := httptest.NewRecorder()
+	s.handleTiles(rec2, req2)
+	if cc := rec2.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("trailing tile Cache-Control = %q, want no-store", cc)
+	}
+}
+
+func TestHandleTilesBadTier(t *testing.T) {
+	s := newTestServer()
+	req := httptest.NewRequest(http.MethodGet, "/api/tiles?tier=9&index=0", nil)
+	rec := httptest.NewRecorder()
+	s.handleTiles(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
