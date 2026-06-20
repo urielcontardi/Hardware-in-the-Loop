@@ -700,6 +700,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="btn-row" style="margin-top:6px">
             <button id="btn-pause" class="btn btn-sm" title="Pause the live view (or use mouse wheel on plot)">Pause</button>
             <button id="btn-latest" class="btn btn-sm" title="Snap to the latest sample and resume live follow">Latest</button>
+            <button id="btn-live" class="btn btn-sm" title="Regrudar a borda direita ao tempo real">⏵ Ao vivo</button>
           </div>
 
           <div id="ch-list" class="channel-list"></div>
@@ -798,6 +799,7 @@ const elFreqBadge   = document.querySelector<HTMLDivElement>("#freq-badge")!;
 const elBtnClear    = document.querySelector<HTMLButtonElement>("#btn-clear")!;
 const elBtnPause    = document.querySelector<HTMLButtonElement>("#btn-pause")!;
 const elBtnLatest   = document.querySelector<HTMLButtonElement>("#btn-latest")!;
+const elBtnLive     = document.querySelector<HTMLButtonElement>("#btn-live")!;
 const elPsStatus    = document.querySelector<HTMLDivElement>("#ps-status")!;
 const elConnStatus  = document.querySelector<HTMLDivElement>("#conn-status")!;
 const elStateBadge  = document.querySelector<HTMLDivElement>("#state-badge")!;
@@ -1831,17 +1833,13 @@ function attachPlotNavigation(wrap: HTMLElement) {
   // Wheel: zoom the time window around the cursor and freeze live-follow while
   // inspecting history. This handler is shared by telemetry and PWM plots.
   wrap.addEventListener("wheel", (e: WheelEvent) => {
+    freezeTimelineView();
     e.preventDefault();
     const notches = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) / 100, 3);
     const factor = Math.pow(1.10, notches);
     const maxSec = Math.max(WINDOW_MAX_SEC, getSessionSec() + 10);
     const next = clamp(windowSec * factor, WINDOW_MIN_SEC, maxSec);
     if (next === windowSec) return;
-
-    if (!paused) {
-      paused = true;
-      viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
-    }
 
     const plotRect = (wrap.querySelector(".u-over") as HTMLElement | null)?.getBoundingClientRect() ?? wrap.getBoundingClientRect();
     const mouseRatio = clamp((e.clientX - plotRect.left) / Math.max(1, plotRect.width), 0, 1);
@@ -3502,6 +3500,14 @@ elBtnLatest.addEventListener("click", () => {
   paused = false;
   scheduleRender();
 });
+
+elBtnLive.onclick = () => {
+  paused = false;
+  if (tBuf.length) viewEndSec = tBuf[tBuf.length - 1];
+  tilesActive = false;
+  latestTiles = [];
+  scheduleRender();
+};
 
 elBtnClear.addEventListener("click", resetPlotBuffer);
 
