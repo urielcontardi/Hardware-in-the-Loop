@@ -781,11 +781,11 @@ const elTimelineRight = document.querySelector<HTMLDivElement>("#timeline-right"
 const elChList      = document.querySelector<HTMLDivElement>("#ch-list")!;
 const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
 
-// ── Faithful viewport rendering via /api/series (min/max envelope) ──────────────
-// The gateway serves a per-pixel min/max envelope over the full-rate session on
-// disk, with Te/abc derived at full rate. This is the primary plot source; the
-// client-side buffers remain a fallback until the endpoint returns data, and for
-// the αβ display mode (the envelope is wired for the abc channel set).
+// ── Faithful viewport rendering via /api/tiles (min/max envelope) ───────────────
+// The gateway serves a multi-resolution pyramid of min/max/mean tiers, with
+// Te/abc derived at full rate. Historical (paused) views render from tiles; the
+// client-side raw buffer feeds the live tail and the αβ display mode (the tile
+// envelope is wired for the abc channel set).
 const PLOT_TO_SERIES: Record<string, number> = {
   Ia: 0, Ib: 1, Ic: 2, "Φa": 3, "Φb": 4, "Φc": 5, Speed: 6, Te: 7,
 };
@@ -831,8 +831,9 @@ tileViewport.onData = (tiles) => {
   scheduleRender();
 };
 
-// Flatten loaded tiles into AlignedData: min/max vertical strokes per bucket
-// (raw envelope) plus a mean centerline, in the live CHANNELS order.
+// Flatten loaded tiles into AlignedData: two points per bucket drawing the
+// min/max envelope (raw-envelope style) in the live CHANNELS order. The bucket
+// mean is available in the tile data and can later feed a trend centerline.
 function tilesToProjected(tiles: TileData[]): { xs: number[]; ys: number[][] } {
   let n = 0;
   for (const t of tiles) n += t.t.length;

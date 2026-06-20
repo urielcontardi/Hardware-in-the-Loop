@@ -47,8 +47,8 @@ func (m Motor) Compute(s frame.Sample) Derived {
 // NumChannels is the count of derived display channels.
 const NumChannels = 8
 
-// Channels is the canonical, index-stable channel order used by the overview
-// tier and the query API.
+// Channels is the canonical, index-stable channel order used by the pyramid
+// tiers and the query API.
 var Channels = [NumChannels]string{
 	"Ia", "Ib", "Ic", "FluxA", "FluxB", "FluxC", "Speed", "Te",
 }
