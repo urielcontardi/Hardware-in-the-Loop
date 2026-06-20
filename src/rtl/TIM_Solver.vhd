@@ -84,7 +84,8 @@ Entity TIM_Solver is
         torque_load_i       : in std_logic_vector(DATA_WIDTH-1 downto 0);
 
         -- Runtime coefficient programming. Values are raw Q14.28 words.
-        -- matrix: 0=A, 1=B, 2=Y. Writes are applied only while the solver is idle.
+        -- matrix: 0=A, 1=B. The Y selector matrix is structural and fixed in RTL.
+        -- Writes are applied only while the solver is idle.
         coeff_we_i          : in std_logic;
         coeff_apply_i       : in std_logic;
         coeff_matrix_i      : in std_logic_vector(1 downto 0);
@@ -232,10 +233,9 @@ Architecture rtl of TIM_Solver is
     constant Ymatrix_init   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := matrix_Y_to_fp(YMATRIX);
     constant Bmatrix_init   : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := matrix_to_fp(BMATRIX);
     signal Amatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Amatrix_init;
-    signal Ymatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Ymatrix_init;
+    constant Ymatrix_fp     : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Ymatrix_init;
     signal Bmatrix_fp       : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := Bmatrix_init;
     signal Amatrix_shadow   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Amatrix_init;
-    signal Ymatrix_shadow   : matrix_fp_t(0 to N_SS - 1, 0 to N_SS - 1) := Ymatrix_init;
     signal Bmatrix_shadow   : matrix_fp_t(0 to N_SS - 1, 0 to N_IN - 1) := Bmatrix_init;
     signal coeff_apply_pending : std_logic := '0';
     signal Xvec_fp          : vector_fp_t(0 to N_SS - 1);
@@ -290,10 +290,8 @@ Begin
     begin
         if reset_n = '0' then
             Amatrix_fp <= Amatrix_init;
-            Ymatrix_fp <= Ymatrix_init;
             Bmatrix_fp <= Bmatrix_init;
             Amatrix_shadow <= Amatrix_init;
-            Ymatrix_shadow <= Ymatrix_init;
             Bmatrix_shadow <= Bmatrix_init;
             coeff_apply_pending <= '0';
         elsif rising_edge(sysclk) then
@@ -310,10 +308,6 @@ Begin
                         if row_v < N_SS and col_v < N_IN then
                             Bmatrix_shadow(row_v, col_v) <= coeff_data_i;
                         end if;
-                    when "10" =>
-                        if row_v < N_SS and col_v < N_SS then
-                            Ymatrix_shadow(row_v, col_v) <= coeff_data_i;
-                        end if;
                     when others =>
                         null;
                 end case;
@@ -323,7 +317,6 @@ Begin
                 coeff_apply_pending <= '1';
             elsif coeff_apply_pending = '1' and solver_busy = '0' then
                 Amatrix_fp <= Amatrix_shadow;
-                Ymatrix_fp <= Ymatrix_shadow;
                 Bmatrix_fp <= Bmatrix_shadow;
                 coeff_apply_pending <= '0';
             end if;

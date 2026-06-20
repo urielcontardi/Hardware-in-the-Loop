@@ -336,7 +336,7 @@ proc cr_bd_ebaz4205 {} {
     # ── HIL AXI Infrastructure ─────────────────────────────────────────────
     # Arquitetura:
     #   carrier_tick (NPCModulator) → IRQ_F2P[0] → PS calcula va/vb/vc
-    #   PS escreve refs via AXI GPIO → NPCManager → NPC→V → TIM_Solver
+    #   PS escreve refs via HIL_Regs_AXI → NPCManager → NPC→V → TIM_Solver
     #   TIM_Solver → AXI4-Stream → AXI DMA → DDR (HP0) → PS lê resultados
     # ==========================================================================
 
@@ -405,7 +405,7 @@ proc cr_bd_ebaz4205 {} {
 
     # ── AXI DMA : TIM_Solver → DDR via HP0 (somente S2MM) ────────────────────
     #   HIL_AXI_Top gera frames de 256 bits:
-    #       {46'b0, speed, flux_b, flux_a, ibeta, ialpha}
+    #       {epoch[13:0], timestamp[31:0], speed, flux_b, flux_a, ibeta, ialpha}
     #   O DMA fica 64b/64b para casar nativamente com HP0 do Zynq-7
     #   (AXI3, 64-bit fixo). A redução 256 → 64 fica fora do DMA, em um
     #   AXI4-Stream Data Width Converter.
@@ -458,7 +458,7 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins processing_system7_0/FCLK_RESET0_N] \
         [get_bd_pins proc_sys_reset_solver/ext_reset_in]
 
-    # ── Clocks : FCLK0 (150 MHz) para todo o path HIL ────────────────────────
+    # ── Clocks : FCLK0 (100 MHz) para AXI, PWM e transporte HIL ────────────────────────
     connect_bd_net \
         [get_bd_pins processing_system7_0/FCLK_CLK0] \
         [get_bd_pins axi_smartconnect_0/aclk] \

@@ -10,7 +10,7 @@
 /* V/F nominal operating point */
 #define FREQ_NOM_HZ   60.0f   /* Hz  — frequência nominal (matches cocotb F_NOMINAL_HZ) */
 #define V_NOM_PU      1.0f    /* pu  — tensão nominal (100% modulação) */
-#define TS            0.001f  /* s   — período do tick (1 kHz) */
+#define TS            (1.0f / (float)VF_TICK_HZ)  /* s — passo = 1/taxa do tick */
 
 /*
  * Vdc e torque: Q18.14 signed em int32 (14 bits fracionários).

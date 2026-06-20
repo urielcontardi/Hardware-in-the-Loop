@@ -47,8 +47,8 @@ const (
 	// matched to this rate's 50 kHz Nyquist. Moving the rate far from 100 kHz
 	// means re-tuning the SVF cutoff. Display-rate reduction is the host's job
 	// (min/max envelope in decimateAndProject), not the FPGA decimator's.
-	transportDecim    = 77
-	gpioFallbackHz    = 10000
+	transportDecim = 77
+	gpioFallbackHz = 10000
 )
 
 type server struct {
@@ -174,7 +174,13 @@ func main() {
 		cur.ingestMu.Lock()
 		m := cur.motor
 		for _, smp := range samples {
-			t := cur.clk.seconds(smp.TCycles, smp.Epoch)
+			if cur.clk.haveEpoch && smp.Epoch != cur.clk.epoch {
+				cur.resetSessionLocked()
+			}
+			t, ok := cur.clk.seconds(smp.TCycles, smp.Epoch)
+			if !ok {
+				continue
+			}
 			cur.store.Append(t, smp)
 			cur.overview.Push(t, m.Compute(smp).Values())
 		}
@@ -552,7 +558,9 @@ func (s *server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setTelemetryTarget(ip)
 	s.ring.Clear()
+	s.raw.Reset()
 	s.resetSession()
+	s.clearPwmHistory()
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
 	decim := transportDecim
@@ -656,6 +664,9 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 		p.TelemDst = s.localIP
 		s.setTelemetryTarget(ip)
 		s.ring.Clear()
+		s.raw.Reset()
+		s.resetSession()
+		s.clearPwmHistory()
 		s.recv.Punch(ip, telemetryPort)
 		s.pwmRecv.Punch(ip, pwmEventsPort)
 	}
@@ -802,6 +813,10 @@ func (s *server) currentMotor() derive.Motor {
 func (s *server) resetSession() {
 	s.ingestMu.Lock()
 	defer s.ingestMu.Unlock()
+	s.resetSessionLocked()
+}
+
+func (s *server) resetSessionLocked() {
 	if s.store != nil {
 		_ = s.store.Close()
 	}

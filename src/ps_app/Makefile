@@ -24,8 +24,12 @@ LDFLAGS := -lm -lpthread -lrt
 # Cross-compiler (set by PetaLinux SDK environment-setup script)
 # If CC is not set to the cross-compiler, fallback with a warning
 ifeq ($(origin CC), default)
-    $(warning CC not set — run: source <sdk>/environment-setup-cortexa9t2hf-neon-xilinx-linux-gnueabi)
+ifneq ($(filter native clean,$(MAKECMDGOALS)),)
+    CC := gcc
+else
+    $(warning CC not set - source the PetaLinux SDK environment)
     CC := arm-linux-gnueabihf-gcc
+endif
 endif
 
 .PHONY: all test native clean deploy deploy-test

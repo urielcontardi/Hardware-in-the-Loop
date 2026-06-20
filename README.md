@@ -1,6 +1,6 @@
 # Hardware-in-the-Loop (HIL) — 3-Phase Induction Motor
 
-FPGA-based Hardware-in-the-Loop simulation of a Three-phase Induction Motor (TIM) using NPC modulation and UART-based monitoring, targeting the **EBAZ4205 (Zynq-7010)** board.
+FPGA-based Hardware-in-the-Loop simulation of a three-phase induction motor using NPC modulation and DMA/UDP telemetry, targeting the **EBAZ4205 (Zynq-7010)** board.
 
 ---
 
@@ -13,9 +13,9 @@ FPGA-based Hardware-in-the-Loop simulation of a Three-phase Induction Motor (TIM
 | BilinearSolverUnit_DSP validation | **Pending** | Confirm stub == Xilinx IP behavior |
 | Vivado project (EBAZ4205 base) | **Done** | PS7 + Ethernet EMIO + LEDs, Vivado 2025.1 |
 | Linux boot (PetaLinux 2025.1) | **Done** | Kernel 6.12.10, SD card, UART console |
-| HIL integration into BD | **Next** | Add NPCManager + TIM_Solver to Block Design |
-| Linux app (V/F ramp via AXI) | **Next** | ARM writes va/vb/vc_ref to PL via AXI GPIO |
-| Tauri GUI integration | **Backlog** | `apps/hil-gui-tauri/` scaffold ready |
+| HIL integration into BD | **Done** | NPCManager + TIM_Solver + AXI DMA |
+| Linux control daemon | **Done** | V/F control and UDP telemetry |
+| HIL Monitor | **Done** | Go gateway/Wails backend + TypeScript frontend |
 
 ---
 
@@ -25,7 +25,7 @@ FPGA-based Hardware-in-the-Loop simulation of a Three-phase Induction Motor (TIM
 Hardware-in-the-Loop/
 │
 ├── apps/                        # Desktop applications
-│   └── hil-gui-tauri/          # Tauri GUI (Rust + TypeScript)
+│   └── hil-go/                 # Go gateway/Wails backend + TypeScript UI
 │
 ├── common/                      # Shared VHDL modules (git submodule)
 │   └── modules/
@@ -89,15 +89,20 @@ make cocotb-tim-sine
 xdg-open verification/cocotb/reports/vf_report.html
 ```
 
-### FPGA (Vivado 2025.1)
+### Build reproduzível
 
 ```bash
-# Criar projeto Vivado do zero
-make vivado-project
+# Validação de clone: RTL, Go, frontend e PS nativo
+make
 
-# Sintetizar + implementar + exportar XSA
-make synth
+# Hardware completo: recria o projeto Vivado do TCL canônico,
+# sintetiza/implementa e compila os binários ARM
+make all-hardware
 ```
+
+`make synth` sempre recria `syn/hil/ebaz4205/` a partir de
+`create_ebaz4205_project.tcl`. O diretório `.xpr` é artefato descartável e nunca
+é fonte do projeto.
 
 ### SD Card (boot Linux na EBAZ4205)
 
@@ -148,21 +153,22 @@ cocotb (Python):
   make cocotb-setup-nvc    Instalar simulador NVC (mais rápido que GHDL)
 
 Vivado / EBAZ4205:
-  make vivado-project      Criar projeto ebaz4205.xpr do zero
-  make synth               Síntese + implementação + exportar XSA
+  make synth               Recriar projeto + síntese + implementação + XSA
+  make vivado-project      Apenas recriar o projeto gerado
+  make vivado-clean        Remover projeto e XSA gerados
   make sim-dsp-compare     DSP stub vs IP Xilinx (xsim)
   make sim-bsu-compare     BSU solver stub vs IP (xsim)
   make sim-clarke          Clarke transform behavioural (xsim + VCD)
   make flash SD=/dev/sdX   Gravar SD card com imagens pré-compiladas
 
-GUI Tauri (apps/hil-gui-tauri/):
-  make gui-setup           Instalar dependências npm
-  make gui-check           Build frontend + cargo check
-  make gui-dev             Rodar GUI em modo desenvolvimento
-  make gui-build           Build completo (Tauri)
-  make gui-build-linux     Gerar pacotes .deb/.rpm
+Aplicação HIL Monitor:
+  make go-check            Testar e compilar gateway/backend Go
+  make frontend-check      Instalar dependências e compilar frontend
+  make ps-native-check     Compilar daemon PS para validação no host
 
 Geral:
+  make                     Validar RTL + Go + frontend + PS nativo
+  make all-hardware        Validação host + Vivado + binários ARM
   make help                Exibir esta lista
   make clean               Remover todos os artefatos gerados
 ```

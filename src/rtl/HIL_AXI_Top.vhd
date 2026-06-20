@@ -3,7 +3,7 @@
 --! \brief      HIL AXI Top — Wrapper PS-controlado para simulação de motor
 --!
 --!             O PS calcula as referências de tensão (V/F, FOC ou qualquer
---!             algoritmo) e as escreve via AXI GPIO a cada período de portadora.
+--!             algoritmo) e as escreve via HIL_Regs_AXI a cada período de portadora.
 --!             O PL gera a interrupção (carrier_tick_o → IRQ_F2P), faz a
 --!             modulação NPC, converte estados → tensão e roda o TIM_Solver.
 --!
@@ -12,7 +12,7 @@
 --!                   │ carrier_tick_o ──────────────► IRQ_F2P → PS
 --!                   │                                   │ escreve va/vb/vc
 --!                   ▼ sample no valley                  ▼
---!               NPCManager (gate states)         AXI GPIO refs
+--!               NPCManager (gate states)         HIL_Regs_AXI refs
 --!                   │
 --!               NPC_to_Voltage (±Vdc/2)
 --!                   │
@@ -20,14 +20,9 @@
 --!                   │
 --!               AXI4-Stream → AXI DMA → DDR
 --!
---! MAPA DE REGISTRADORES AXI GPIO (escritas do PS):
---!   axi_gpio_vref_ab  ch1 = va_ref[31:0]   (signed, ±CARRIER_MAX = ±75000)
---!                     ch2 = vb_ref[31:0]
---!   axi_gpio_vref_c   ch1 = vc_ref[31:0]
---!                     ch2 = {decim_ratio[31:2], clear[1], enable[0]}
---!                           decim_ratio=0 → default 375 (10 kHz @ 3.75 MHz solver)
---!   axi_gpio_vdc_torque ch1 = vdc_word[31:0]    (Q18.14 V, shift_left 14 → Q14.28)
---!                       ch2 = torque_word[31:0] (Q18.14 N·m, idem)
+--! MAPA DE REGISTRADORES HIL_Regs_AXI (escritas do PS):
+--!   0x00 va_ref, 0x04 vb_ref, 0x08 vc_ref
+--!   0x0C pwm_ctrl, 0x10 vdc_word, 0x14 torque_word
 --!
 --! SAÍDA AXI4-STREAM (256 bits, 1 beat por amostra):
 --!   bits[ 41: 0]  = ialpha
@@ -35,7 +30,8 @@
 --!   bits[125:84]  = flux_rotor_alpha
 --!   bits[167:126] = flux_rotor_beta
 --!   bits[209:168] = speed_mech
---!   bits[255:210] = zeros (padding)
+--!   bits[241:210] = HIL timestamp (cycles)
+--!   bits[255:242] = HIL epoch
 --!
 --! \author     Uriel Abe Contardi (urielcontardi@hotmail.com)
 --! \date       13-04-2026
@@ -156,8 +152,11 @@ Architecture rtl of HIL_AXI_Top is
     --------------------------------------------------------------------------
     -- Encoding dos estados NPC → 4 bits (S4 S3 S2 S1)
     --------------------------------------------------------------------------
-    constant NPC_STATE_POS  : std_logic_vector(3 downto 0) := "0011";  -- +Vdc/2
-    constant NPC_STATE_NEG  : std_logic_vector(3 downto 0) := "1100";  -- -Vdc/2
+    constant NPC_STATE_POS    : std_logic_vector(3 downto 0) := "0011";  -- +Vdc/2
+    constant NPC_STATE_ZERO_P : std_logic_vector(3 downto 0) := "0010";  -- dead-time from POS
+    constant NPC_STATE_ZERO   : std_logic_vector(3 downto 0) := "0110";  -- neutral point
+    constant NPC_STATE_ZERO_N : std_logic_vector(3 downto 0) := "0100";  -- dead-time from NEG
+    constant NPC_STATE_NEG    : std_logic_vector(3 downto 0) := "1100";  -- -Vdc/2
 
     --------------------------------------------------------------------------
     -- Controle
@@ -262,7 +261,16 @@ Architecture rtl of HIL_AXI_Top is
     signal solver_sample_toggle_m1  : std_logic := '0';
     signal solver_sample_toggle_m2  : std_logic := '0';
     signal solver_sample_toggle_d   : std_logic := '0';
+    signal solver_sample_ack_toggle : std_logic := '0';
+    signal solver_sample_ack_m1_s   : std_logic := '0';
+    signal solver_sample_ack_m2_s   : std_logic := '0';
+    signal solver_sample_pending_s  : std_logic := '0';
     signal solver_sample_pulse      : std_logic := '0';
+    signal ialpha_snap_solver       : std_logic_vector(TIM_DW-1 downto 0);
+    signal ibeta_snap_solver        : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_alpha_snap_solver   : std_logic_vector(TIM_DW-1 downto 0);
+    signal flux_beta_snap_solver    : std_logic_vector(TIM_DW-1 downto 0);
+    signal speed_snap_solver        : std_logic_vector(TIM_DW-1 downto 0);
     signal ialpha_raw_axi           : std_logic_vector(TIM_DW-1 downto 0);
     signal ibeta_raw_axi            : std_logic_vector(TIM_DW-1 downto 0);
     signal flux_alpha_raw_axi       : std_logic_vector(TIM_DW-1 downto 0);
@@ -452,7 +460,7 @@ Begin
         reset_n         => rst_n,
         pwm_enb_i       => pwm_enable_s,
         clear_i         => pwm_clear_s,
-        -- Referências escritas pelo PS via AXI GPIO
+        -- Referências escritas pelo PS via HIL_Regs_AXI
         va_ref_i        => va_ref_i,
         vb_ref_i        => vb_ref_i,
         vc_ref_i        => vc_ref_i,
@@ -470,29 +478,35 @@ Begin
     );
 
     --------------------------------------------------------------------------
-    -- NPC_to_Voltage — converte estado de gate em tensão para o solver
-    --   "0011" (POS) → +Vdc/2
-    --   "1100" (NEG) → -Vdc/2
-    --   outros       → 0 V (estado zero / desligado)
+    -- NPC_to_Voltage — converte estado de gate em tensão para o solver.
+    -- Dead-time não é comandado como zero: o gate driver emite "0010" ao sair
+    -- de POS e "0100" ao sair de NEG; modelamos esses estados como meio nível
+    -- para não injetar notch artificial de 0 V na planta ideal.
     --------------------------------------------------------------------------
-    NPC_to_Voltage : process(pwm_a, pwm_b, pwm_c, vdc_pos, vdc_neg)
+    NPC_to_Voltage : process(pwm_a, pwm_b, pwm_c, vdc_pos, vdc_neg, vdc_bus_42)
     begin
         case pwm_a is
-            when NPC_STATE_POS => va_motor <= std_logic_vector(vdc_pos);
-            when NPC_STATE_NEG => va_motor <= std_logic_vector(vdc_neg);
-            when others        => va_motor <= (others => '0');
+            when NPC_STATE_POS    => va_motor <= std_logic_vector(vdc_pos);
+            when NPC_STATE_ZERO_P => va_motor <= std_logic_vector(shift_right(vdc_bus_42, 2));
+            when NPC_STATE_NEG    => va_motor <= std_logic_vector(vdc_neg);
+            when NPC_STATE_ZERO_N => va_motor <= std_logic_vector(-shift_right(vdc_bus_42, 2));
+            when others           => va_motor <= (others => '0');
         end case;
 
         case pwm_b is
-            when NPC_STATE_POS => vb_motor <= std_logic_vector(vdc_pos);
-            when NPC_STATE_NEG => vb_motor <= std_logic_vector(vdc_neg);
-            when others        => vb_motor <= (others => '0');
+            when NPC_STATE_POS    => vb_motor <= std_logic_vector(vdc_pos);
+            when NPC_STATE_ZERO_P => vb_motor <= std_logic_vector(shift_right(vdc_bus_42, 2));
+            when NPC_STATE_NEG    => vb_motor <= std_logic_vector(vdc_neg);
+            when NPC_STATE_ZERO_N => vb_motor <= std_logic_vector(-shift_right(vdc_bus_42, 2));
+            when others           => vb_motor <= (others => '0');
         end case;
 
         case pwm_c is
-            when NPC_STATE_POS => vc_motor <= std_logic_vector(vdc_pos);
-            when NPC_STATE_NEG => vc_motor <= std_logic_vector(vdc_neg);
-            when others        => vc_motor <= (others => '0');
+            when NPC_STATE_POS    => vc_motor <= std_logic_vector(vdc_pos);
+            when NPC_STATE_ZERO_P => vc_motor <= std_logic_vector(shift_right(vdc_bus_42, 2));
+            when NPC_STATE_NEG    => vc_motor <= std_logic_vector(vdc_neg);
+            when NPC_STATE_ZERO_N => vc_motor <= std_logic_vector(-shift_right(vdc_bus_42, 2));
+            when others           => vc_motor <= (others => '0');
         end case;
     end process NPC_to_Voltage;
 
@@ -543,6 +557,9 @@ Begin
 
     solver_rst_sync_n   <= solver_rst_sync2;
     solver_state_clear_s <= pwm_ctrl_solver(2);
+    -- O pulso de solver_reset deve limpar o TIM_Solver inteiro: Xvec, timer,
+    -- Clarke, handler bilinear e pipelines internos. O PS reprograma os
+    -- coeficientes ativos logo apos liberar o reset, preservando motor custom.
     solver_reset_n_s     <= solver_rst_sync_n and not solver_state_clear_s;
 
     --------------------------------------------------------------------------
@@ -676,15 +693,35 @@ Begin
                 solver_clk_alive_toggle <= not solver_clk_alive_toggle;
             end if;
             if solver_rst_sync_n = '0' then
-                solver_sample_toggle  <= '0';
-                timer_tick_toggle     <= '0';
-                clarke_valid_toggle   <= '0';
-                solver_done_toggle    <= '0';
-                timer_tick_ctr_solver <= (others => '0');
-                solver_done_ctr_solver <= (others => '0');
+                solver_sample_toggle    <= '0';
+                solver_sample_ack_m1_s  <= '0';
+                solver_sample_ack_m2_s  <= '0';
+                solver_sample_pending_s <= '0';
+                ialpha_snap_solver      <= (others => '0');
+                ibeta_snap_solver       <= (others => '0');
+                flux_alpha_snap_solver  <= (others => '0');
+                flux_beta_snap_solver   <= (others => '0');
+                speed_snap_solver       <= (others => '0');
+                timer_tick_toggle       <= '0';
+                clarke_valid_toggle     <= '0';
+                solver_done_toggle      <= '0';
+                timer_tick_ctr_solver   <= (others => '0');
+                solver_done_ctr_solver  <= (others => '0');
             else
-                if data_valid_s = '1' then
-                    solver_sample_toggle <= not solver_sample_toggle;
+                solver_sample_ack_m1_s <= solver_sample_ack_toggle;
+                solver_sample_ack_m2_s <= solver_sample_ack_m1_s;
+                if solver_sample_pending_s = '1' and
+                   solver_sample_ack_m2_s = solver_sample_toggle then
+                    solver_sample_pending_s <= '0';
+                end if;
+                if data_valid_s = '1' and solver_sample_pending_s = '0' then
+                    ialpha_snap_solver      <= ialpha_s;
+                    ibeta_snap_solver       <= ibeta_s;
+                    flux_alpha_snap_solver  <= flux_alpha_s;
+                    flux_beta_snap_solver   <= flux_beta_s;
+                    speed_snap_solver       <= speed_s;
+                    solver_sample_toggle    <= not solver_sample_toggle;
+                    solver_sample_pending_s <= '1';
                 end if;
                 if timer_tick_dbg_s = '1' then
                     timer_tick_toggle <= not timer_tick_toggle;
@@ -708,6 +745,7 @@ Begin
                 solver_sample_toggle_m1 <= '0';
                 solver_sample_toggle_m2 <= '0';
                 solver_sample_toggle_d  <= '0';
+                solver_sample_ack_toggle <= '0';
                 solver_sample_pulse     <= '0';
                 timer_tick_toggle_m1  <= '0';
                 timer_tick_toggle_m2  <= '0';
@@ -758,11 +796,12 @@ Begin
                 solver_done_dbg_axi     <= solver_done_toggle_m2 xor solver_done_toggle_d;
                 data_valid_axi          <= solver_sample_toggle_m2 xor solver_sample_toggle_d;
                 if (solver_sample_toggle_m2 xor solver_sample_toggle_d) = '1' then
-                    ialpha_raw_axi     <= ialpha_s;
-                    ibeta_raw_axi      <= ibeta_s;
-                    flux_alpha_raw_axi <= flux_alpha_s;
-                    flux_beta_raw_axi  <= flux_beta_s;
-                    speed_raw_axi      <= speed_s;
+                    ialpha_raw_axi          <= ialpha_snap_solver;
+                    ibeta_raw_axi           <= ibeta_snap_solver;
+                    flux_alpha_raw_axi      <= flux_alpha_snap_solver;
+                    flux_beta_raw_axi       <= flux_beta_snap_solver;
+                    speed_raw_axi           <= speed_snap_solver;
+                    solver_sample_ack_toggle <= solver_sample_toggle_m2;
                 end if;
             end if;
         end if;
@@ -975,8 +1014,8 @@ Begin
     end process Debug_Counters;
 
     --------------------------------------------------------------------------
-    -- Ratio do decimador: bits[31:3] do pwm_ctrl; 0 = default 375
-    -- 750 → 7.69 MHz / 750 ≈ 10.26 kHz de saída para o DMA
+    -- Ratio do decimador: bits[31:3] do pwm_ctrl; 0 = default 77
+    -- 77 -> 7.69 MHz / 77 = aproximadamente 100 kHz para o DMA
     -- (bit[2] foi realocado para solver_reset; decim agora tem 29 bits,
     --  ainda muito mais do que o necessário — uso típico < 16 bits.)
     --------------------------------------------------------------------------
@@ -1015,7 +1054,10 @@ Begin
                             axis_tdata_r(125 downto  84) <= flux_alpha_aa_axi;
                             axis_tdata_r(167 downto 126) <= flux_beta_aa_axi;
                             axis_tdata_r(209 downto 168) <= speed_aa_axi;
-                            axis_tdata_r(255 downto 210) <= (others => '0');
+                            -- Carry acquisition time with each sample; the PS must not
+                            -- reconstruct 128 timestamps from one post-burst GPIO read.
+                            axis_tdata_r(241 downto 210) <= std_logic_vector(pwm_cap_time);
+                            axis_tdata_r(255 downto 242) <= std_logic_vector(pwm_cap_epoch(13 downto 0));
                             if axis_frame_cnt = to_unsigned(AXIS_DMA_BURST_FRAMES_C - 1,
                                                             axis_frame_cnt'length) then
                                 axis_tlast_r   <= '1';

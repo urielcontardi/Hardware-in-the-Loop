@@ -82,11 +82,10 @@ make linux-flash SD=/dev/sdX
 | 4/5 | `make linux-build` | Compila kernel, rootfs e FSBL |
 | 5/5 | `make linux-package` | Empacota `BOOT.BIN` (FSBL + bitstream + U-Boot) |
 
-### Passo a passo manual (se preferir controle individual)
+### Passo a passo manual (o projeto Vivado é sempre regenerado)
 
 ```bash
-make vivado-project          # Cria ebaz4205.xpr
-make synth                   # Gera ebaz4205.xsa e ebaz4205_wrapper.bit
+make synth                   # Recria ebaz4205.xpr e gera ebaz4205.xsa e ebaz4205_wrapper.bit
 make linux-config            # Importa XSA no PetaLinux
 make linux-build             # Build (~30-60 min)
 make linux-package           # Empacota BOOT.BIN
@@ -159,8 +158,7 @@ ssh root@<IP-da-placa>
 Quando só o design PL mudar e o Linux não precisar ser recompilado:
 
 ```bash
-make vivado-project   # apenas se o projeto não existir
-make synth            # nova síntese → novo ebaz4205.xsa + .bit
+make synth            # recria o projeto pelo TCL canônico e gera XSA + bitstream
 make linux-config     # atualiza XSA no PetaLinux
 make linux-build      # recompila FSBL com novo XSA
 make linux-package    # novo BOOT.BIN
@@ -175,7 +173,7 @@ make linux-update-sdimages && make linux-flash SD=/dev/sdX
 syn/hil/
 ├── create_ebaz4205_project.tcl   # Recria projeto Vivado completo do zero
 ├── run_impl_export.tcl           # Síntese + implementação + exporta XSA
-├── resynth.tcl                   # Re-síntese sem recriar o projeto
+├── HIL_ARCHITECTURE.md        # Contratos do pipeline solver até a UI
 ├── ebaz4205_board.xdc            # Constraints: pinos, EMIO Ethernet, LEDs
 ├── flash_sd.sh                   # Particiona e grava SD card
 ├── sd_images/                    # Imagens pré-compiladas e testadas

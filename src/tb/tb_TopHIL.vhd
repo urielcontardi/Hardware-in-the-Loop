@@ -1,132 +1,65 @@
---! \file		tb_TopHIL.vhd
---!
---! \brief		
---!
---! \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
---! \date       04-08-2024
---!
---! \version    1.0
---!
---! \copyright	Copyright (c) 2024 - All Rights reserved.
---!
---! \note		Target devices : No specific target
---! \note		Tool versions  : No specific tool
---! \note		Dependencies   : No specific dependencies
---!
---! \ingroup	None
---! \warning	None
---!
---! \note		Revisions:
---!				- 1.0	04-08-2024	<urielcontardi@hotmail.com>
---!				First revision.
---------------------------------------------------------------------------
--- Default libraries
---------------------------------------------------------------------------
+-- Top_HIL compile/smoke test. No external files or machine-specific paths.
 library ieee;
 use ieee.std_logic_1164.all;
-use ieee.numeric_std.all;
-
-use std.textio.all;
 use std.env.finish;
 
---------------------------------------------------------------------------
--- User packages
---------------------------------------------------------------------------
+entity tb_TopHIL is
+end entity;
 
---------------------------------------------------------------------------
--- Entity declaration
---------------------------------------------------------------------------
-Entity tb_TopHIL is
-End entity;
+architecture sim of tb_TopHIL is
+    constant CLK_PERIOD : time := 10 ns;
+    signal clk          : std_logic := '0';
+    signal reset_n      : std_logic := '0';
+    signal pwm_enb      : std_logic := '0';
+    signal pwm_clear    : std_logic := '0';
+    signal va_ref       : std_logic_vector(31 downto 0) := (others => '0');
+    signal vb_ref       : std_logic_vector(31 downto 0) := (others => '0');
+    signal vc_ref       : std_logic_vector(31 downto 0) := (others => '0');
+    signal carrier_tick : std_logic;
+    signal sample_tick  : std_logic;
+    signal pwm_on       : std_logic;
+    signal pwm_fault    : std_logic;
+    signal pwm_a        : std_logic_vector(3 downto 0);
+    signal pwm_b        : std_logic_vector(3 downto 0);
+    signal pwm_c        : std_logic_vector(3 downto 0);
+    signal uart_tx      : std_logic;
+begin
+    clk <= not clk after CLK_PERIOD / 2;
 
-Architecture behavior of tb_TopHIL is
+    uut : entity work.Top_HIL
+        generic map (
+            CLK_FREQUENCY   => 100_000_000,
+            PWM_FREQUENCY   => 1_000,
+            MIN_PULSE_WIDTH => 1,
+            DEAD_TIME       => 1
+        )
+        port map (
+            clk_i          => clk,
+            reset_n        => reset_n,
+            pwm_enb_i      => pwm_enb,
+            pwm_clear_i    => pwm_clear,
+            va_ref_i       => va_ref,
+            vb_ref_i       => vb_ref,
+            vc_ref_i       => vc_ref,
+            carrier_tick_o => carrier_tick,
+            sample_tick_o  => sample_tick,
+            pwm_on_o       => pwm_on,
+            pwm_fault_o    => pwm_fault,
+            pwm_a_o        => pwm_a,
+            pwm_b_o        => pwm_b,
+            pwm_c_o        => pwm_c,
+            uart_rx_i      => '1',
+            uart_tx_o      => uart_tx
+        );
 
-    --------------------------------------------------------------------------
-    -- Clock definition
-    --------------------------------------------------------------------------
-    constant CLK_FREQUENCY  : integer   := 160e6;
-    constant CLK_PERIOD     : time      := 1 sec / CLK_FREQUENCY;
-
-    --------------------------------------------------------------------------
-    -- PWM text File
-    --------------------------------------------------------------------------
-    constant N_COLUMN   : integer   := 0;
-    type READ_BUFFER_TYPE is array(N_COLUMN - 1 downto 0) of std_logic;
-    constant TXT_FILE   : string    := "/home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop/extras/Simulation/NPC_PWM.txt";
-    constant FILE_SAMPLE_FREQ   : integer   := 100e3;
-    constant FILE_SAMPLE_PERIOD : time      := 1 sec / FILE_SAMPLE_FREQ;
-
-    --------------------------------------------------------------------------
-    -- UUT ports
-    --------------------------------------------------------------------------
-    constant STATE_SPACE_FREQUENCY  : integer := 10e6;
-
-    signal clk_i    : std_logic := '0';
-    signal reset_n  : std_logic := '0';
-    signal U_NPC_i  : std_logic_vector(3 downto 0);
-    signal V_NPC_i  : std_logic_vector(3 downto 0);
-    signal W_NPC_i  : std_logic_vector(3 downto 0);
-
-Begin
-
-    --------------------------------------------------------------------------
-    -- Clk generation
-    --------------------------------------------------------------------------
-    sysclk <= not sysclk after CLK_PERIOD/2;
-
-    --------------------------------------------------------------------------
-    -- UUT
-    --------------------------------------------------------------------------
-    UUT : Entity work.Top_HIL
-    Generic map(
-        CLK_FREQUENCY          => CLK_FREQUENCY,
-        STATE_SPACE_FREQUENCY  => STATE_SPACE_FREQUENCY
-    )
-    Port map(
-        clk_i       => clk_i,
-        reset_n     => reset_n,
-        -- Inputs (Phases - NPC Switch)
-        U_NPC_i    => U_NPC_i,
-        V_NPC_i    => V_NPC_i,
-        W_NPC_i    => W_NPC_i
-    );
-
-    --------------------------------------------------------------------------
-    -- Load PWM 
-    --------------------------------------------------------------------------
-    FileRead_Inverter_PWM_Width : process
-        variable fileLine   : line;
-        variable readBuffer : READ_BUFFER_TYPE;
-        file fileName       : text is in TXT_FILE;
+    stimulus : process
     begin
-
-        while true loop
-
-            -- Verify file end
-            if endfile(fileName) then
-                file_close(fileName);
-                file_open(fileName, MEASURES_FILE, read_mode);
-            end if;
-
-            -- Read Line
-            readline (fileName, fileLine);
-            for i in 0 to N_COLUMN - 1 loop
-                read(fileLine, readBuffer(i));
-            end loop;
-
-            -- Fill Array
-            for aa in U_NPC_i'range loop
-                U_NPC_i(aa) <= std_logic(readBuffer(aa));
-                V_NPC_i(aa) <= std_logic(readBuffer(aa));
-                W_NPC_i(aa) <= std_logic(readBuffer(aa));
-            end loop;
-
-            -- Wait Sample Period
-            wait for FILE_SAMPLE_PERIOD;
-
-        end loop;
-
+        wait for 10 * CLK_PERIOD;
+        reset_n <= '1';
+        pwm_enb <= '1';
+        wait for 2 ms;
+        assert pwm_fault = '0' report "unexpected PWM fault" severity failure;
+        report "tb_TopHIL PASS" severity note;
+        finish;
     end process;
-
-
-End architecture;
+end architecture;

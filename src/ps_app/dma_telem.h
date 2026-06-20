@@ -14,15 +14,16 @@
  *   bits [125:84] — flux_alpha
  *   bits [167:126]— flux_beta
  *   bits [209:168]— speed_mech
- *   bits [255:210]— padding (zero)
+ *   bits [241:210]— run-local timestamp (100 MHz)
+ *   bits [255:242]— run epoch (low 14 bits)
  *
- * One frame = 32 bytes.  At decim=375 → ~10 kHz; decim=37 → ~100 kHz.
+ * One frame = 32 bytes.  At decim=750 → ~10 kHz; decim=77 → ~100 kHz.
  *
  * Physical value = raw_int42 / 2^28  (same as GPIO path / 2^18 on top-32).
  */
 
 #define DMA_FRAME_BYTES   32          /* 256-bit AXI Stream beat             */
-#define DMA_BURST_FRAMES  128         /* frames per DMA transfer (~13 ms @10k) */
+#define DMA_BURST_FRAMES  128         /* frames per DMA transfer (~1.28 ms at 100k) */
 #define DMA_BURST_BYTES   (DMA_BURST_FRAMES * DMA_FRAME_BYTES)
 #define DMA_N_BUFS        2           /* double-buffer: DMA always active     */
 
@@ -30,6 +31,8 @@
 #define DMA_SCALE         (1.0f / (float)(1u << 28))
 
 typedef struct {
+    uint32_t t_cycles;
+    uint16_t epoch;
     float ialpha;
     float ibeta;
     float flux_alpha;
@@ -57,7 +60,7 @@ void dma_telem_deinit(void);
  * `out` must point to at least DMA_BURST_FRAMES dma_sample_t entries.
  *
  * Returns DMA_BURST_FRAMES on success, -1 on error/timeout.
- * timeout_ms is per transfer; at 10 kHz each transfer takes ~13 ms.
+ * timeout_ms is per transfer; at 100 kHz each transfer takes ~1.28 ms.
  */
 int dma_telem_next(dma_sample_t *out, int timeout_ms);
 

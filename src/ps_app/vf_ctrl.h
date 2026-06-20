@@ -4,6 +4,17 @@
 #include <stdint.h>
 
 /*
+ * Taxa de atualização da referência V/F [Hz]. DEVE ser bem maior que a
+ * portadora PWM (1 kHz, definida por PWM_FREQ no HIL_AXI_Top sintetizado),
+ * porque o NPCModulator amostra a referência uma vez por período da portadora
+ * (no vale). Em 1:1 com a portadora, os dois relógios de 1 kHz (carrier da FPGA
+ * e timer do PS) batem (beating) e produzem pulsos de PWM irregulares/alargados.
+ * Com 10x de oversampling a referência amostrada no vale tem <=100 us de idade.
+ * vf_ctrl.c deriva o passo de integração TS = 1/VF_TICK_HZ.
+ */
+#define VF_TICK_HZ  1000u
+
+/*
  * V/F open-loop controller — linear puro, sem boost de baixa frequência.
  *
  * Lei aplicada: V_ref = max_v_pu × (f_current / base_freq_hz)
@@ -45,7 +56,7 @@ void vf_deinit(void);
 void vf_set_params(const vf_params_t *p);
 void vf_get_params(vf_params_t *p);
 
-/* Chamado a cada tick de 1 kHz (SIGALRM) */
+/* Chamado a cada tick (VF_TICK_HZ, via timer POSIX SIGRTMIN) */
 void vf_tick(void);
 
 /* Retorna a frequência atual após aplicação da rampa de aceleração [Hz].

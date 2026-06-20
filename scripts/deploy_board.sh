@@ -9,7 +9,7 @@
 
 set -e
 
-BOARD_IP="${IP:-192.168.15.9}"
+BOARD_IP="${IP:-192.168.15.8}"
 BOARD_USER="petalinux"
 BOARD_PASS="1234"      # ← altere aqui se necessário
 BOARD_HOME="/home/petalinux"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"hil.local/daemon/internal/frame"
@@ -29,13 +30,22 @@ type Receiver struct {
 	ring  *ring.Ring
 	Stats Stats
 
-	conn *net.UDPConn
-	quit chan struct{}
+	conn      *net.UDPConn
+	quit      chan struct{}
+	handlerMu sync.RWMutex
+	onSamples func([]frame.Sample)
 }
 
 // New creates a Receiver on the given UDP port.
 func New(port int, r *ring.Ring) *Receiver {
 	return &Receiver{port: port, ring: r, quit: make(chan struct{})}
+}
+
+// SetSampleHandler installs a fast side-channel consumer such as the raw recorder.
+func (rv *Receiver) SetSampleHandler(fn func([]frame.Sample)) {
+	rv.handlerMu.Lock()
+	rv.onSamples = fn
+	rv.handlerMu.Unlock()
 }
 
 // Start begins listening in a background goroutine.
@@ -49,6 +59,7 @@ func (rv *Receiver) Start() error {
 		return fmt.Errorf("receiver: listen: %w", err)
 	}
 	rv.conn = conn
+	_ = conn.SetReadBuffer(4 << 20)
 	go rv.loop()
 	return nil
 }
@@ -124,6 +135,12 @@ func (rv *Receiver) loop() {
 		first = false
 
 		rv.Stats.PacketsRx.Add(1)
+		rv.handlerMu.RLock()
+		onSamples := rv.onSamples
+		rv.handlerMu.RUnlock()
+		if onSamples != nil {
+			onSamples(f.Samples)
+		}
 
 		for _, s := range f.Samples {
 			if !rv.ring.Push(s) {

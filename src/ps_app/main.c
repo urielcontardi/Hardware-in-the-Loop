@@ -30,12 +30,12 @@ typedef struct {
 } motor_params_t;
 
 static motor_params_t motor_params = {
-    .rs = 0.4396f,
+    .rs = 0.435f,
     .rr = 0.2826f,
     .ls = 3.1364e-3f,
     .lr = 6.3264e-3f,
     .lm = 109.9442e-3f,
-    .j = 0.4f,
+    .j = 0.192f,
     .npp = 2.0f,
 };
 
@@ -71,7 +71,9 @@ static volatile int          running    = 1;          /* daemon lifetime    */
 static volatile hil_state_t  hil_state  = HIL_IDLE;   /* control-FSM state  */
 static char                  telem_dst_ip[INET_ADDRSTRLEN] = {0};
 
-/* ── 1 kHz POSIX timer (vf_tick) ─────────────────────────────────────────── */
+static int program_motor_coeffs(const motor_params_t *m);
+
+/* ── V/F reference timer (vf_tick @ VF_TICK_HZ) ──────────────────────────── */
 
 static void timer_handler(int sig, siginfo_t *si, void *uc)
 {
@@ -94,7 +96,7 @@ static void set_udp_reuse(int sock)
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 }
 
-static int setup_1khz_timer(void)
+static int setup_vf_timer(void)
 {
     struct sigaction sa = {
         .sa_sigaction = timer_handler,
@@ -112,8 +114,8 @@ static int setup_1khz_timer(void)
     }
 
     struct itimerspec its = {
-        .it_value    = { .tv_sec = 0, .tv_nsec = 1000000 },
-        .it_interval = { .tv_sec = 0, .tv_nsec = 1000000 },
+        .it_value    = { .tv_sec = 0, .tv_nsec = 1000000000L / VF_TICK_HZ },
+        .it_interval = { .tv_sec = 0, .tv_nsec = 1000000000L / VF_TICK_HZ },
     };
     if (timer_settime(g_timerid, 0, &its, NULL) < 0) {
         perror("timer_settime"); return -1;
@@ -171,7 +173,7 @@ static const char *telem_source_name(void)
  * the legacy GPIO-polling path if DMA init fails.
  *
  * Rate:
- *   DMA burst = DMA_BURST_FRAMES at ~10 kHz.
+ *   DMA burst = DMA_BURST_FRAMES at ~100 kHz with decim=77.
  *   Each DMA sample is forwarded through the existing UDP telemetry path.
  */
 static void *telem_thread_fn(void *arg)
@@ -186,11 +188,6 @@ static void *telem_thread_fn(void *arg)
         /* ── DMA double-buffer path ────────────────────────────────── */
         dma_sample_t dma_buf[DMA_BURST_FRAMES];
         int dma_errors = 0;
-
-        /* Burst-to-burst timestamp anchor (hil_time, 100 MHz run-local). */
-        uint32_t dma_prev_time  = 0;
-        int      dma_prev_epoch = -1;
-
         while (running && telem_active) {
             /* dma_telem_next: waits for active buffer, re-arms the other,
              * then decodes — DMA is always running with minimal gap. */
@@ -213,32 +210,8 @@ static void *telem_thread_fn(void *arg)
             vf_get_params(&p);
             uint8_t flags = (uint8_t)((p.enable & 0x01)
                            | ((hil_state == HIL_PAUSED) ? 0x02 : 0));
-
-            /* Timestamp interpolation. The DMA decode loop runs in ~25 µs but
-             * the burst represents ~12.5 ms of hardware time, so all 128 samples
-             * must be spread across the interval, not stamped with one value.
-             *
-             * hil_time is the FPGA run-local counter (100 MHz, resets to 0 on
-             * each Run/epoch). We spread the burst evenly between the previous
-             * burst's end time and the current one, using modular uint32
-             * arithmetic so a single 32-bit wrap is handled correctly. On an
-             * epoch change the counter restarted at 0, so we re-anchor there —
-             * this also avoids the underflow-to-~2^32 that the frontend would
-             * misread as a counter wrap (jumping the timeline by ~42.9 s). */
-            uint32_t t_end   = gpio_hil_time();
-            uint16_t t_epoch = gpio_hil_epoch();
-
-            if ((int)t_epoch != dma_prev_epoch) {
-                dma_prev_epoch = (int)t_epoch;
-                dma_prev_time  = 0;   /* run-local counter restarts at 0 */
-            }
-            uint32_t t_delta = t_end - dma_prev_time;  /* modular; spans 1 wrap */
-
             for (int i = 0; i < n && telem_active; i++) {
-                uint32_t t = dma_prev_time
-                    + (uint32_t)(((uint64_t)t_delta * (uint32_t)(i + 1))
-                                 / (uint32_t)n);
-                telem_push(t, t_epoch,
+                telem_push(dma_buf[i].t_cycles, dma_buf[i].epoch,
                            dma_buf[i].ialpha,
                            dma_buf[i].ibeta,
                            dma_buf[i].flux_alpha,
@@ -251,7 +224,6 @@ static void *telem_thread_fn(void *arg)
              * against the 2048-deep FIFO overflowing. Calling it per-sample was
              * the dominant PS overhead that capped the sustainable rate. */
             pwm_events_poll();
-            dma_prev_time = t_end;   /* anchor for the next burst */
         }
     }
 
@@ -336,12 +308,19 @@ static void ensure_telem_to(const char *ip)
 
 /* ── State transitions ───────────────────────────────────────────────────── */
 
+static void reset_solver_and_reprogram(void)
+{
+    vf_reset_solver();
+    if (program_motor_coeffs(&motor_params) != 0)
+        fprintf(stderr, "WARNING: failed to reprogram motor model after solver reset\n");
+}
+
 static void apply_run(void)
 {
-    /* Zera estados integradores do solver antes de cada partida — caso
-     * contrário fluxos/correntes do run anterior podem mascarar a nova
-     * excitação (constantes de tempo do rotor podem ser de segundos). */
-    vf_reset_solver();
+    /* Zera estados integradores/pipeline do solver antes de cada partida.
+     * O reset completo tambem limpa coeficientes ativos, entao reprogramamos
+     * o motor selecionado imediatamente apos liberar o reset. */
+    reset_solver_and_reprogram();
     gpio_pwmcap_clear();
 
     vf_params_t p;
@@ -378,8 +357,8 @@ static void apply_stop(void)
     };
     vf_set_params(&p);
     /* Zera os estados integradores para que monitor leituras imediatamente
-     * após o Stop reflitam o solver parado, não o último ponto operacional. */
-    vf_reset_solver();
+     * apos o Stop reflitam o solver parado, nao o ultimo ponto operacional. */
+    reset_solver_and_reprogram();
     hil_state = HIL_STOPPED;
 }
 
@@ -434,10 +413,6 @@ static int64_t q14_28(double v)
     return (int64_t)llround(v * scale);
 }
 
-static int64_t y_entry(int idx)
-{
-    return idx < 0 ? (int64_t)(1ULL << 41) : (int64_t)idx;
-}
 
 static void write_tim_coeff_shadow(uint32_t matrix, uint32_t row, uint32_t col, int64_t value)
 {
@@ -461,13 +436,6 @@ static int program_motor_coeffs(const motor_params_t *m)
         {  ts*m->lm*m->npp*k, -ts*m->lm*m->rr*k/lr_total, 0.0, ts*(m->lm*m->lm*m->rr*k/lr_total + lr_total*m->rs*k), 0.0 },
         {  ts*(3.0*m->npp*m->lm)/(2.0*m->j*lr_total), ts*(-3.0*m->npp*m->lm)/(2.0*m->j*lr_total), 0.0, 0.0, 0.0 },
     };
-    const int y[5][5] = {
-        { -1,  4, -1, -1, -1 },
-        {  4, -1, -1, -1, -1 },
-        { -1,  4, -1, -1, -1 },
-        {  4, -1, -1, -1, -1 },
-        {  3,  2, -1, -1, -1 },
-    };
     const double b[5][3] = {
         { 0.0, 0.0, 0.0 },
         { 0.0, 0.0, 0.0 },
@@ -479,7 +447,6 @@ static int program_motor_coeffs(const motor_params_t *m)
     for (uint32_t r = 0; r < 5; r++) {
         for (uint32_t c = 0; c < 5; c++) {
             write_tim_coeff_shadow(TIM_COEFF_MATRIX_A, r, c, q14_28(a[r][c]));
-            write_tim_coeff_shadow(TIM_COEFF_MATRIX_Y, r, c, y_entry(y[r][c]));
         }
         for (uint32_t c = 0; c < 3; c++)
             write_tim_coeff_shadow(TIM_COEFF_MATRIX_B, r, c, q14_28(b[r][c]));
@@ -616,7 +583,7 @@ static void handle_packet(int sock, const char *buf,
         printf("[STOP] state=%s (daemon alive)\n", state_name(hil_state));
 
     } else if (strstr(buf, "\"cmd\":\"reset\"")) {
-        vf_reset_solver();
+        reset_solver_and_reprogram();
         hil_state = HIL_PAUSED;
         /* Reset leaves params intact but motor disabled - same posture as Pause. */
         printf("[RESET] solver states cleared, state=%s\n", state_name(hil_state));
@@ -816,7 +783,7 @@ int main(void)
     else
         fprintf(stderr, "WARNING: failed to program default motor model at startup\n");
 
-    if (setup_1khz_timer() < 0) return 1;
+    if (setup_vf_timer() < 0) return 1;
 
     if (dma_telem_init() == 0) {
         use_dma = 1;

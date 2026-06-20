@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # Usage:
-#   make                    - Run SerialManager testbench (default)
+#   make                    - Validate RTL, Go/frontend, and PS native builds
 #   make sim-serial         - Run SerialManager testbench
 #   make sim-tim            - Run TIM Solver testbench
 #   make sim-top            - Run Top_HIL testbench
@@ -23,9 +23,11 @@
 #   make linux-all          - Full PetaLinux flow (config → build → package)
 #
 # Dependencies:
-#   - GHDL   (VHDL simulator, with VPI support for cocotb)
-#   - GTKWave (waveform viewer, optional)
-#   - uv     (Python package manager, for cocotb tests)
+#   - GHDL  (VHDL analysis and simulation)
+#   - Go    (gateway and native backend)
+#   - Node.js + npm (frontend build)
+#   - GCC   (PS native compile check)
+#   - Vivado 2025.1 + PetaLinux SDK only for make all-hardware
 #
 
 # =============================================================================
@@ -121,7 +123,7 @@ WAVE_TOP       := $(WAVE_DIR)/waves_top_hil.ghw
 # =============================================================================
 SIM_TIME_SERIAL := 50ms
 SIM_TIME_TIM    := 10ms
-SIM_TIME_TOP    := 20ms
+SIM_TIME_TOP    := 3ms
 
 # =============================================================================
 # GHDL work-dir flag
@@ -131,8 +133,27 @@ GHDL_WORK := --workdir=$(WORK_DIR)
 # =============================================================================
 # Default target
 # =============================================================================
-.PHONY: all
-all: sim-serial
+.PHONY: all check go-check frontend-check ps-native-check all-hardware
+all: check
+
+check: compile go-check frontend-check ps-native-check
+	@echo ""
+	@echo "All host-side builds passed. Run make all-hardware for Vivado + ARM."
+
+go-check:
+	@cd apps/hil-go && go test ./... && go build ./cmd/gateway
+
+frontend-check:
+	@cd apps/hil-go/frontend && npm ci --no-audit --no-fund && npm run build
+	@rm -rf apps/hil-go/cmd/gateway/static
+	@mkdir -p apps/hil-go/cmd/gateway/static
+	@cp -a apps/hil-go/frontend/dist/. apps/hil-go/cmd/gateway/static/
+
+ps-native-check:
+	@$(MAKE) -C src/ps_app native
+
+all-hardware: check synth ps-build
+	@echo "Host checks, Vivado bitstream/XSA, and ARM binaries built successfully."
 
 # =============================================================================
 # Directory creation
@@ -261,7 +282,7 @@ NVC         := nvc
 NVC_FLAGS   := --std=2008
 SD          ?= /dev/sdX
 
-.PHONY: vivado-project sim-dsp-compare sim-bsu-compare sim-clarke synth flash
+.PHONY: vivado-project vivado-check vivado-clean sim-dsp-compare sim-bsu-compare sim-clarke synth flash
 
 ## Create the Vivado project from TCL (syn/hil/create_ebaz4205_project.tcl)
 vivado-project:
@@ -274,6 +295,16 @@ vivado-project:
 		-log vivado_create.log \
 		-journal vivado_create.jou
 	@echo "Project: $(VIVADO_PROJ)"
+
+vivado-check: vivado-project
+	@cd $(SYN_HIL) && $(VIVADO) -mode batch \
+		-source check_project.tcl \
+		-log vivado_check.log \
+		-journal vivado_check.jou
+
+vivado-clean:
+	@echo "Removing generated Vivado project and XSA..."
+	@rm -rf $(SYN_HIL)/ebaz4205 $(SYN_HIL)/ebaz4205.xsa
 
 ## Stub vs IP direct comparison — both architectures side-by-side (requires vivado-project first)
 sim-dsp-compare:
@@ -329,8 +360,8 @@ sim-clarke:
 	@echo "Results → $(SYN_HIL)/vivado_clarke.log"
 	@grep -E "PASS|FAIL|ERROR|Waveform ready" $(SYN_HIL)/vivado_clarke.log || true
 
-## Synthesize + implement + export XSA (requires vivado-project first)
-synth:
+## Synthesize + implement + export XSA from a freshly generated canonical project.
+synth: vivado-project
 	@echo ""
 	@echo "╔══════════════════════════════════════════════╗"
 	@echo "║  Synthesis + Implementation + XSA Export     ║"
@@ -345,7 +376,6 @@ synth:
 		-journal vivado_impl.jou
 	@echo ""
 	@grep -E "XSA exportado|ERROR|WARNING.*critical" $(SYN_HIL)/vivado_impl.log || true
-	@$(MAKE) bit-to-bin
 
 ## Flash SD card with pre-built images (usage: make flash SD=/dev/sdX)
 flash:
@@ -762,13 +792,18 @@ wave-top: sim-top
 # =============================================================================
 # Clean
 # =============================================================================
-.PHONY: clean
+.PHONY: clean distclean
 clean: cocotb-clean
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@rm -f *.cf *.o
 	@rm -f src/tb/waves_*.ghw
+	@$(MAKE) -C $(PS_APP_DIR) clean
+	@rm -f $(HIL_GO_DIR)/gateway
 	@echo "Done."
+
+distclean: clean vivado-clean
+	@rm -rf $(HIL_GO_DIR)/frontend/node_modules
 
 # =============================================================================
 # Help
@@ -809,7 +844,7 @@ help:
 	@echo "║    make hil-go-clean   Remove build artifacts          ║"
 	@echo "║                                                         ║"
 	@echo "║  Vivado / Synthesis (EBAZ4205):                         ║"
-	@echo "║    make vivado-project  Create ebaz4205.xpr             ║"
+	@echo "║    make vivado-check    Recreate and validate canonical BD             ║"
 	@echo "║    make synth           Synth + impl + export XSA       ║"
 	@echo "║    make sim-dsp-compare DSP stub vs IP (xsim)           ║"
 	@echo "║    make sim-bsu-compare BSU full-solver stub vs IP      ║"
@@ -829,9 +864,13 @@ help:
 	@echo "║    make ps-deploy IP=x  Build + SCP to board            ║"
 	@echo "║    make ps-clean        Remove PS app binary            ║"
 	@echo "║                                                         ║"
-	@echo "║  Build:                                                 ║"
+	@echo "║  Reproducible build:                                    ║"
+	@echo "║    make               RTL + Go + frontend + PS native  ║"
+	@echo "║    make all-hardware  Host checks + Vivado + ARM       ║"
+	@echo "║    make vivado-check  Recreate and validate BD         ║"
 	@echo "║    make compile       Analyze all VHDL sources          ║"
-	@echo "║    make clean         Remove all build artifacts        ║"
+	@echo "║    make clean         Remove generated build outputs   ║"
+	@echo "║    make distclean     Also remove Vivado and node_modules ║"
 	@echo "║    make help          Show this message                 ║"
 	@echo "║                                                         ║"
 	@echo "╚══════════════════════════════════════════════════════════╝"

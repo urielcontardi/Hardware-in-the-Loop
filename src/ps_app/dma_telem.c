@@ -121,6 +121,9 @@ static void decode_frame(const uint8_t *f, dma_sample_t *s)
 
         *dst[k] = (float)sv * DMA_SCALE;
     }
+
+    s->t_cycles = (uint32_t)((w[3] >> 18) & 0xFFFFFFFFu);
+    s->epoch = (uint16_t)((w[3] >> 50) & 0x3FFFu);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────────── */

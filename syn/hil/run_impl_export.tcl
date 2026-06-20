@@ -15,6 +15,10 @@ set_param general.maxThreads 4
 
 open_project $proj_file
 
+# Validate the generated block design before producing any checkpoints.
+source [file join [file dirname [info script]] bd_preflight.tcl]
+hil_bd_preflight
+
 # Ensure the legacy IIRFilter is in the project sources (idempotent). The active
 # anti-alias filter (2nd-order Butterworth) is inlined in HIL_AXI_Top, so there
 # is no separate filter sub-module to add here.

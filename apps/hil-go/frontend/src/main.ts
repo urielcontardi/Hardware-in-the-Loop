@@ -299,8 +299,9 @@ let lastBoardState: string = "idle";
 let lastSampleAt = 0;             // ms — for stream stalled detection
 let telemLastRawCycles: number | null = null;
 let telemWrapOffsetCycles = 0;
+let telemBaseAbsCycles: number | null = null;
 let telemEpoch: number | null = null;
-let lastTelemPlotTime = 0;        // enforces strict monotonicity in tBuf
+let lastTelemPlotTime = -Infinity; // enforces strict monotonicity in tBuf
 let pwmClockHz = 100_000_000;
 let pwmEpoch: number | null = null;
 let pwmActive = false;
@@ -676,6 +677,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
 
           <div class="subplot-layout-row">
+            <span class="subplot-layout-label">Signal</span>
+            <div class="subplot-n-group" id="render-group">
+              <button class="subplot-n-btn active" data-render="trend" title="Centerline view for readable long windows; raw capture is unchanged">Trend</button>
+              <button class="subplot-n-btn" data-render="raw" title="Show min/max envelope from the 100 ksample/s stream">Raw</button>
+            </div>
+          </div>
+
+          <div class="subplot-layout-row">
             <span class="subplot-layout-label">Subplots</span>
             <div class="subplot-n-group">
               <button class="subplot-n-btn" data-n="1">1</button>
@@ -813,6 +822,8 @@ const PLOT_TO_SERIES: Record<string, number> = {
 const RPM_PER_RAD_S = 60 / (2 * Math.PI);
 let latestSeries: SeriesColumns | null = null;
 let seriesActive = false;
+type RenderMode = "trend" | "raw";
+let renderMode: RenderMode = "trend";
 
 const seriesViewport = new ViewportController(async (from, to, width) => {
   try {
@@ -827,20 +838,26 @@ const seriesViewport = new ViewportController(async (from, to, width) => {
   }
 }, 60);
 seriesViewport.onData = (c) => {
-  if (c.t.length > 0) { latestSeries = c; seriesActive = true; scheduleRender(); }
+  latestSeries = c;
+  seriesActive = c.t.length > 0;
+  scheduleRender();
 };
 
 // Convert a min/max envelope into AlignedData aligned to the live CHANNELS order.
-// Two x points per column (min then max) draw the envelope as vertical strokes,
-// matching the existing single-series-per-channel render (no triangle collapse).
+// Raw mode draws min/max vertical strokes. Trend mode draws the centerline of
+// each full-rate bucket so long windows remain readable without changing the
+// acquisition path or the recorded .hilbin data.
 function seriesToProjected(cols: SeriesColumns): { xs: number[]; ys: number[][] } {
   const n = cols.t.length;
-  const xs: number[] = new Array(n * 2);
-  const ys: number[][] = CHANNELS.map(() => new Array<number>(n * 2));
+  const rawEnvelope = renderMode === "raw";
+  const pointsPerCol = rawEnvelope ? 2 : 1;
+  const xs: number[] = new Array(n * pointsPerCol);
+  const ys: number[][] = CHANNELS.map(() => new Array<number>(n * pointsPerCol));
   const tl = Number(elTorque.value) || 0;
   for (let i = 0; i < n; i++) {
-    xs[i * 2] = cols.t[i];
-    xs[i * 2 + 1] = cols.t[i];
+    const base = i * pointsPerCol;
+    xs[base] = cols.t[i];
+    if (rawEnvelope) xs[base + 1] = cols.t[i];
     for (let k = 0; k < CHANNELS.length; k++) {
       const si = PLOT_TO_SERIES[CHANNELS[k].name];
       let mn: number, mx: number;
@@ -849,10 +866,22 @@ function seriesToProjected(cols: SeriesColumns): { xs: number[]; ys: number[][] 
         mn = v; mx = v;
       } else {
         mn = cols.min[si][i]; mx = cols.max[si][i];
-        if (CHANNELS[k].name === "Speed") { mn *= RPM_PER_RAD_S; mx *= RPM_PER_RAD_S; }
+        let mean = cols.mean[si]?.[i] ?? (mn + mx) / 2;
+        if (CHANNELS[k].name === "Speed") { mn *= RPM_PER_RAD_S; mx *= RPM_PER_RAD_S; mean *= RPM_PER_RAD_S; }
+        if (rawEnvelope) {
+          ys[k][base] = mn;
+          if (rawEnvelope) ys[k][base + 1] = mx;
+        } else {
+          ys[k][base] = mean;
+        }
+        continue;
       }
-      ys[k][i * 2] = mn;
-      ys[k][i * 2 + 1] = mx;
+      if (rawEnvelope) {
+        ys[k][base] = mn;
+        ys[k][base + 1] = mx;
+      } else {
+        ys[k][base] = (mn + mx) / 2;
+      }
     }
   }
   return { xs, ys };
@@ -863,8 +892,10 @@ function seriesToProjected(cols: SeriesColumns): { xs: number[]; ys: number[][] 
 // via the existing /api/raw tail poll; only the abc channel set is wired.
 setInterval(() => {
   if (plots.length === 0 || displayMode !== "abc") return;
+  const hiResStart = tBuf.length > 0 ? tBuf[0] : Infinity;
   const viewEnd = viewEndSec;
-  const viewStart = viewEnd - windowSec;
+  const viewStart = Math.max(0, viewEnd - windowSec);
+  if (!paused || viewStart >= hiResStart) return;
   const w = elPlotArea.clientWidth || 800;
   seriesViewport.request(viewStart, viewEnd, Math.max(600, w * 2));
 }, 100);
@@ -1360,6 +1391,17 @@ document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-mode]").forEac
   btn.addEventListener("click", () => setDisplayMode(btn.dataset.mode as "ab" | "abc"));
 });
 
+// ── Trend/raw plot rendering toggle ─────────────────────────────────────────
+document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-render]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    renderMode = btn.dataset.render === "raw" ? "raw" : "trend";
+    document.querySelectorAll<HTMLButtonElement>(".subplot-n-btn[data-render]").forEach(b => {
+      b.classList.toggle("active", b === btn);
+    });
+    scheduleRender();
+  });
+});
+
 // ── Channel list ──────────────────────────────────────────────────────────────
 let valSpans: HTMLSpanElement[]     = [];
 let subplotBadges: HTMLButtonElement[] = [];
@@ -1501,16 +1543,22 @@ function getSessionSec(): number {
   return 0;
 }
 
-function clampViewEndToTimeZero(endSec = viewEndSec): number {
-  return Math.max(windowSec, endSec);
-}
-
-function latestTimelineSec(): number {
+function latestDataSec(): number {
   const latestTelem = tBuf.length ? tBuf[tBuf.length - 1] : 0;
   const latestOverview = ovTBuf.length ? ovTBuf[ovTBuf.length - 1] : 0;
   const latestPwmOverview = pwmOverviewT.length ? pwmOverviewT[pwmOverviewT.length - 1] : 0;
   const latestPwm = pwmEvents.length ? pwmTime(pwmEvents[pwmEvents.length - 1]) : 0;
-  return Math.max(WINDOW_MIN_SEC, latestTelem, latestOverview, latestPwmOverview, latestPwm, viewEndSec, windowSec);
+  return Math.max(latestTelem, latestOverview, latestPwmOverview, latestPwm);
+}
+
+function latestTimelineSec(): number {
+  return Math.max(WINDOW_MIN_SEC, latestDataSec());
+}
+
+function clampViewEndToTimeZero(endSec = viewEndSec): number {
+  const total = latestTimelineSec();
+  const minEnd = Math.min(windowSec, total);
+  return clamp(endSec, minEnd, total);
 }
 
 function formatTimelineSec(t: number): string {
@@ -1580,19 +1628,18 @@ function attachTimelineNavigation() {
     if (e.target !== elTimelineTrack) return;
     freezeTimelineView();
     const center = timelineTimeAtClientX(e.clientX);
-    const total = latestTimelineSec();
-    viewEndSec = clamp(center + windowSec / 2, windowSec, total);
+    viewEndSec = clampViewEndToTimeZero(center + windowSec / 2);
     updateWindowButtons();
     scheduleRender();
   });
 
   elTimelineTrack.addEventListener("pointermove", e => {
     if (!dragMode) return;
-    const total = latestTimelineSec();
     if (dragMode === "window") {
       const rect = elTimelineTrack.getBoundingClientRect();
+      const total = latestTimelineSec();
       const delta = (e.clientX - dragStartX) / Math.max(1, rect.width) * total;
-      viewEndSec = clamp(dragStartEnd + delta, windowSec, total);
+      viewEndSec = clampViewEndToTimeZero(dragStartEnd + delta);
       scheduleRender();
       return;
     }
@@ -1788,7 +1835,7 @@ function attachPlotNavigation(wrap: HTMLElement) {
 
     const plotRect = (wrap.querySelector(".u-over") as HTMLElement | null)?.getBoundingClientRect() ?? wrap.getBoundingClientRect();
     const mouseRatio = clamp((e.clientX - plotRect.left) / Math.max(1, plotRect.width), 0, 1);
-    const timeCursor = (viewEndSec - windowSec) + mouseRatio * windowSec;
+    const timeCursor = Math.max(0, viewEndSec - windowSec) + mouseRatio * Math.min(windowSec, Math.max(WINDOW_MIN_SEC, viewEndSec));
     windowSec = next;
     viewEndSec = clampViewEndToTimeZero(timeCursor + (1 - mouseRatio) * next);
     updateWindowButtons();
@@ -1813,7 +1860,7 @@ function attachPlotNavigation(wrap: HTMLElement) {
     if (dragStartX == null) return;
     const dx = e.clientX - dragStartX;
     const plotRect = (wrap.querySelector(".u-over") as HTMLElement | null)?.getBoundingClientRect() ?? wrap.getBoundingClientRect();
-    const pxPerSec = plotRect.width / windowSec;
+    const pxPerSec = plotRect.width / Math.max(WINDOW_MIN_SEC, Math.min(windowSec, Math.max(WINDOW_MIN_SEC, viewEndSec)));
     viewEndSec = clampViewEndToTimeZero(dragStartViewEnd - dx / pxPerSec);
     scheduleRender();
   };
@@ -2010,11 +2057,12 @@ new ResizeObserver(() => {
 requestAnimationFrame(() => buildPlots());
 
 function npcLevel(state: number): number | null {
-  // NPC gate-state encoding from RTL: 0011=+Vdc/2, 0110=0, 1100=-Vdc/2.
-  // Other short-lived codes are deadtime/transient gate combinations; plotting
-  // them as zero creates false PWM pulses, so the renderer holds last valid.
+  // NPC gate-state encoding from RTL. Dead-time states are plotted as half
+  // levels, matching the solver-side gate-to-voltage approximation.
   if (state === 0b0011) return 1;
+  if (state === 0b0010) return 0.5;
   if (state === 0b0110) return 0;
+  if (state === 0b0100) return -0.5;
   if (state === 0b1100) return -1;
   return null;
 }
@@ -2229,7 +2277,7 @@ function clearTelemBuffers() {
   ovSBuf.length = 0;
   ovCounter = 0;
   resetOverviewBucket();
-  lastTelemPlotTime = 0;
+  lastTelemPlotTime = -Infinity;
   sampleCount = 0;
 }
 
@@ -2249,11 +2297,13 @@ function scheduleRender() {
     }
     viewEndSec = clampViewEndToTimeZero();
     const viewEnd   = viewEndSec;
-    const viewStart = viewEnd - windowSec;
+    const viewStart = Math.max(0, viewEnd - windowSec);
 
     const w = elPlotArea.clientWidth || 800;
     const maxPts = Math.max(600, w * 2);
-    const useSeries = seriesActive && displayMode === "abc"
+    const hiResStart = tBuf.length > 0 ? tBuf[0] : Infinity;
+    const needHistoricalSeries = paused && viewStart < hiResStart;
+    const useSeries = needHistoricalSeries && seriesActive && displayMode === "abc"
       && latestSeries != null && latestSeries.t.length > 0;
     const { xs, ys } = useSeries
       ? seriesToProjected(latestSeries!)
@@ -2307,20 +2357,22 @@ function ingestTelemetry(samples: Sample[]) {
       // old frozen-counter data at end-of-previous-run doesn't linger.
       clearTelemBuffers();
       telemWrapOffsetCycles = 0;
+      telemBaseAbsCycles = null;
       telemLastRawCycles = null;
     } else if (telemLastRawCycles !== null && raw < telemLastRawCycles
                && telemLastRawCycles - raw > 0x80000000) {
       telemWrapOffsetCycles += PWM_COUNTER_MOD;  // 32-bit wrap
+    } else if (telemLastRawCycles !== null && raw <= telemLastRawCycles) {
+      continue;
     }
+    const absCycles = telemWrapOffsetCycles + raw;
+    if (telemBaseAbsCycles === null) telemBaseAbsCycles = absCycles;
     telemEpoch          = epoch;
     telemLastRawCycles  = raw;
 
-    let hwSec = (telemWrapOffsetCycles + raw) / HW_CLOCK_HZ;
+    let hwSec = (absCycles - telemBaseAbsCycles) / HW_CLOCK_HZ;
 
-    // Enforce strict monotonicity: when the solver is idle the counter
-    // freezes, producing duplicate t_cycles. Nudge forward by one nominal
-    // period so the min/max decimator always gets ordered, even buckets.
-    if (hwSec <= lastTelemPlotTime) hwSec = lastTelemPlotTime + TELEM_NOMINAL_PERIOD_S;
+    if (hwSec < 0 || hwSec <= lastTelemPlotTime) continue;
     lastTelemPlotTime = hwSec;
 
     const sampleTime = hwSec;
@@ -2361,6 +2413,7 @@ let rawCursor = 0;
 let rawTransportHealthy = true;
 let rawEverWorked = false;
 let reducedFallbackUsed = false;
+let streamGeneration = 0;
 
 api.onTelemetry((samples: Sample[]) => {
   if (!rawTransportHealthy && !rawEverWorked) {
@@ -2370,6 +2423,7 @@ api.onTelemetry((samples: Sample[]) => {
 });
 
 async function pollRawTelemetry() {
+  const generation = streamGeneration;
   try {
     const requestedCursor = rawCursor;
     let data: ArrayBuffer;
@@ -2384,8 +2438,10 @@ async function pollRawTelemetry() {
       if (!response.ok) throw new Error(`raw telemetry HTTP ${response.status}`);
       data = await response.arrayBuffer();
     }
+    if (generation !== streamGeneration) return;
     const view = new DataView(data);
     if (data.byteLength < 12) throw new Error("truncated raw telemetry batch");
+    if (generation !== streamGeneration) return;
     rawCursor = Number(view.getBigUint64(0, true));
     const count = view.getUint32(8, true);
     if (data.byteLength !== 12 + count * 26) throw new Error("invalid raw telemetry batch");
@@ -2467,6 +2523,7 @@ function showConnStatus(text: string, ok: boolean) {
 }
 
 function setStateBadge(state: string) {
+  if (state !== "running") pwmActive = false;
   lastBoardState = state;
   elStateBadge.textContent = state.toUpperCase();
   elStateBadge.className = `state-badge state-${state}`;
@@ -2537,6 +2594,7 @@ async function withButton<T>(btn: HTMLButtonElement, fn: () => Promise<T>): Prom
 function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
   if (!s) return;
   setStateBadge(s.state);
+  if (s.state !== "running" || s.enable !== 1) pwmActive = false;
   applyBoardIP(s.board_ip);
   // Hydrate form fields only when the board is actively running. A telemetry
   // attach can put the daemon in paused with freq=0, and copying that back into
@@ -2566,6 +2624,7 @@ function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
 }
 
 function resetPlotBuffer() {
+  streamGeneration++;
   paused = false;
   viewEndSec = 0;
   pwmViewEndSec = 0;
@@ -2577,9 +2636,16 @@ function resetPlotBuffer() {
   ovCounter = 0;
   resetOverviewBucket();
   sampleCount = 0;
-  lastTelemPlotTime = 0;
+  rawCursor = 0;
+  rawEverWorked = false;
+  rawTransportHealthy = true;
+  reducedFallbackUsed = false;
+  latestSeries = null;
+  seriesActive = false;
+  lastTelemPlotTime = -Infinity;
   telemLastRawCycles = null;
   telemWrapOffsetCycles = 0;
+  telemBaseAbsCycles = null;
   telemEpoch = null;
   pwmEvents.length = 0;
   pwmOverviewT.length = 0;

@@ -51,6 +51,9 @@ func putF32(b []byte, off int, v float32) {
 func (s *Store) Append(t float64, smp frame.Sample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.haveFirst && t <= s.tLast {
+		return
+	}
 	if !s.haveFirst {
 		s.tFirst, s.haveFirst = t, true
 	}

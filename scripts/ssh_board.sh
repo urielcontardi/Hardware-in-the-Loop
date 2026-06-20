@@ -5,7 +5,7 @@
 #   ./scripts/ssh_board.sh
 #   IP=192.168.1.50 ./scripts/ssh_board.sh
 
-BOARD_IP="${IP:-192.168.15.14}"
+BOARD_IP="${IP:-192.168.15.8}"
 BOARD_USER="petalinux"
 BOARD_PASS="1234"
 

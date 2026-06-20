@@ -13,9 +13,10 @@ import (
 
 // Column is one display column: a min/max pair per channel and its time.
 type Column struct {
-	T   float64
-	Min [derive.NumChannels]float64
-	Max [derive.NumChannels]float64
+	T    float64
+	Min  [derive.NumChannels]float64
+	Max  [derive.NumChannels]float64
+	Mean [derive.NumChannels]float64
 }
 
 // ReduceWindow computes derived channels per sample, then emits one Column per
@@ -33,7 +34,7 @@ func ReduceWindow(m derive.Motor, ts []float64, ss []frame.Sample, width int) []
 		out := make([]Column, n)
 		for i := range ss {
 			v := m.Compute(ss[i]).Values()
-			out[i] = Column{T: ts[i], Min: v, Max: v}
+			out[i] = Column{T: ts[i], Min: v, Max: v, Mean: v}
 		}
 		return out
 	}
@@ -51,9 +52,14 @@ func ReduceWindow(m derive.Motor, ts []float64, ss []frame.Sample, width int) []
 		c := Column{T: ts[lo]}
 		first := m.Compute(ss[lo]).Values()
 		c.Min, c.Max = first, first
+		var sum [derive.NumChannels]float64
+		for ch := 0; ch < derive.NumChannels; ch++ {
+			sum[ch] = first[ch]
+		}
 		for i := lo + 1; i < hi; i++ {
 			v := m.Compute(ss[i]).Values()
 			for ch := 0; ch < derive.NumChannels; ch++ {
+				sum[ch] += v[ch]
 				if v[ch] < c.Min[ch] {
 					c.Min[ch] = v[ch]
 				}
@@ -62,6 +68,10 @@ func ReduceWindow(m derive.Motor, ts []float64, ss []frame.Sample, width int) []
 				}
 			}
 		}
+		count := float64(hi - lo)
+		for ch := 0; ch < derive.NumChannels; ch++ {
+			c.Mean[ch] = sum[ch] / count
+		}
 		out = append(out, c)
 	}
 	return out
@@ -69,10 +79,10 @@ func ReduceWindow(m derive.Motor, ts []float64, ss []frame.Sample, width int) []
 
 // Encode serializes columns to the compact binary the front end parses.
 // Wire format (LE): count uint32, nch uint8, then per column: t float32,
-// followed by nch×(min float32, max float32).
+// followed by nch×(min float32, max float32, mean float32).
 func Encode(cols []Column) []byte {
 	const colHdr = 4
-	perCh := 8
+	perCh := 12
 	recSize := colHdr + derive.NumChannels*perCh
 	b := make([]byte, 5+len(cols)*recSize)
 	binary.LittleEndian.PutUint32(b[0:4], uint32(len(cols)))
@@ -84,7 +94,8 @@ func Encode(cols []Column) []byte {
 		for ch := 0; ch < derive.NumChannels; ch++ {
 			binary.LittleEndian.PutUint32(b[off:], math.Float32bits(float32(c.Min[ch])))
 			binary.LittleEndian.PutUint32(b[off+4:], math.Float32bits(float32(c.Max[ch])))
-			off += 8
+			binary.LittleEndian.PutUint32(b[off+8:], math.Float32bits(float32(c.Mean[ch])))
+			off += 12
 		}
 	}
 	return b
