@@ -1026,7 +1026,7 @@ func (s *server) telemetryPump() {
 		if n == 0 {
 			continue
 		}
-		// SSE is a full-rate fallback for when the /api/raw + /api/series
+		// SSE is a full-rate fallback for when the /api/raw + /api/tiles
 		// transport is unavailable; copy out of the reused scratch buffer.
 		batch := append([]frame.Sample(nil), scratch[:n]...)
 		s.subsMu.Lock()
