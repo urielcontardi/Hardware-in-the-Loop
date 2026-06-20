@@ -28,7 +28,6 @@ import (
 	"hil.local/daemon/internal/receiver"
 	"hil.local/daemon/internal/record"
 	"hil.local/daemon/internal/ring"
-	"hil.local/daemon/internal/series"
 	"hil.local/daemon/internal/sessionstore"
 	hiludp "hil.local/daemon/internal/udp"
 )
@@ -219,7 +218,6 @@ func main() {
 	mux.HandleFunc("/api/reset", s.handleReset)
 	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/api/raw", s.handleRaw)
-	mux.HandleFunc("/api/series", s.handleSeries)
 	mux.HandleFunc("/api/tail", s.handleRaw) // tail reuses the cursor transport
 	mux.HandleFunc("/api/runs", s.handleRuns)
 	mux.HandleFunc("/api/runs/", s.handleRunsDownload)
@@ -829,35 +827,6 @@ func (s *server) resetSessionLocked() {
 	s.store = st
 	s.pyramid.Reset()
 	s.clk = sampleClock{}
-}
-
-// handleSeries answers a viewport query: per channel, a faithful min/max
-// envelope (or raw samples when the window is small) over [from,to] at the
-// requested pixel width, with derived channels applied at full rate.
-func (s *server) handleSeries(w http.ResponseWriter, r *http.Request) {
-	from := parseFloat(r.URL.Query().Get("from"), 0)
-	to := parseFloat(r.URL.Query().Get("to"), 0)
-	width, _ := strconv.Atoi(r.URL.Query().Get("width"))
-	if width <= 0 || width > 4000 {
-		width = 1500
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Cache-Control", "no-store")
-
-	s.ingestMu.Lock()
-	st := s.store
-	s.ingestMu.Unlock()
-	if st == nil {
-		_, _ = w.Write(series.Encode(nil))
-		return
-	}
-	if to <= from {
-		_, last := st.Span()
-		to, from = last, last-1
-	}
-	ts, ss := st.ReadWindow(from, to)
-	cols := series.ReduceWindow(s.currentMotor(), ts, ss, width)
-	_, _ = w.Write(series.Encode(cols))
 }
 
 func parseFloat(str string, def float64) float64 {
