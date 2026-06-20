@@ -21,8 +21,7 @@ func TestPushFoldsMinMaxMeanPerTier(t *testing.T) {
 	// One sample in the next T1 bucket.
 	p.Push(0.0012, ch(2))
 
-	t1 := p.Tier(0) // T1 = 1 ms
-	got := t1.Buckets()
+	got := p.TierBuckets(0) // T1 = 1 ms
 	if len(got) != 2 {
 		t.Fatalf("T1 buckets = %d, want 2", len(got))
 	}
@@ -41,8 +40,24 @@ func TestResetClearsAllTiers(t *testing.T) {
 	p := New(10000)
 	p.Push(0.0, ch(1))
 	p.Reset()
-	if len(p.Tier(0).Buckets()) != 0 {
+	if len(p.TierBuckets(0)) != 0 {
 		t.Fatalf("after Reset T1 not empty")
+	}
+}
+
+func TestPushDropsOutOfOrder(t *testing.T) {
+	p := New(10000) // 10 kHz
+	p.Push(0.0000, ch(1))
+	p.Push(0.0010, ch(2))
+	// Out-of-order / stale sample: should be dropped, not folded or appended.
+	p.Push(0.0000, ch(9))
+
+	got := p.TierBuckets(0) // T1 = 1 ms
+	if len(got) != 2 {
+		t.Fatalf("T1 buckets = %d, want 2", len(got))
+	}
+	if got[0].Max[0] != 1 {
+		t.Errorf("bucket0 Max[0] = %v, want 1 (unchanged by dropped sample)", got[0].Max[0])
 	}
 }
 

@@ -33,14 +33,18 @@ type tier struct {
 	have      bool
 }
 
-// Buckets returns the tier's buckets in time order (read-only use).
-func (t *tier) Buckets() []Bucket { return t.cols }
-
 // BucketSec reports the tier resolution in seconds.
 func (t *tier) BucketSec() float64 { return t.bucketSec }
 
+// push folds one sample into the tier. It assumes ts is monotonically
+// non-decreasing across calls; an out-of-order or repeated-but-stale
+// timestamp (idx < t.curIndex) is dropped so the ascending TStart
+// invariant relied on by Pyramid.Tile (sort.Search) is preserved.
 func (t *tier) push(ts float64, v [derive.NumChannels]float64) {
 	idx := int64(ts / t.bucketSec)
+	if t.have && idx < t.curIndex {
+		return // drop out-of-order sample
+	}
 	if !t.have || idx != t.curIndex {
 		t.cols = append(t.cols, Bucket{
 			TStart: float64(idx) * t.bucketSec,
@@ -85,6 +89,8 @@ func New(sampleRateHz float64) *Pyramid {
 
 // Push folds one derived-channel sample into every tier independently. Folding
 // from raw into each tier (rather than cascading) keeps min/max/mean exact.
+// Push assumes t is monotonically non-decreasing across calls; an
+// out-of-order or stale timestamp is silently dropped (see tier.push).
 func (p *Pyramid) Push(t float64, v [derive.NumChannels]float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -98,6 +104,18 @@ func (p *Pyramid) NumTiers() int { return len(p.tiers) }
 
 // Tier returns tier i (0 == finest, T1).
 func (p *Pyramid) Tier(i int) *tier { return p.tiers[i] }
+
+// TierBuckets returns a copy of tier i's buckets under the read lock.
+func (p *Pyramid) TierBuckets(i int) []Bucket {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if i < 0 || i >= len(p.tiers) {
+		return nil
+	}
+	out := make([]Bucket, len(p.tiers[i].cols))
+	copy(out, p.tiers[i].cols)
+	return out
+}
 
 // SampleRateHz reports the configured rate.
 func (p *Pyramid) SampleRateHz() float64 { return p.rateH }

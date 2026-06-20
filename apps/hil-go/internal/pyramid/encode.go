@@ -9,8 +9,9 @@ import (
 
 // EncodeTile serializes a tile to the compact binary the front end parses.
 // Wire format (LE):
-//   header: tier u8, bucketsCount u16, nch u8, bucketSec f32, tStart0 f32
-//   per bucket: tStart f32, then nch×(min f32, max f32, mean f32)
+//
+//	header: tier u8, bucketsCount u16, nch u8, bucketSec f32, tStart0 f32
+//	per bucket: tStart f32, then nch×(min f32, max f32, mean f32)
 func EncodeTile(tier int, bucketSec, tStart0 float64, buckets []Bucket) []byte {
 	const headerBytes = 13 // 1+2+1+4+4
 	const perCh = 12       // min,max,mean
