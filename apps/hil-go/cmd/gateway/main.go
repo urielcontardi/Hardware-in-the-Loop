@@ -22,8 +22,8 @@ import (
 
 	"hil.local/daemon/internal/derive"
 	"hil.local/daemon/internal/frame"
-	"hil.local/daemon/internal/overview"
 	"hil.local/daemon/internal/pwmrecv"
+	"hil.local/daemon/internal/pyramid"
 	"hil.local/daemon/internal/rawbuf"
 	"hil.local/daemon/internal/receiver"
 	"hil.local/daemon/internal/record"
@@ -79,7 +79,7 @@ type server struct {
 	// receiver locks once per UDP burst, not per sample.
 	ingestMu sync.Mutex
 	store    *sessionstore.Store
-	overview *overview.Overview
+	pyramid  *pyramid.Pyramid
 	motor    derive.Motor
 	clk      sampleClock
 }
@@ -158,7 +158,7 @@ func main() {
 	recorder := record.New(runsDir)
 	defer recorder.Close()
 	raw := rawbuf.New(300_000)
-	ov := overview.New(0.050)
+	pyr := pyramid.New(gpioFallbackHz)
 	store, err := sessionstore.Open(filepath.Join(runsDir, "live_session.bin"), 4096)
 	if err != nil {
 		log.Fatalf("session store: %v", err)
@@ -182,7 +182,7 @@ func main() {
 				continue
 			}
 			cur.store.Append(t, smp)
-			cur.overview.Push(t, m.Compute(smp).Values())
+			cur.pyramid.Push(t, m.Compute(smp).Values())
 		}
 		cur.ingestMu.Unlock()
 	})
@@ -197,7 +197,7 @@ func main() {
 		recorder:  recorder,
 		raw:       raw,
 		store:     store,
-		overview:  ov,
+		pyramid:   pyr,
 		motor:     derive.DefaultMotor,
 		lastSet:   make(map[string]hiludp.SetParams),
 		lastMotor: make(map[string]hiludp.MotorParams),
@@ -827,7 +827,7 @@ func (s *server) resetSessionLocked() {
 	}
 	st.SetMaxSamples(180_000_000)
 	s.store = st
-	s.overview.Reset()
+	s.pyramid.Reset()
 	s.clk = sampleClock{}
 }
 
