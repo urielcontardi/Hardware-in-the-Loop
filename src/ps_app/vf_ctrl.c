@@ -4,7 +4,6 @@
 #include <math.h>
 #include <string.h>
 #include <pthread.h>
-#include <signal.h>
 #include <unistd.h>
 
 /* V/F nominal operating point */
@@ -23,6 +22,7 @@
 #define PS_MAX_PHYS    8000.0f                        /* margem de segurança */
 
 static pthread_mutex_t  params_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t  tick_mutex = PTHREAD_MUTEX_INITIALIZER;
 static vf_params_t      params = {
     .freq_hz      = 0.0f,
     .vdc_v        = 1240.0f,   /* V_phase_peak = Vdc/2 = 620 V → matches cocotb/PSIM V_PEAK_NOMINAL */
@@ -74,11 +74,15 @@ void vf_get_params(vf_params_t *p)
 
 float vf_get_freq_actual(void)
 {
-    return f_current;
+    pthread_mutex_lock(&tick_mutex);
+    float value = f_current;
+    pthread_mutex_unlock(&tick_mutex);
+    return value;
 }
 
 void vf_tick(void)
 {
+    pthread_mutex_lock(&tick_mutex);
     vf_params_t p;
     pthread_mutex_lock(&params_mutex);
     p = params;
@@ -88,6 +92,7 @@ void vf_tick(void)
         f_current = 0.0f;
         gpio_set_vref(0, 0, 0);
         gpio_set_pwm_ctrl(0, 0, 0, (uint32_t)p.decim);
+        pthread_mutex_unlock(&tick_mutex);
         return;
     }
 
@@ -126,14 +131,15 @@ void vf_tick(void)
     gpio_set_vdc_torque(vdc_q18_14, torque_q18_14);
     gpio_set_vref(va, vb, vc);
     gpio_set_pwm_ctrl(1, 0, 0, (uint32_t)p.decim);
+    pthread_mutex_unlock(&tick_mutex);
 }
 
 /*
  * vf_reset_solver
  *  Pulsa o bit solver_reset do pwm_ctrl para zerar os estados integradores
- *  do TIM_Solver (Iα/β, Φα/β, ω). Bloqueia SIGRTMIN durante o pulso para
- *  evitar que o vf_tick (que também escreve pwm_ctrl) limpe o bit antes do
- *  reset se propagar. A duração de 2 ms é >> que o período do solver (27
+ *  do TIM_Solver (Iα/β, Φα/β, ω). Serializa com vf_tick para impedir que uma
+ *  atualização da portadora limpe o bit durante o pulso. A duração de 2 ms é
+ *  >> que o período do solver (27
  *  ciclos @100 MHz ≈ 270 ns).
  *
  *  Pré-condição implícita: o chamador já zerou o enable em vf_params (ou
@@ -141,10 +147,7 @@ void vf_tick(void)
  */
 void vf_reset_solver(void)
 {
-    sigset_t mask, oldmask;
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGRTMIN);
-    pthread_sigmask(SIG_BLOCK, &mask, &oldmask);
+    pthread_mutex_lock(&tick_mutex);
 
     vf_params_t p;
     pthread_mutex_lock(&params_mutex);
@@ -161,6 +164,5 @@ void vf_reset_solver(void)
 
     theta     = 0.0f;
     f_current = 0.0f;
-
-    pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+    pthread_mutex_unlock(&tick_mutex);
 }

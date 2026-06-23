@@ -120,6 +120,9 @@ architecture rtl of HIL_Regs_AXI is
     signal reg_va_ref      : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_vb_ref      : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_vc_ref      : std_logic_vector(31 downto 0) := (others => '0');
+    signal shadow_va_ref   : std_logic_vector(31 downto 0) := (others => '0');
+    signal shadow_vb_ref   : std_logic_vector(31 downto 0) := (others => '0');
+    signal shadow_vc_ref   : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_pwm_ctrl    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_vdc_word    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_torque_word : std_logic_vector(31 downto 0) := (others => '0');
@@ -192,6 +195,9 @@ begin
                 reg_va_ref      <= (others => '0');
                 reg_vb_ref      <= (others => '0');
                 reg_vc_ref      <= (others => '0');
+                shadow_va_ref   <= (others => '0');
+                shadow_vb_ref   <= (others => '0');
+                shadow_vc_ref   <= (others => '0');
                 reg_pwm_ctrl    <= (others => '0');
                 reg_vdc_word    <= (others => '0');
                 reg_torque_word <= (others => '0');
@@ -232,10 +238,17 @@ begin
                 if awready = '1' and S_AXI_AWVALID = '1' and
                    wready  = '1' and S_AXI_WVALID  = '1' then
                     case to_integer(unsigned(aw_addr(7 downto 2))) is
-                        when 0  => reg_va_ref      <= S_AXI_WDATA;
-                        when 1  => reg_vb_ref      <= S_AXI_WDATA;
-                        when 2  => reg_vc_ref      <= S_AXI_WDATA;
-                        when 3  => reg_pwm_ctrl    <= S_AXI_WDATA;
+                        -- Stage the three phases independently. pwm_ctrl is
+                        -- written last by gpio_set_pwm_ctrl and atomically
+                        -- commits the complete triplet to the modulator.
+                        when 0  => shadow_va_ref   <= S_AXI_WDATA;
+                        when 1  => shadow_vb_ref   <= S_AXI_WDATA;
+                        when 2  => shadow_vc_ref   <= S_AXI_WDATA;
+                        when 3  =>
+                            reg_va_ref   <= shadow_va_ref;
+                            reg_vb_ref   <= shadow_vb_ref;
+                            reg_vc_ref   <= shadow_vc_ref;
+                            reg_pwm_ctrl <= S_AXI_WDATA;
                         when 4  => reg_vdc_word    <= S_AXI_WDATA;
                         when 5  => reg_torque_word <= S_AXI_WDATA;
                         when 12 => reg_coeff_addr  <= S_AXI_WDATA;
@@ -281,9 +294,9 @@ begin
                 if arready = '0' and S_AXI_ARVALID = '1' then
                     arready <= '1';
                     case to_integer(unsigned(S_AXI_ARADDR(7 downto 2))) is
-                        when 0  => rdata <= reg_va_ref;
-                        when 1  => rdata <= reg_vb_ref;
-                        when 2  => rdata <= reg_vc_ref;
+                        when 0  => rdata <= shadow_va_ref;
+                        when 1  => rdata <= shadow_vb_ref;
+                        when 2  => rdata <= shadow_vc_ref;
                         when 3  => rdata <= reg_pwm_ctrl;
                         when 4  => rdata <= reg_vdc_word;
                         when 5  => rdata <= reg_torque_word;

@@ -73,15 +73,26 @@ static char                  telem_dst_ip[INET_ADDRSTRLEN] = {0};
 
 static int program_motor_coeffs(const motor_params_t *m);
 
-/* ── V/F reference timer (vf_tick @ VF_TICK_HZ) ──────────────────────────── */
+/* ── V/F reference clock on a dedicated thread ──────────────────────────── */
+static pthread_t vf_clock_tid;
+static volatile int vf_clock_active = 0;
 
-static void timer_handler(int sig, siginfo_t *si, void *uc)
+static void *vf_clock_thread(void *arg)
 {
-    (void)sig; (void)si; (void)uc;
-    vf_tick();
+    (void)arg;
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    while (running && vf_clock_active) {
+        next.tv_nsec += 1000000000L / VF_TICK_HZ;
+        if (next.tv_nsec >= 1000000000L) {
+            next.tv_sec++;
+            next.tv_nsec -= 1000000000L;
+        }
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        if (vf_clock_active) vf_tick();
+    }
+    return NULL;
 }
-
-static timer_t g_timerid;
 
 static void set_udp_reuse(int sock)
 {
@@ -98,36 +109,22 @@ static void set_udp_reuse(int sock)
 
 static int setup_vf_timer(void)
 {
-    struct sigaction sa = {
-        .sa_sigaction = timer_handler,
-        .sa_flags     = SA_SIGINFO,
-    };
-    sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGRTMIN, &sa, NULL) < 0) { perror("sigaction"); return -1; }
-
-    struct sigevent sev = {
-        .sigev_notify = SIGEV_SIGNAL,
-        .sigev_signo  = SIGRTMIN,
-    };
-    if (timer_create(CLOCK_MONOTONIC, &sev, &g_timerid) < 0) {
-        perror("timer_create"); return -1;
-    }
-
-    struct itimerspec its = {
-        .it_value    = { .tv_sec = 0, .tv_nsec = 1000000000L / VF_TICK_HZ },
-        .it_interval = { .tv_sec = 0, .tv_nsec = 1000000000L / VF_TICK_HZ },
-    };
-    if (timer_settime(g_timerid, 0, &its, NULL) < 0) {
-        perror("timer_settime"); return -1;
+    /* Release any clear/reset state left by boot or test_fpga. */
+    vf_tick();
+    vf_clock_active = 1;
+    if (pthread_create(&vf_clock_tid, NULL, vf_clock_thread, NULL) != 0) {
+        vf_clock_active = 0;
+        perror("pthread_create vf_clock");
+        return -1;
     }
     return 0;
 }
 
 static void cancel_timer(void)
 {
-    struct itimerspec zero = {0};
-    timer_settime(g_timerid, 0, &zero, NULL);
-    timer_delete(g_timerid);
+    if (!vf_clock_active) return;
+    vf_clock_active = 0;
+    pthread_join(vf_clock_tid, NULL);
 }
 
 /* ── Telemetry thread — reads solver monitors, pushes UDP bursts ────────── */
