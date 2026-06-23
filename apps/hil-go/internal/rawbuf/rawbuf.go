@@ -74,6 +74,15 @@ func (b *Buffer) Since(cursor uint64, limit int) Batch {
 	return Batch{Cursor: end, Samples: out}
 }
 
+// Tail returns a cursor positioned after the newest retained sample. Clients
+// that only need live data use this to avoid replaying the whole ring when a
+// page is opened in the middle of a run.
+func (b *Buffer) Tail() uint64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.next
+}
+
 func (b *Buffer) Reset() {
 	b.mu.Lock()
 	b.base, b.next = 0, 0

@@ -41,3 +41,25 @@ func TestHandleRawWritesCompactIncrementalBatch(t *testing.T) {
 		t.Fatalf("Ia=%g", ia)
 	}
 }
+
+func TestHandleRawLatestStartsAtLiveTail(t *testing.T) {
+	raw := rawbuf.New(8)
+	raw.Append([]frame.Sample{{TCycles: 1}, {TCycles: 2}, {TCycles: 3}})
+	s := &server{raw: raw}
+
+	first := httptest.NewRecorder()
+	s.handleRaw(first, httptest.NewRequest("GET", "/api/raw?cursor=latest&limit=20", nil))
+	if cursor := binary.LittleEndian.Uint64(first.Body.Bytes()[:8]); cursor != 3 {
+		t.Fatalf("tail cursor=%d want 3", cursor)
+	}
+	if count := binary.LittleEndian.Uint32(first.Body.Bytes()[8:12]); count != 0 {
+		t.Fatalf("tail replayed %d old samples", count)
+	}
+
+	raw.Append([]frame.Sample{{TCycles: 4}})
+	next := httptest.NewRecorder()
+	s.handleRaw(next, httptest.NewRequest("GET", "/api/raw?cursor=3&limit=20", nil))
+	if count := binary.LittleEndian.Uint32(next.Body.Bytes()[8:12]); count != 1 {
+		t.Fatalf("live count=%d want 1", count)
+	}
+}

@@ -76,11 +76,13 @@ type server struct {
 	// ingest state: written by the single receiver goroutine and swapped by
 	// HTTP handlers (resetSession/setMotor). ingestMu guards all of it; the
 	// receiver locks once per UDP burst, not per sample.
-	ingestMu sync.Mutex
-	store    *sessionstore.Store
-	pyramid  *pyramid.Pyramid
-	motor    derive.Motor
-	clk      sampleClock
+	ingestMu  sync.Mutex
+	store     *sessionstore.Store
+	pyramid   *pyramid.Pyramid
+	motor     derive.Motor
+	clk       sampleClock
+	loadNm    float64
+	loadSteps []loadStep
 }
 
 // srvRef lets the SetSampleHandler closure (installed before the server value
@@ -198,6 +200,7 @@ func main() {
 		store:     store,
 		pyramid:   pyr,
 		motor:     derive.DefaultMotor,
+		loadSteps: []loadStep{{T: 0, Value: 0}},
 		lastSet:   make(map[string]hiludp.SetParams),
 		lastMotor: make(map[string]hiludp.MotorParams),
 	}
@@ -219,6 +222,9 @@ func main() {
 	mux.HandleFunc("/api/stats", s.handleStats)
 	mux.HandleFunc("/api/raw", s.handleRaw)
 	mux.HandleFunc("/api/tail", s.handleRaw) // tail reuses the cursor transport
+	mux.HandleFunc("/api/window", s.handleWindow)
+	mux.HandleFunc("/api/view", s.handleView)
+	mux.HandleFunc("/api/load-steps", s.handleLoadSteps)
 	mux.HandleFunc("/api/tiers", s.handleTiers)
 	mux.HandleFunc("/api/tiles", s.handleTiles)
 	mux.HandleFunc("/api/runs", s.handleRuns)
@@ -237,9 +243,11 @@ func main() {
 				time.Sleep(2 * time.Second) // let the receiver start
 				decim := transportDecim
 				sampleHz := uint32(gpioFallbackHz)
-				if _, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP}); err != nil {
+				status, err := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP})
+				if err != nil {
 					log.Printf("auto-attach to %s failed: %v", ip, err)
 				} else {
+					s.recordLoadCommand(float64(status.TorqueNm))
 					log.Printf("auto-attached telemetry to %s", ip)
 				}
 			}()
@@ -367,6 +375,7 @@ type tierMeta struct {
 
 type tiersMeta struct {
 	SampleRateHz   float64    `json:"sampleRateHz"`
+	SampleCount    int64      `json:"sampleCount"`
 	BucketsPerTile int        `json:"bucketsPerTile"`
 	TFirst         float64    `json:"tFirst"`
 	TLast          float64    `json:"tLast"`
@@ -390,6 +399,7 @@ func (s *server) handleTiers(w http.ResponseWriter, r *http.Request) {
 	}
 	if st != nil {
 		meta.TFirst, meta.TLast = st.Span()
+		meta.SampleCount = st.Count()
 	} else if bs := p.TierBuckets(0); len(bs) > 0 {
 		// No session store wired up (e.g. unit tests exercising the pyramid
 		// directly): fall back to the finest tier's own last bucket so callers
@@ -742,6 +752,9 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 	s.stateMu.Lock()
 	s.lastSet[ip] = p
 	s.stateMu.Unlock()
+	if p.TorqueNm != nil {
+		s.recordLoadCommand(float64(*p.TorqueNm))
+	}
 	if req.AttachUDP {
 		s.recv.Punch(ip, telemetryPort)
 		s.pwmRecv.Punch(ip, pwmEventsPort)
@@ -892,6 +905,7 @@ func (s *server) resetSessionLocked() {
 	s.store = st
 	s.pyramid.Reset()
 	s.clk = sampleClock{}
+	s.loadSteps = []loadStep{{T: 0, Value: s.loadNm}}
 }
 
 func parseFloat(str string, def float64) float64 {
@@ -902,7 +916,13 @@ func parseFloat(str string, def float64) float64 {
 }
 
 func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
-	cursor, _ := strconv.ParseUint(r.URL.Query().Get("cursor"), 10, 64)
+	cursorText := r.URL.Query().Get("cursor")
+	var cursor uint64
+	if cursorText == "latest" {
+		cursor = s.raw.Tail()
+	} else {
+		cursor, _ = strconv.ParseUint(cursorText, 10, 64)
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 || limit > 20_000 {
 		limit = 20_000
@@ -1108,17 +1128,9 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.unsubscribe(ch)
 
 	var pwmSeq uint32
+	// Follow the live tail. Replaying the complete retained PWM history here can
+	// enqueue hundreds of thousands of JSON events before the first UI frame.
 	base, replay, clockHz, status := s.pwmSnapshot()
-	for off := 0; off < len(replay); off += pwmSSEBatchEvents {
-		end := off + pwmSSEBatchEvents
-		if end > len(replay) {
-			end = len(replay)
-		}
-		if err := writePWMBatch(w, pwmSeq, clockHz, status, replay[off:end]); err != nil {
-			return
-		}
-		pwmSeq++
-	}
 	pwmCursor := base + uint64(len(replay))
 	flusher.Flush()
 
@@ -1200,6 +1212,7 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		source := strings.TrimSpace(r.URL.Query().Get("source"))
 		if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
 			writeError(w, http.StatusBadRequest, errors.New("invalid or missing name parameter"))
 			return
@@ -1208,13 +1221,17 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			name += ".hilbin"
 		}
 		path := filepath.Join(s.runsDir, filepath.Base(name))
-		if copied, copyErr := s.recorder.CopyLatest(path); copyErr != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("copy raw capture: %w", copyErr))
-			return
-		} else if copied {
-			fi, _ := os.Stat(path)
-			writeJSON(w, http.StatusOK, RunMeta{Name: name, Size: fi.Size(), Modified: fi.ModTime().UTC().Format(time.RFC3339)})
-			return
+		if source != "display" && s.recorder != nil {
+			copied, copyErr := s.recorder.CopyLatest(path)
+			if copyErr != nil {
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("copy raw capture: %w", copyErr))
+				return
+			}
+			if copied {
+				fi, _ := os.Stat(path)
+				writeJSON(w, http.StatusOK, RunMeta{Name: name, Size: fi.Size(), Modified: fi.ModTime().UTC().Format(time.RFC3339)})
+				return
+			}
 		}
 		data, err := io.ReadAll(io.LimitReader(r.Body, 512<<20))
 		if err != nil {

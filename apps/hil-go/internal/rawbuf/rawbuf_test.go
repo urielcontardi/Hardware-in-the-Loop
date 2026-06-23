@@ -38,3 +38,11 @@ func TestResetAcceptsStaleClientCursor(t *testing.T) {
 		t.Fatalf("reset batch: %#v", got)
 	}
 }
+
+func TestTailSkipsRetainedHistory(t *testing.T) {
+	b := New(4)
+	b.Append([]frame.Sample{{TCycles: 1}, {TCycles: 2}, {TCycles: 3}})
+	if got := b.Since(b.Tail(), 10); got.Cursor != 3 || len(got.Samples) != 0 {
+		t.Fatalf("tail batch: %#v", got)
+	}
+}
