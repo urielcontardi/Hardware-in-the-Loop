@@ -3,9 +3,11 @@ import "./styles.css";
 import uPlot from "uplot";
 import * as WailsRuntime from "../wailsjs/runtime/runtime";
 import * as WailsApp from "../wailsjs/go/main/App";
-import { ViewportController, selectTier, indicesForWindow, type TierMeta } from "./viewport";
-import { TileCache, type FetchedTile } from "./tilecache";
-import { type TileData } from "./tile";
+import { ViewportController, attachStartsPlotSession, viewportIntersects } from "./viewport";
+import { decodeTile, type TileData } from "./tile";
+import { secondsFromTelemetryOrigin } from "./timeline";
+import { recordStep, stepValueAt, type StepPoint } from "./stepseries";
+import { RenderScheduler } from "./renderscheduler";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Sample = { t_cycles?: number; epoch?: number; Ia: number; Ib: number; FluxA: number; FluxB: number; Speed: number; TL?: number };
@@ -781,101 +783,120 @@ const elTimelineRight = document.querySelector<HTMLDivElement>("#timeline-right"
 const elChList      = document.querySelector<HTMLDivElement>("#ch-list")!;
 const elPlotArea    = document.querySelector<HTMLElement>("#plot-area")!;
 
-// ── Faithful viewport rendering via /api/tiles (min/max envelope) ───────────────
-// The gateway serves a multi-resolution pyramid of min/max/mean tiers, with
-// Te/abc derived at full rate. Historical (paused) views render from tiles; the
-// client-side raw buffer feeds the live tail and the αβ display mode (the tile
-// envelope is wired for the abc channel set).
+// ── Unified viewport rendering ────────────────────────────────────────────────
+// The gateway alone selects raw or a pyramid tier. The browser always consumes
+// the same min/max/mean wire format, so zoom cannot cross a client-side source
+// boundary and temporarily produce an empty chart.
 const PLOT_TO_SERIES: Record<string, number> = {
   Ia: 0, Ib: 1, Ic: 2, "Φa": 3, "Φb": 4, "Φc": 5, Speed: 6, Te: 7,
 };
 const RPM_PER_RAD_S = 60 / (2 * Math.PI);
+type HistoricalPayload = {
+  from: number; to: number; width: number; source: string; view: TileData; loadSteps: StepPoint[];
+};
+let latestHistorical: HistoricalPayload | null = null;
+let historyFloorSec = 0;
+let gatewaySessionLastSec = 0;
+let gatewaySessionSampleCount = 0;
+let gatewayHistoryEnabled = true;
+// Connect establishes transport; only Run starts a plot session. Keep the
+// completed session visible after Stop, but never paint paused DMA residue.
+let plotRunActive = false;
+// Bumped on every session reset (Connect / clear / new run). Used to drop
+// telemetry and viewport responses that belong to a superseded session so
+// stale data never paints into a fresh one.
+let streamGeneration = 0;
+const loadTimeline: StepPoint[] = [];
 
-// Pyramid tile state: tier layout + the most recently fetched window of tiles.
-let tierMeta: TierMeta[] = [];
-let bucketsPerTile = 1024;
-let tilesActive = false;
-let latestTiles: TileData[] = [];
-
-async function loadTierMeta(): Promise<void> {
-  try {
-    const res = await fetch(gatewayURL("/api/tiers"), { cache: "no-store" });
-    if (!res.ok) return;
-    const meta = await res.json();
-    tierMeta = meta.tiers as TierMeta[];
-    bucketsPerTile = meta.bucketsPerTile ?? 1024;
-  } catch { /* gateway not ready yet */ }
+async function fetchGatewayLoadSteps(): Promise<StepPoint[]> {
+  const res = await fetch(gatewayURL("/api/load-steps"), { cache: "no-store" });
+  if (!res.ok) throw new Error(`load steps HTTP ${res.status}`);
+  return await res.json() as StepPoint[];
 }
 
-const tileCache = new TileCache(
-  async (tier, index): Promise<FetchedTile> => {
-    const res = await fetch(gatewayURL(`/api/tiles?tier=${tier}&index=${index}`), { cache: "default" });
-    return { data: await res.arrayBuffer(), sealed: res.headers.get("Cache-Control")?.includes("immutable") ?? false };
-  },
-  bucketsPerTile, 200,
-);
-
-const tileViewport = new ViewportController<TileData[]>(async (from, to, width) => {
-  if (tierMeta.length === 0) await loadTierMeta();
-  const secPerPx = (to - from) / Math.max(1, width);
-  const tIdx = selectTier(tierMeta, secPerPx);
-  if (tIdx < 0) return []; // raw: render direto do tBuf
-  const meta = tierMeta[tIdx];
-  const indices = indicesForWindow(meta.bucketSec, bucketsPerTile, from, to);
-  await tileCache.ensure(tIdx, indices);
-  return tileCache.window(tIdx, indices);
-}, 60);
-tileViewport.onData = (tiles) => {
-  latestTiles = tiles;
-  tilesActive = tiles.length > 0;
+const historicalViewport = new ViewportController<HistoricalPayload>(async (from, to, width) => {
+  const loadStepsPromise = fetchGatewayLoadSteps();
+  const res = await fetch(gatewayURL(`/api/view?from=${from}&to=${to}&width=${Math.round(width)}`), { cache: "no-store" });
+  if (!res.ok) throw new Error(`viewport HTTP ${res.status}`);
+  const view = decodeTile(await res.arrayBuffer());
+  return { from, to, width, source: res.headers.get("X-HIL-Source") ?? "unknown", view, loadSteps: await loadStepsPromise };
+}, 60, () => streamGeneration);
+historicalViewport.onData = (data) => {
+  loadTimeline.splice(0, loadTimeline.length, ...data.loadSteps);
+  latestHistorical = data;
   scheduleRender();
 };
 
-// Flatten loaded tiles into AlignedData: two points per bucket drawing the
-// min/max envelope (raw-envelope style) in the live CHANNELS order. The bucket
-// mean is available in the tile data and can later feed a trend centerline.
-function tilesToProjected(tiles: TileData[]): { xs: number[]; ys: number[][] } {
-  let n = 0;
-  for (const t of tiles) n += t.t.length;
-  const xs: number[] = new Array(n * 2);
-  const ys: number[][] = CHANNELS.map(() => new Array<number>(n * 2));
+// Flatten loaded tiles into one mean point per bucket. Connecting min/max as
+// consecutive points creates a synthetic sawtooth/fill that is not the motor
+// waveform; the mean is the correct centerline for historical LOD rendering.
+function viewToProjected(tile: TileData, from = -Infinity, to = Infinity): { xs: number[]; ys: number[][] } {
+  const xs: number[] = [];
+  const ys: number[][] = CHANNELS.map(() => []);
   const tl = Number(elTorque.value) || 0;
   let w = 0;
-  for (const tile of tiles) {
-    for (let i = 0; i < tile.t.length; i++) {
-      const base = w * 2;
-      xs[base] = tile.t[i];
-      xs[base + 1] = tile.t[i];
+  for (let i = 0; i < tile.t.length; i++) {
+      const time = tile.t[i];
+      if (time < from || time > to) continue;
+      xs.push(time);
       for (let k = 0; k < CHANNELS.length; k++) {
         const si = PLOT_TO_SERIES[CHANNELS[k].name];
         if (si === undefined) {
-          const v = CHANNELS[k].name === "TL" ? tl : NaN;
-          ys[k][base] = v; ys[k][base + 1] = v;
+          const v = CHANNELS[k].name === "TL" ? stepValueAt(loadTimeline, tile.t[i], tl) : NaN;
+          ys[k][w] = v;
           continue;
         }
-        let mn = tile.min[si][i], mx = tile.max[si][i];
-        if (CHANNELS[k].name === "Speed") { mn *= RPM_PER_RAD_S; mx *= RPM_PER_RAD_S; }
-        ys[k][base] = mn;
-        ys[k][base + 1] = mx;
+        let value = tile.mean[si][i];
+        if (CHANNELS[k].name === "Speed") value *= RPM_PER_RAD_S;
+        ys[k][w] = value;
       }
       w++;
-    }
   }
   return { xs, ys };
 }
 
-// Poll the visible window for the faithful envelope, independent of the render
-// cadence (the controller debounces). viewEndSec/windowSec track the live edge
-// via the existing /api/raw tail poll; only the abc channel set is wired.
+// Poll one complete viewport. No raw-tail/tile splicing is performed.
+let lastLiveHistoryRequestAt = 0;
 setInterval(() => {
-  if (plots.length === 0 || displayMode !== "abc") return;
-  const hiResStart = tBuf.length > 0 ? tBuf[0] : Infinity;
+  if (isWails || plots.length === 0 || displayMode !== "abc" || !gatewayHistoryEnabled || !plotRunActive) return;
   const viewEnd = viewEndSec;
   const viewStart = Math.max(0, viewEnd - windowSec);
-  if (!paused || viewStart >= hiResStart) return; // dentro do tail raw: render local
+  const historyStart = Math.max(historyFloorSec, viewStart);
+  if (historyStart >= viewEnd) return;
   const w = elPlotArea.clientWidth || 800;
-  tileViewport.request(viewStart, viewEnd, Math.max(600, w * 2));
+  const plotWidth = Math.max(600, w * 2);
+  const resolutionMatches = latestHistorical !== null
+    && latestHistorical.width === plotWidth
+    && Math.abs(latestHistorical.from - historyStart) < 1e-9
+    && Math.abs(latestHistorical.to - viewEnd) < 1e-9;
+  const now = performance.now();
+  if (!paused && now - lastLiveHistoryRequestAt < 150) return;
+  if (paused && resolutionMatches && latestHistorical!.from <= historyStart && latestHistorical!.to >= viewEnd) return;
+  lastLiveHistoryRequestAt = now;
+  // Request one representation for the complete viewport. Mixing historical
+  // LOD with a raw tail creates a false visual boundary between filtered and
+  // switching-rich data.
+  historicalViewport.request(historyStart, viewEnd, plotWidth);
 }, 100);
+
+// The gateway session store is the authoritative run clock. The browser raw
+// buffer is bounded and may lag or be discarded, so it must not control live
+// viewport progress.
+setInterval(async () => {
+  if (isWails || !plotRunActive) return;
+  const generation = streamGeneration;
+  try {
+    const res = await fetch(gatewayURL("/api/tiers"), { cache: "no-store" });
+    if (!res.ok) return;
+    const meta = await res.json() as { tLast?: number; sampleCount?: number };
+    if (generation !== streamGeneration) return;
+    gatewaySessionLastSec = Math.max(0, Number(meta.tLast) || 0);
+    gatewaySessionSampleCount = Math.max(0, Number(meta.sampleCount) || 0);
+    sampleCount = gatewaySessionSampleCount;
+    if (!paused) viewEndSec = gatewaySessionLastSec;
+    scheduleRender();
+  } catch { /* retry on the next poll */ }
+}, 150);
 const elScenarioTable    = document.querySelector<HTMLDivElement>("#scenario-table")!;
 const elBtnAddScenarioEvent = document.querySelector<HTMLButtonElement>("#btn-add-scenario-event")!;
 const elBtnRecipeLoad    = document.querySelector<HTMLButtonElement>("#btn-recipe-load")!;
@@ -961,7 +982,9 @@ function syncScenarioParamSelect(row: HTMLElement) {
 
 function bindScenarioRow(row: HTMLElement) {
   row.querySelector<HTMLButtonElement>(".scenario-remove")
-    ?.addEventListener("click", () => { if (!scenarioRunning) row.remove(); });
+    ?.addEventListener("click", () => {
+      if (!scenarioRunning) { row.remove(); updateScenarioSummary(); }
+    });
   row.querySelectorAll<HTMLSelectElement>("select")[0]
     ?.addEventListener("change", () => syncScenarioParamSelect(row));
   syncScenarioParamSelect(row);
@@ -1085,7 +1108,7 @@ function applyScenarioValueToForm(ev: { target: string; param: string; value: nu
   }
 }
 
-async function dispatchScenarioEvent(ev: { target: string; param: string; value: number }) {
+async function dispatchScenarioEvent(ev: { t?: number; target: string; param: string; value: number }) {
   const ip = elIp.value.trim();
   if (!ip) return;
   try {
@@ -1098,6 +1121,7 @@ async function dispatchScenarioEvent(ev: { target: string; param: string; value:
       if (isWails) {
         const s = await api.SetParams(ip, p.freq, p.vdc, p.torque, p.baseFreq, p.maxVPu, p.accelTime, false, false, false);
         applyResponse(s, { hydrate: false });
+        if (ev.param === "torque_nm") recordStep(loadTimeline, ev.t ?? latestDataSec(), ev.value);
         return;
       }
       const body: Record<string, unknown> = { ip };
@@ -1111,6 +1135,7 @@ async function dispatchScenarioEvent(ev: { target: string; param: string; value:
       }
       const s = await postJSON<HilStatus>("/api/set", body);
       applyResponse(s, { hydrate: false });
+      if (ev.param === "torque_nm") recordStep(loadTimeline, ev.t ?? latestDataSec(), ev.value);
     } else if (ev.target === "motor") {
       const m: Record<string, number> = {
         rs: p.motorRs, rr: p.motorRr, ls: p.motorLs,
@@ -1157,11 +1182,12 @@ async function prepareScenarioRun() {
   captureTelemetry = false;
   capturePwm = false;
   resetPlotBuffer();
+  recordStep(loadTimeline, 0, torque);
   await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
-  const s = await api.Run(ip) as HilStatus;
-  resetPlotBuffer();
   captureTelemetry = true;
   capturePwm = true;
+  const s = await api.Run(ip) as HilStatus;
+  plotRunActive = true;
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
   setStatus("Scenario running", "ok");
@@ -1169,7 +1195,20 @@ async function prepareScenarioRun() {
 }
 
 async function startScenario() {
-  if (scenarioRunning) { stopScenario(); return; }
+  if (scenarioRunning) {
+    stopScenario();
+    const ip = elIp.value.trim();
+    if (ip) {
+      try {
+        const s = await api.StopController(ip) as HilStatus;
+        applyResponse(s, { hydrate: false });
+        setStatus("Scenario stopped", "ok");
+      } catch (e) {
+        setStatus(`Scenario stop failed: ${String(e)}`, "error");
+      }
+    }
+    return;
+  }
   const events = readScenarioEvents();
   if (events.length === 0) {
     elScenarioProgress.textContent = "Adicione eventos à receita.";
@@ -2179,8 +2218,6 @@ function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], n
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
-let renderPending = false;
-let lastRenderAt = 0;
 const RENDER_INTERVAL_MS = 50;
 
 // Wipes only the telemetry data buffers — called when the FPGA epoch changes
@@ -2193,19 +2230,17 @@ function clearTelemBuffers() {
   sampleCount = 0;
 }
 
-function scheduleRender() {
-  if (renderPending) return;
-  renderPending = true;
-  const delay = Math.max(0, RENDER_INTERVAL_MS - (performance.now() - lastRenderAt));
-  window.setTimeout(() => requestAnimationFrame(() => {
-    renderPending = false;
-    lastRenderAt = performance.now();
-
+// Painted by RenderScheduler at most once per RENDER_INTERVAL_MS inside a
+// requestAnimationFrame. Side-effect-only and idempotent: it reads current
+// state and pushes it to the plots, so a redundant repaint (e.g. flush on tab
+// visibility) is harmless.
+function renderFrame() {
     // Resolve the visible window. While running live we keep the right edge
     // glued to the most recent sample; while paused viewEndSec is whatever
     // the pause/pan left behind.
-    if (!paused && tBuf.length > 0) {
-      viewEndSec = tBuf[tBuf.length - 1];
+    if (!paused) {
+      if (!isWails && plotRunActive) viewEndSec = gatewaySessionLastSec;
+      else if (tBuf.length > 0) viewEndSec = tBuf[tBuf.length - 1];
     }
     viewEndSec = clampViewEndToTimeZero();
     const viewEnd   = viewEndSec;
@@ -2213,11 +2248,21 @@ function scheduleRender() {
 
     const w = elPlotArea.clientWidth || 800;
     const maxPts = Math.max(600, w * 2);
-    const hiResStart = tBuf.length > 0 ? tBuf[0] : Infinity;
-    const needHistorical = paused && viewStart < hiResStart;
-    const useTiles = needHistorical && tilesActive && displayMode === "abc" && latestTiles.length > 0;
-    const { xs, ys } = useTiles
-      ? tilesToProjected(latestTiles)
+    const historical = latestHistorical;
+    const effectiveHistoryStart = Math.max(historyFloorSec, viewStart);
+    const historyUsable = plotRunActive && gatewayHistoryEnabled && displayMode === "abc" && historical !== null
+      // Any overlap with the window is enough: viewToProjected clips to
+      // [effectiveHistoryStart, viewEnd], so we render whatever portion the
+      // (possibly stale, mid-pan) response covers instead of blanking the plot
+      // while the refetch for the new window is in flight.
+      && viewportIntersects(historical.from, historical.to, effectiveHistoryStart, viewEnd, historical.view.t.length);
+    const historicalProjected = historyUsable
+      ? viewToProjected(historical.view, effectiveHistoryStart, viewEnd)
+      : { xs: [], ys: Array.from({ length: N_CH }, () => [] as number[]) };
+    // Keep the most recent overlapping viewport visible while its successor is
+    // in flight; local raw is only the startup/failure fallback.
+    const { xs, ys } = historicalProjected.xs.length > 0
+      ? historicalProjected
       : decimateAndProject(maxPts, viewStart, viewEnd);
 
     scaleSyncing = true;
@@ -2243,8 +2288,17 @@ function scheduleRender() {
     elBtnPause.textContent = paused ? "▶ Resume" : "⏸ Pause";
     elBtnPause.classList.toggle("active", paused);
     elBtnLatest.disabled = !paused;
-  }), delay);
 }
+
+const renderScheduler = new RenderScheduler(renderFrame, { intervalMs: RENDER_INTERVAL_MS });
+function scheduleRender() { renderScheduler.request(); }
+
+// requestAnimationFrame is paused while the tab is hidden, so a frame requested
+// just before switching away never paints and the view freezes on stale data.
+// Repaint on return — the automatic form of the user's "switch tabs and back".
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") renderScheduler.flush();
+});
 
 // ── Telemetry events ──────────────────────────────────────────────────────────
 function ingestTelemetry(samples: Sample[]) {
@@ -2255,8 +2309,6 @@ function ingestTelemetry(samples: Sample[]) {
   const tlNow = Number(elTorque.value) || 0;
 
   for (const s of samples) {
-    s.TL = tlNow;
-
     // ── Hardware-time alignment ──────────────────────────────────────────────
     // t_cycles comes from the same FPGA run-local counter as PWM events, so
     // telemetry and PWM share one timeline with no host-clock drift.
@@ -2281,12 +2333,15 @@ function ingestTelemetry(samples: Sample[]) {
     telemEpoch          = epoch;
     telemLastRawCycles  = raw;
 
-    let hwSec = (absCycles - telemBaseAbsCycles) / HW_CLOCK_HZ;
+    // Match the gateway sampleClock: every epoch starts at the first observed
+    // hardware sample, regardless of the absolute free-running counter value.
+    const hwSec = secondsFromTelemetryOrigin(raw, telemWrapOffsetCycles, telemBaseAbsCycles, HW_CLOCK_HZ);
 
     if (hwSec < 0 || hwSec <= lastTelemPlotTime) continue;
     lastTelemPlotTime = hwSec;
 
     const sampleTime = hwSec;
+    s.TL = stepValueAt(loadTimeline, sampleTime, tlNow);
     tBuf.push(sampleTime);
     samplesBuf.push(s);
     sampleCount++;
@@ -2306,11 +2361,10 @@ function ingestTelemetry(samples: Sample[]) {
   scheduleRender();
 }
 
-let rawCursor = 0;
+let rawCursor: number | "latest" = "latest";
 let rawTransportHealthy = true;
 let rawEverWorked = false;
 let reducedFallbackUsed = false;
-let streamGeneration = 0;
 
 api.onTelemetry((samples: Sample[]) => {
   if (!rawTransportHealthy && !rawEverWorked) {
@@ -2325,7 +2379,7 @@ async function pollRawTelemetry() {
     const requestedCursor = rawCursor;
     let data: ArrayBuffer;
     if (isWails) {
-      const encoded = await (window as any).go.main.App.GetRawTelemetry(rawCursor, 20_000) as string;
+      const encoded = await (window as any).go.main.App.GetRawTelemetry(typeof rawCursor === "number" ? rawCursor : 0, 20_000) as string;
       const binary = atob(encoded);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -2342,10 +2396,15 @@ async function pollRawTelemetry() {
     rawCursor = Number(view.getBigUint64(0, true));
     const count = view.getUint32(8, true);
     if (data.byteLength !== 12 + count * 26) throw new Error("invalid raw telemetry batch");
-    const samples = new Array<Sample>(count);
-    let off = 12;
-    for (let i = 0; i < count; i++, off += 26) {
-      samples[i] = {
+    // /api/view is the display source. Browser raw polling only establishes
+    // the hardware clock and refreshes instant values, so decoding every
+    // 100 kHz sample needlessly blocks the UI thread.
+    const indices = isWails
+      ? Array.from({ length: count }, (_, i) => i)
+      : count <= 1 ? (count === 1 ? [0] : []) : [0, count - 1];
+    const samples = indices.map(i => {
+      const off = 12 + i * 26;
+      return {
         t_cycles: view.getUint32(off, true),
         epoch: view.getUint16(off + 4, true),
         Ia: view.getFloat32(off + 6, true),
@@ -2354,9 +2413,9 @@ async function pollRawTelemetry() {
         FluxB: view.getFloat32(off + 18, true),
         Speed: view.getFloat32(off + 22, true),
       };
-    }
-    const batchStartCursor = rawCursor - samples.length;
-    if (rawEverWorked && batchStartCursor !== requestedCursor) {
+    });
+    const batchStartCursor = rawCursor - count;
+    if (rawEverWorked && typeof requestedCursor === "number" && batchStartCursor !== requestedCursor) {
       clearTelemBuffers();
     }
     if (!rawEverWorked && reducedFallbackUsed) {
@@ -2374,7 +2433,6 @@ async function pollRawTelemetry() {
 }
 
 void pollRawTelemetry();
-void loadTierMeta();
 
 api.onPwmEvents((batch: PwmEventBatch) => {
   if (!capturePwm || !batch || !Array.isArray(batch.events) || batch.events.length === 0) return;
@@ -2390,9 +2448,10 @@ api.onPwmEvents((batch: PwmEventBatch) => {
     }
     pwmEpoch = ev.epoch;
     pwmLastRawCycles = raw;
-    // Absolute run-local hardware time — same origin (counter=0 at Run) as the
-    // telemetry timeline, so PWM steps line up with the motor waveforms.
-    const tSec = (pwmWrapOffsetCycles + raw) / pwmClockHz;
+    // Use the same first-telemetry origin as the gateway session clock.
+    if (telemBaseAbsCycles === null || telemEpoch === null || ev.epoch !== telemEpoch) continue;
+    const tSec = secondsFromTelemetryOrigin(raw, pwmWrapOffsetCycles, telemBaseAbsCycles, pwmClockHz);
+    if (tSec < 0) continue;
     appendPwmOverviewUntil(tSec);
     pwmOverviewAState = applyNpcLevel(ev.a, pwmOverviewAState);
     pwmOverviewBState = applyNpcLevel(ev.b, pwmOverviewBState);
@@ -2530,14 +2589,17 @@ function resetPlotBuffer() {
   tBuf.length = 0;
   samplesBuf.length = 0;
   sampleCount = 0;
-  rawCursor = 0;
+  rawCursor = "latest";
   rawEverWorked = false;
   rawTransportHealthy = true;
   reducedFallbackUsed = false;
-  tileCache.clear();
-  tierMeta = [];
-  latestTiles = [];
-  tilesActive = false;
+  latestHistorical = null;
+  historyFloorSec = 0;
+  gatewaySessionLastSec = 0;
+  gatewaySessionSampleCount = 0;
+  gatewayHistoryEnabled = true;
+  plotRunActive = false;
+  loadTimeline.length = 0;
   lastTelemPlotTime = -Infinity;
   telemLastRawCycles = null;
   telemWrapOffsetCycles = 0;
@@ -2562,6 +2624,39 @@ function resetPlotBuffer() {
   });
   pwmPlot?.setData([[], [], [], []] as uPlot.AlignedData);
   elSampleCount.textContent = "0 samples";
+  scheduleRender();
+}
+
+// Clear is a display operation, not a new acquisition session. Preserve the
+// transport cursor and clock state so old ring contents are not replayed and
+// subsequent telemetry/PWM continue on the existing timeline.
+function clearPlotView() {
+  streamGeneration++;
+  historyFloorSec = latestDataSec();
+  const loadNow = stepValueAt(loadTimeline, historyFloorSec, Number(elTorque.value) || 0);
+  paused = false;
+  viewEndSec = historyFloorSec;
+  pwmViewEndSec = historyFloorSec;
+  tBuf.length = 0;
+  samplesBuf.length = 0;
+  sampleCount = 0;
+  latestHistorical = null;
+  pwmEvents.length = 0;
+  pwmOverviewT.length = 0;
+  pwmOverviewA.length = 0;
+  pwmOverviewB.length = 0;
+  pwmOverviewC.length = 0;
+  pwmOverviewNextT = historyFloorSec;
+  loadTimeline.length = 0;
+  recordStep(loadTimeline, historyFloorSec, loadNow);
+  plots.forEach((p, s) => {
+    const chIdx = getChIdx(s);
+    p.setData([[], ...chIdx.map(() => [])] as uPlot.AlignedData);
+  });
+  pwmPlot?.setData([[], [], [], []] as uPlot.AlignedData);
+  elSampleCount.textContent = "0 samples";
+  elRunMetaBadge.classList.add("hidden");
+  setStatus("Plot cleared; acquisition continues from new samples", "ok");
   scheduleRender();
 }
 
@@ -2644,6 +2739,9 @@ function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; samp
   const telemCount = view.getUint32(off, true); off += 4;
 
   resetPlotBuffer();
+  gatewayHistoryEnabled = false;
+  captureTelemetry = false;
+  capturePwm = false;
   paused = true;
 
   for (let i = 0; i < telemCount; i++) {
@@ -2658,6 +2756,8 @@ function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; samp
 
     tBuf.push(t);
     samplesBuf.push({ Ia, Ib, FluxA, FluxB, Speed, TL });
+    const lastLoad = loadTimeline[loadTimeline.length - 1];
+    if (!lastLoad || TL !== lastLoad.value) recordStep(loadTimeline, t, TL);
     sampleCount++;
   }
 
@@ -2941,11 +3041,12 @@ async function runBatchSequence() {
       resetPlotBuffer();
 
       const p = readParams();
+      recordStep(loadTimeline, 0, p.torque);
       await api.SetParams(ip, p.freq, p.vdc, p.torque, p.baseFreq, p.maxVPu, p.accelTime, false, false, true);
-      await api.Run(ip);
-      resetPlotBuffer();
       captureTelemetry = true;
       capturePwm = true;
+      await api.Run(ip);
+      plotRunActive = true;
 
       const finishedRecipe = await runRecipeEventsSequentially(recipe);
       if (!finishedRecipe) break;
@@ -3065,7 +3166,8 @@ async function saveRunToServer(name: string): Promise<void> {
   if (isWails) return; // Wails uses native file dialog
   const buf = serializeHilbin(name);
   const filename = (name.endsWith(".hilbin") ? name : name + ".hilbin").replace(/[/\\]+/g, "_");
-  const res = await fetch(gatewayURL(`/api/runs?name=${encodeURIComponent(filename)}`), {
+  const source = gatewayHistoryEnabled ? "latest" : "display";
+  const res = await fetch(gatewayURL(`/api/runs?name=${encodeURIComponent(filename)}&source=${source}`), {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
     body: buf,
@@ -3157,10 +3259,13 @@ function buildRunCard(run: RunMeta): HTMLElement {
   card.querySelector<HTMLButtonElement>(".run-btn-delete")!.addEventListener("click", async () => {
     if (!confirm(`Delete "${run.name}"?`)) return;
     try {
-      await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`), { method: "DELETE" });
+      const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`), { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       card.classList.add("run-card-deleting");
       card.addEventListener("transitionend", () => { card.remove(); updateRunsEmpty(); }, { once: true });
-    } catch { /* ignore */ }
+    } catch (e) {
+      setStatus(`Delete failed: ${String(e)}`, "error");
+    }
   });
 
   return card;
@@ -3241,6 +3346,9 @@ elBtnConnect.addEventListener("click", () => withButton(elBtnConnect, async () =
   resetPlotBuffer();
   // single hello → attaches telemetry to this PC and pulls current state
   const s = await api.AttachTelemetry(ip) as HilStatus;
+  plotRunActive = attachStartsPlotSession(s.state);
+  captureTelemetry = plotRunActive;
+  capturePwm = plotRunActive;
   const boardIP = s.board_ip || ip;
   applyBoardIP(boardIP);
   rememberBoardIP(boardIP);
@@ -3262,6 +3370,7 @@ elBtnApplyMotor.addEventListener("click", () => withButton(elBtnApplyMotor, asyn
 elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
   const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
   const s = await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, false) as HilStatus;
+  recordStep(loadTimeline, latestDataSec(), torque);
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
   setStatus("Params applied", "ok");
@@ -3273,11 +3382,12 @@ elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
   captureTelemetry = false;
   capturePwm = false;
   resetPlotBuffer();
+  recordStep(loadTimeline, 0, torque);
   await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
-  const s = await api.Run(ip) as HilStatus;
-  resetPlotBuffer();
   captureTelemetry = true;
   capturePwm = true;
+  const s = await api.Run(ip) as HilStatus;
+  plotRunActive = true;
   applyBoardIP(s.board_ip);
   rememberBoardIP(s.board_ip || ip);
   setStatus("Running", "ok");
@@ -3388,12 +3498,11 @@ elBtnLatest.addEventListener("click", () => {
 elBtnLive.onclick = () => {
   paused = false;
   if (tBuf.length) viewEndSec = tBuf[tBuf.length - 1];
-  tilesActive = false;
-  latestTiles = [];
+  latestHistorical = null;
   scheduleRender();
 };
 
-elBtnClear.addEventListener("click", resetPlotBuffer);
+elBtnClear.addEventListener("click", clearPlotView);
 
 // ── Stats polling ─────────────────────────────────────────────────────────────
 let prevSamplesRx = 0;
@@ -3416,11 +3525,13 @@ setInterval(async () => {
 }, 2000);
 
 // ── Background status poll — keeps FSM badge accurate ─────────────────────────
+let consecutiveStatusFailures = 0;
 setInterval(async () => {
   const ip = elIp.value.trim();
   if (!ip) return;
   try {
     const s = await api.GetStatus(ip) as HilStatus;
+    consecutiveStatusFailures = 0;
     applyBoardIP(s.board_ip);
     setStateBadge(s.state);
     // refresh telem badge: if board says telem_active but we haven't seen
@@ -3428,10 +3539,12 @@ setInterval(async () => {
     const stalled = (performance.now() - lastSampleAt) > 2500;
     setTelemBadge(s.telem_active === 1, stalled);
   } catch {
-    // board unreachable: state may have drifted — flag it
-    elStateBadge.textContent = "OFFLINE";
-    elStateBadge.className = "state-badge state-offline";
-    setTelemBadge(false, true);
+    // A single command timeout does not mean the streaming data path stopped.
+    if (++consecutiveStatusFailures >= 3) {
+      elStateBadge.textContent = "OFFLINE";
+      elStateBadge.className = "state-badge state-offline";
+      setTelemBadge(false, true);
+    }
   }
 }, 1000);
 
