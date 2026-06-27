@@ -1,0 +1,68 @@
+# =============================================================================
+# Figura 01 - FPGA / HIL_AXI_Top (integracao na PL).
+# Dono de: dominios de clock 100/200 MHz + CDC + decimador + DMA.
+# TIM_Solver = caixa-preta (detalhado na fig. 02).
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  fast:  {style: {fill: "#d9d9d9"; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  cdc:   {style: {fill: white;    stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  ext:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false; double-border: true}}
+  grp:   {style: {fill: "#f2f2f2"; stroke: black; stroke-width: 2; stroke-dash: 6; border-radius: 0; font-color: black; bold: true}}
+  dom:   {style: {fill: "#ececec"; stroke: black; stroke-width: 2; stroke-dash: 2; border-radius: 0; font-color: black; bold: true}}
+  arrow: {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+ps_in:  "PS (Linux/C)\nAXI-Lite @ 1 kHz" {class: ext}
+
+hil: HIL_AXI_Top (PL - VHDL) {
+  class: grp
+
+  d100: "Dominio AXI / PWM - 100 MHz (FCLK0)" {
+    class: dom
+    regs: "Banco de\nRegistradores" {class: box}
+    npc: "Modulador NPC\n3 niveis - carrier 1 kHz" {class: box}
+    v: "Estados -> Tensao\n+-Vdc/2" {class: box}
+    irq: "Gera carrier_tick\n-> IRQ_F2P" {class: box}
+    regs -> npc: {class: arrow}
+    npc -> v: "gate states" {class: arrow}
+    npc -> irq: {class: arrow}
+  }
+
+  cdc_in: "CDC\n100 -> 200 MHz" {class: cdc}
+
+  d200: "Dominio Solver - 200 MHz (MMCM)" {
+    class: dom
+    style.fill: "#d9d9d9"
+    solver: "TIM_Solver\n(nucleo numerico - ver fig. 02)" {class: ext}
+  }
+
+  cdc_out: "CDC + snapshot\n200 -> 100 MHz" {class: cdc}
+
+  filt: "Anti-aliasing\nButterworth 2a ord. (fc~40 kHz)" {class: box}
+  decim: "Decimador\n/77" {class: box}
+  dma: "AXI-Stream 256-bit\n-> AXI DMA (S2MM)" {class: box}
+
+  d100.v -> cdc_in: "V_a V_b V_c" {class: arrow}
+  cdc_in -> d200.solver: {class: arrow}
+  d200.solver -> cdc_out: "I_ab psi_ab w\n~7,69 MHz (nativo)" {class: arrow}
+  cdc_out -> filt: {class: arrow}
+  filt -> decim: {class: arrow}
+  decim -> dma: "~100 kHz" {class: arrow}
+}
+
+ps_out: "PS (Linux/C)\nDMA -> UDP ~100 kHz" {class: ext}
+
+ps_in -> hil.d100.regs: "refs V/F + coeficientes A,B" {class: arrow}
+hil.d100.irq -> ps_in: "IRQ @ 1 kHz" {class: arrow; style.stroke-dash: 4}
+hil.dma -> ps_out: "burst 128 frames (~1,28 ms)" {class: arrow}
+
+legenda: "Cinza = dominio 200 MHz   |   borda dupla = caixa-preta (outra figura)   |   tracejado fino = CDC   |   taxas em cada estagio" {
+  near: bottom-center
+  shape: text
+  style: {font-color: black; font-size: 18}
+}
