@@ -1,0 +1,50 @@
+# =============================================================================
+# Figura 04 - Backend / gateway Go (apps/hil-go). Dono da piramide / decimacao
+# de display. Placa e frontend = ext (caixa-preta).
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  fast:  {style: {fill: "#d9d9d9"; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  cdc:   {style: {fill: white;    stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  ext:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false; double-border: true}}
+  grp:   {style: {fill: "#f2f2f2"; stroke: black; stroke-width: 2; stroke-dash: 6; border-radius: 0; font-color: black; bold: true}}
+  dom:   {style: {fill: "#ececec"; stroke: black; stroke-width: 2; stroke-dash: 2; border-radius: 0; font-color: black; bold: true}}
+  arrow: {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+board: "EBAZ4205 (PS/PL) [fig. 01-03]\ntelemetria UDP ~100 kHz" {class: ext}
+
+gw: "Gateway Go (cmd/gateway) - PC Host (software)" {
+  class: grp
+
+  ingest: Ingestao {
+    class: dom
+    recv: "Receiver UDP\n+ parse frames" {class: box}
+    ring: "Ring buffer\n(lock-free)" {class: box}
+    recv -> ring: {class: arrow}
+  }
+
+  proc: Processamento {
+    class: dom
+    derive: "Modelo do Motor\n-> T_e, abc (full-rate)" {class: box}
+    pyramid: "Piramide de Tiles\n(decimacao de display, min/max)" {class: box}
+    store: "Sessao + Captura\n(.hilbin, ~100 kHz)" {class: box}
+    derive -> pyramid: {class: arrow}
+    derive -> store: {class: arrow}
+  }
+
+  api: "API HTTP / SSE\n(/api  /events)" {class: box}
+
+  ingest.ring -> proc.derive: {class: arrow}
+  proc.pyramid -> api: tiles {class: arrow}
+}
+
+front: "Frontend (browser) [fig. 05]" {class: ext}
+
+board -> gw.ingest.recv: "UDP ~100 kHz" {class: arrow}
+gw.api -> front: "tiles (HTTP) + telemetria (SSE)" {class: arrow}
+front -> gw.api: comandos {class: arrow; style.stroke-dash: 4}
