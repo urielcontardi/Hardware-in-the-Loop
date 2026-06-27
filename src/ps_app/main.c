@@ -19,6 +19,10 @@
 #include <ifaddrs.h>
 #include <math.h>
 #include <sys/file.h>   /* flock — single-instance guard */
+
+#ifndef PS_VERSION
+#define PS_VERSION "dev"
+#endif
 typedef struct {
     float rs;
     float rr;
@@ -462,6 +466,8 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
     snprintf(resp, sz,
         "{\"status\":\"%s\","
         "\"state\":\"%s\","
+        "\"ps_version\":\"%s\","
+        "\"fpga_version\":%u,"
         "\"speed_rad_s\":%.4f,"
         "\"ialpha_A\":%.4f,"
         "\"ibeta_A\":%.4f,"
@@ -483,6 +489,8 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
         "\"telem_send_errors\":%u}",
         status_msg,
         state_name(hil_state),
+        PS_VERSION,
+        gpio_fpga_version(),
         (float)gpio_get_speed()      * MON_SCALE,
         (float)gpio_get_ialpha()     * MON_SCALE,
         (float)gpio_get_ibeta()      * MON_SCALE,
@@ -503,7 +511,7 @@ static void build_status(char *resp, size_t sz, const char *status_msg)
 static void handle_packet(int sock, const char *buf,
                            struct sockaddr_in *cli, socklen_t cli_len)
 {
-    char resp[768];
+    char resp[1024];
     const char *status_msg = "ok";
 
     if (strstr(buf, "\"cmd\":\"set\"")) {

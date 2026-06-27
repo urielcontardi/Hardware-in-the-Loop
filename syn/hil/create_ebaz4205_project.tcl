@@ -119,7 +119,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_ENET1_RESET_ENABLE            {0} \
         CONFIG.PCW_ENET_RESET_ENABLE             {1} \
         CONFIG.PCW_ENET_RESET_SELECT             {Share reset pin} \
-        CONFIG.PCW_EN_CLK1_PORT                  {1} \
+        CONFIG.PCW_EN_CLK1_PORT                  {0} \
         CONFIG.PCW_EN_CLK3_PORT                  {1} \
         CONFIG.PCW_EN_EMIO_CD_SDIO0              {0} \
         CONFIG.PCW_EN_EMIO_ENET0                 {1} \
@@ -140,7 +140,7 @@ proc cr_bd_ebaz4205 {} {
         CONFIG.PCW_FCLK_CLK3_BUF                 {TRUE} \
         CONFIG.PCW_FPGA3_PERIPHERAL_FREQMHZ      {25} \
         CONFIG.PCW_FPGA_FCLK0_ENABLE             {1} \
-        CONFIG.PCW_FPGA_FCLK1_ENABLE             {1} \
+        CONFIG.PCW_FPGA_FCLK1_ENABLE             {0} \
         CONFIG.PCW_FPGA_FCLK2_ENABLE             {0} \
         CONFIG.PCW_FPGA_FCLK3_ENABLE             {1} \
         CONFIG.PCW_GPIO_EMIO_GPIO_ENABLE         {1} \
@@ -452,7 +452,7 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins processing_system7_0/FCLK_RESET0_N] \
         [get_bd_pins proc_sys_reset_0/ext_reset_in]
     connect_bd_net \
-        [get_bd_pins processing_system7_0/FCLK_CLK1] \
+        [get_bd_pins processing_system7_0/FCLK_CLK0] \
         [get_bd_pins proc_sys_reset_solver/slowest_sync_clk]
     connect_bd_net \
         [get_bd_pins processing_system7_0/FCLK_RESET0_N] \
@@ -473,10 +473,6 @@ proc cr_bd_ebaz4205 {} {
         [get_bd_pins processing_system7_0/M_AXI_GP0_ACLK] \
         [get_bd_pins processing_system7_0/S_AXI_HP0_ACLK] \
         [get_bd_pins hil_axi_top_0/clk]
-    connect_bd_net \
-        [get_bd_pins processing_system7_0/FCLK_CLK1] \
-        [get_bd_pins hil_axi_top_0/solver_clk]
-
     # ── Resets : via proc_sys_reset (síncronos ao FCLK0) ─────────────────────
     connect_bd_net \
         [get_bd_pins proc_sys_reset_0/interconnect_aresetn] \

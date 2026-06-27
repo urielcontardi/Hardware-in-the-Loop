@@ -33,6 +33,7 @@
 --   0x54  pwm_cap_pop      write      — bit0 pops current event
 --   0x58  hil_time          read       — current run-local time[31:0]
 --   0x5C  hil_epoch         read       — current run epoch[15:0]
+--   0x60  fpga_version      read       — build/version tag
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -126,6 +127,8 @@ architecture rtl of HIL_Regs_AXI is
     signal reg_pwm_ctrl    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_vdc_word    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_torque_word : std_logic_vector(31 downto 0) := (others => '0');
+    signal shadow_vdc_word    : std_logic_vector(31 downto 0) := (others => '0');
+    signal shadow_torque_word : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_coeff_addr  : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_coeff_lo    : std_logic_vector(31 downto 0) := (others => '0');
     signal reg_coeff_hi    : std_logic_vector(31 downto 0) := (others => '0');
@@ -138,6 +141,7 @@ architecture rtl of HIL_Regs_AXI is
     signal pwm_cap_pop_r   : std_logic := '0';
 
     constant DEBUG_MAGIC : std_logic_vector(31 downto 0) := x"48494C52"; -- "HILR"
+    constant FPGA_VERSION : std_logic_vector(31 downto 0) := x"20260624";
     constant PWM_CAP_CTRL_MAGIC : std_logic_vector(31 downto 0) := x"FFFF0100";
     constant PWM_CAP_POP_MAGIC  : std_logic_vector(31 downto 0) := x"FFFF0104";
 
@@ -201,6 +205,8 @@ begin
                 reg_pwm_ctrl    <= (others => '0');
                 reg_vdc_word    <= (others => '0');
                 reg_torque_word <= (others => '0');
+                shadow_vdc_word    <= (others => '0');
+                shadow_torque_word <= (others => '0');
                 reg_coeff_addr  <= (others => '0');
                 reg_coeff_lo    <= (others => '0');
                 reg_coeff_hi    <= (others => '0');
@@ -238,19 +244,21 @@ begin
                 if awready = '1' and S_AXI_AWVALID = '1' and
                    wready  = '1' and S_AXI_WVALID  = '1' then
                     case to_integer(unsigned(aw_addr(7 downto 2))) is
-                        -- Stage the three phases independently. pwm_ctrl is
+                        -- Stage the command packet independently. pwm_ctrl is
                         -- written last by gpio_set_pwm_ctrl and atomically
-                        -- commits the complete triplet to the modulator.
+                        -- commits refs, DC bus and load torque together.
                         when 0  => shadow_va_ref   <= S_AXI_WDATA;
                         when 1  => shadow_vb_ref   <= S_AXI_WDATA;
                         when 2  => shadow_vc_ref   <= S_AXI_WDATA;
                         when 3  =>
                             reg_va_ref   <= shadow_va_ref;
                             reg_vb_ref   <= shadow_vb_ref;
-                            reg_vc_ref   <= shadow_vc_ref;
-                            reg_pwm_ctrl <= S_AXI_WDATA;
-                        when 4  => reg_vdc_word    <= S_AXI_WDATA;
-                        when 5  => reg_torque_word <= S_AXI_WDATA;
+                            reg_vc_ref      <= shadow_vc_ref;
+                            reg_vdc_word    <= shadow_vdc_word;
+                            reg_torque_word <= shadow_torque_word;
+                            reg_pwm_ctrl    <= S_AXI_WDATA;
+                        when 4  => shadow_vdc_word    <= S_AXI_WDATA;
+                        when 5  => shadow_torque_word <= S_AXI_WDATA;
                         when 12 => reg_coeff_addr  <= S_AXI_WDATA;
                         when 13 => reg_coeff_lo    <= S_AXI_WDATA;
                         when 14 => reg_coeff_hi    <= S_AXI_WDATA;
@@ -272,6 +280,7 @@ begin
                             reg_coeff_lo   <= S_AXI_WDATA;
                             reg_coeff_hi   <= (others => '0');
                             coeff_we_r     <= '1';
+                        when 24 => null; -- fpga_version is read-only
                         when others => null;
                     end case;
                     bvalid <= '1';
@@ -298,8 +307,8 @@ begin
                         when 1  => rdata <= shadow_vb_ref;
                         when 2  => rdata <= shadow_vc_ref;
                         when 3  => rdata <= reg_pwm_ctrl;
-                        when 4  => rdata <= reg_vdc_word;
-                        when 5  => rdata <= reg_torque_word;
+                        when 4  => rdata <= shadow_vdc_word;
+                        when 5  => rdata <= shadow_torque_word;
                         when 6  => rdata <= DEBUG_MAGIC;
                         when 7  => rdata <= dbg_status_i;
                         when 8  => rdata <= dbg_free_run_i;
@@ -316,6 +325,7 @@ begin
                         when 20 => rdata <= dbg_carrier_i;
                         when 22 => rdata <= dbg_timer_i;
                         when 23 => rdata <= dbg_dv_latch_i;
+                        when 24 => rdata <= FPGA_VERSION;
                         when others => rdata <= (others => '0');
                     end case;
                     rvalid <= '1';

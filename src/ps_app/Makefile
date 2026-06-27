@@ -19,6 +19,8 @@ TARGET_SUP  := hil_supervisor
 SRCS        := main.c gpio.c vf_ctrl.c telemetry.c dma_telem.c pwm_events.c
 SUP_SRCS    := supervisor.c
 CFLAGS  := -O2 -Wall -Wextra
+PS_VERSION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || printf unknown)
+CFLAGS  += -DPS_VERSION=\"$(PS_VERSION)\"
 LDFLAGS := -lm -lpthread -lrt
 
 # Cross-compiler (set by PetaLinux SDK environment-setup script)

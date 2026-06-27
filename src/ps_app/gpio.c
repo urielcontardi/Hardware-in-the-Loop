@@ -184,6 +184,12 @@ uint16_t gpio_hil_epoch(void)
     return (uint16_t)(gpio_read(ADDR_HIL_REGS, REG_HIL_EPOCH) & 0xffffU);
 }
 
+uint32_t gpio_fpga_version(void)
+{
+    return gpio_read(ADDR_HIL_REGS, REG_FPGA_VERSION);
+}
+
+
 /* ── Reads from AXI GPIO monitors ────────────────────────────────────── */
 
 int32_t gpio_get_speed(void)      { return (int32_t)gpio_read(ADDR_GPIO_MONITOR_3, GPIO_CH1_OFFSET); }

@@ -33,6 +33,7 @@
  *   0x54  pwm_cap_pop      write      — bit0 pops current event
  *   0x58  hil_time          read       — current run-local time[31:0]
  *   0x5C  hil_epoch         read       — current run epoch[15:0]
+ *   0x60  fpga_version      read       — build/version tag
  */
 #define ADDR_HIL_REGS        0x43C00000U
 #define REG_VA_REF           0x00U
@@ -59,6 +60,7 @@
 #define REG_PWM_CAP_POP      0x54U
 #define REG_HIL_TIME         0x58U
 #define REG_HIL_EPOCH        0x5CU
+#define REG_FPGA_VERSION     0x60U
 
 /* ── AXI GPIO — monitor (PL writes, PS reads) ─────────────────────────── */
 #define ADDR_GPIO_MONITOR_1   0x41200000U  /* ch1=ialpha_mon,     ch2=ibeta_mon      */
@@ -121,6 +123,7 @@ void     gpio_pwmcap_pop(void);
 int      gpio_pwmcap_read(uint64_t *event_out);
 uint32_t gpio_hil_time(void);
 uint16_t gpio_hil_epoch(void);
+uint32_t gpio_fpga_version(void);
 
 /* Helpers — read from AXI GPIO monitors */
 int32_t  gpio_get_speed(void);

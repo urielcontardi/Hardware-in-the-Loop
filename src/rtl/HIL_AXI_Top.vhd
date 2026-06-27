@@ -53,8 +53,8 @@ use work.BilinearSolverPkg.all;
 Entity HIL_AXI_Top is
     Generic (
         -- Clock
-        CLK_FREQ         : natural := 100_000_000;   -- FCLK0 da EBAZ4205 (100 MHz — AXI/PWM)
-        SOLVER_CLK_FREQ  : natural := 200_000_000;   -- FCLK1 dedicado ao TIM_Solver/DSP
+        CLK_FREQ         : natural := 100_000_000;   -- FCLK0 da EBAZ4205 (100 MHz, AXI/PWM)
+        SOLVER_CLK_FREQ  : natural := 200_000_000;   -- MMCM interno para TIM_Solver/DSP
 
         -- Portadora NPC — 1 kHz gera IRQ confortável para Linux sem RT
         -- CARRIER_MAX = CLK_FREQ / PWM_FREQ / 2 = 50000
@@ -78,7 +78,6 @@ Entity HIL_AXI_Top is
     );
     Port (
         clk              : in  std_logic;
-        solver_clk       : in  std_logic;
         rst_n            : in  std_logic;
         solver_rst_n     : in  std_logic;
 
@@ -191,6 +190,11 @@ Architecture rtl of HIL_AXI_Top is
     signal va_motor      : std_logic_vector(TIM_DW-1 downto 0);
     signal vb_motor      : std_logic_vector(TIM_DW-1 downto 0);
     signal vc_motor      : std_logic_vector(TIM_DW-1 downto 0);
+    signal va_motor_clk  : std_logic_vector(TIM_DW-1 downto 0) := (others => '0');
+    signal vb_motor_clk  : std_logic_vector(TIM_DW-1 downto 0) := (others => '0');
+    signal vc_motor_clk  : std_logic_vector(TIM_DW-1 downto 0) := (others => '0');
+    signal torque_42_clk : std_logic_vector(TIM_DW-1 downto 0) := (others => '0');
+    signal pwm_ctrl_clk  : std_logic_vector(31 downto 0) := (others => '0');
 
     --------------------------------------------------------------------------
     -- Saídas do TIM_Solver
@@ -511,7 +515,31 @@ Begin
     end process NPC_to_Voltage;
 
     --------------------------------------------------------------------------
-    -- CDC 100 MHz -> 200 MHz para entradas lentas do solver.
+    -- Barreiras registradas no dominio AXI/PWM. O solver de 200 MHz recebe
+    -- uma imagem ja assentada das tensoes PWM e dos comandos lentos, evitando
+    -- amostrar glitches combinacionais de gate/Vdc no meio de uma transicao.
+    --------------------------------------------------------------------------
+    Solver_Input_Stage_100M : process(clk)
+    begin
+        if rising_edge(clk) then
+            if rst_n = '0' then
+                va_motor_clk  <= (others => '0');
+                vb_motor_clk  <= (others => '0');
+                vc_motor_clk  <= (others => '0');
+                torque_42_clk <= (others => '0');
+                pwm_ctrl_clk  <= (others => '0');
+            else
+                va_motor_clk  <= va_motor;
+                vb_motor_clk  <= vb_motor;
+                vc_motor_clk  <= vc_motor;
+                torque_42_clk <= torque_42;
+                pwm_ctrl_clk  <= pwm_ctrl_i;
+            end if;
+        end if;
+    end process Solver_Input_Stage_100M;
+
+    --------------------------------------------------------------------------
+    -- Transferencia 100 MHz -> 200 MHz para entradas do solver.
     --------------------------------------------------------------------------
     Solver_Input_CDC : process(solver_clk_200)
     begin
@@ -529,11 +557,11 @@ Begin
                 coeff_apply_meta   <= '0';
                 coeff_apply_solver <= '0';
             else
-                va_motor_solver      <= va_motor;
-                vb_motor_solver      <= vb_motor;
-                vc_motor_solver      <= vc_motor;
-                torque_solver        <= torque_42;
-                pwm_ctrl_solver      <= pwm_ctrl_i;
+                va_motor_solver      <= va_motor_clk;
+                vb_motor_solver      <= vb_motor_clk;
+                vc_motor_solver      <= vc_motor_clk;
+                torque_solver        <= torque_42_clk;
+                pwm_ctrl_solver      <= pwm_ctrl_clk;
                 coeff_addr_solver    <= coeff_addr_i;
                 coeff_data_solver    <= coeff_data_i;
                 coeff_we_meta        <= coeff_we_i;

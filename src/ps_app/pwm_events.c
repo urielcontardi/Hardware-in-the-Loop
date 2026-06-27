@@ -73,7 +73,7 @@ static void *thread_fn(void *arg)
 {
     (void)arg;
     while (active) {
-        if (drain_once() == 0) usleep(5000);
+        if (drain_once() == 0) usleep(500);
     }
     return NULL;
 }
