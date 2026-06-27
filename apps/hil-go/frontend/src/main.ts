@@ -3232,13 +3232,13 @@ function setBatchItemStatus(rowIndex: number, status: "pending" | "running" | "d
   span.dataset.status = status;
 }
 
-function stopBatch() {
+function stopBatch(message = "") {
   batchRunning = false;
   batchTimeouts.forEach(clearTimeout);
   batchTimeouts = [];
   batchSleepResolvers.splice(0).forEach(resolve => resolve());
   if (batchProgressTimer !== null) { clearInterval(batchProgressTimer); batchProgressTimer = null; }
-  elBatchProgress.textContent = "";
+  elBatchProgress.textContent = message;
   elBatchMeterFill.style.width = "0%";
   elBtnBatchRun.disabled     = false;
   elBtnBatchStop.disabled    = true;
@@ -3286,7 +3286,7 @@ async function runRecipeEventsSequentially(recipe: { events: RecipeEvent[]; endT
 
 async function runBatchSequence() {
   let ip = elIp.value.trim();
-  if (!ip) { setStatus("Missing board IP", "error"); stopBatch(); return; }
+  if (!ip) { setStatus("Missing board IP", "error"); stopBatch("Missing board IP"); return; }
 
   try {
     const found = await api.DiscoverBoard(ip) as DiscoveryResponse;
@@ -3300,6 +3300,7 @@ async function runBatchSequence() {
   const baseParams = readParams();
   elBatchName.value = batchName;
   let completed = 0;
+  let finalMessage = "Batch stopped";
 
   for (let i = 0; i < items.length; i++) {
     if (!batchRunning) break;
@@ -3310,14 +3311,14 @@ async function runBatchSequence() {
     const recipe = getRecipeByName(item.recipeName);
     if (!recipe) {
       setBatchItemStatus(i, "error");
-      setStatus(`Recipe "${item.recipeName}" not found`, "error");
+      finalMessage = `Recipe "${item.recipeName}" not found`;
+      setStatus(finalMessage, "error");
       break;
     }
 
     try {
       elBatchProgress.textContent = `Running ${i + 1}/${items.length}: ${item.recipeName}`;
       restoreParamsToForm(baseParams);
-      await programMotorFromParams(ip, baseParams);
       await prepareScenarioRun();
       ip = elIp.value.trim() || ip;
       setActiveTab("telemetry");
@@ -3347,13 +3348,18 @@ async function runBatchSequence() {
       }
     } catch (e) {
       setBatchItemStatus(i, "error");
-      setStatus(`Batch item ${i + 1} failed: ${e}`, "error");
+      finalMessage = `Batch item ${i + 1} failed: ${e}`;
+      setStatus(finalMessage, "error");
       break;
     }
   }
 
   const allDone = completed === items.length && items.length > 0;
-  stopBatch();
+  if (allDone) {
+    const suffix = completed === 1 ? "" : "s";
+    finalMessage = `Batch complete: ${completed} run${suffix} saved`;
+  }
+  stopBatch(finalMessage);
   updateBatchSummary();
   if (allDone) setStatus("Batch complete", "ok");
 }
@@ -3371,6 +3377,8 @@ async function startBatch() {
   const invalid = items.find(item => !item.recipeName || !getRecipeByName(item.recipeName));
   if (invalid) { elBatchProgress.textContent = invalid.recipeName ? `Recipe "${invalid.recipeName}" not found` : "Select a saved recipe first"; return; }
 
+  elBatchProgress.textContent = "Starting batch...";
+  setStatus("Starting batch", "idle");
   batchRunning = true;
   batchT0      = performance.now();
   batchIndex   = 0;
