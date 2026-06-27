@@ -1209,7 +1209,7 @@ function stopScenario() {
 }
 
 async function prepareScenarioRun() {
-  let { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
+  let { ip } = readParams();
   if (!ip) throw new Error("missing board IP");
 
   // Scenario runs should be one-click: resolve a stale saved/default IP before
@@ -1224,19 +1224,7 @@ async function prepareScenarioRun() {
     rememberBoardIP(ip);
   }
 
-  captureTelemetry = false;
-  capturePwm = false;
-  resetPlotBuffer();
-  recordStep(loadTimeline, 0, torque);
-  await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
-  captureTelemetry = true;
-  capturePwm = true;
-  const s = await api.Run(ip) as HilStatus;
-  plotRunActive = true;
-  applyBoardIP(s.board_ip);
-  rememberBoardIP(s.board_ip || ip);
-  setStatus("Scenario running", "ok");
-  applyResponse(s, { hydrate: false });
+  await startBoardRunFromCurrentParams("Scenario running");
 }
 
 async function startScenario() {
@@ -2757,6 +2745,39 @@ async function programMotorFromParams(ip: string, p: ReturnType<typeof readParam
   applyResponse(s, { hydrate: false });
 }
 
+async function startBoardRunFromCurrentParams(statusText = "Running"): Promise<HilStatus> {
+  const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
+  if (!ip) throw new Error("missing board IP");
+  captureTelemetry = false;
+  capturePwm = false;
+  resetPlotBuffer();
+  recordStep(loadTimeline, 0, torque);
+  await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
+  captureTelemetry = true;
+  capturePwm = true;
+  const s = await api.Run(ip) as HilStatus;
+  plotRunActive = true;
+  applyBoardIP(s.board_ip);
+  rememberBoardIP(s.board_ip || ip);
+  setStatus(statusText, "ok");
+  applyResponse(s, { hydrate: false });
+  return s;
+}
+
+async function stopBoardRun(ipOverride?: string, statusText = "Stopped; last capture preserved"): Promise<HilStatus> {
+  const ip = ipOverride || readParams().ip;
+  if (!ip) throw new Error("missing board IP");
+  const s = await api.StopController(ip) as HilStatus;
+  applyBoardIP(s.board_ip);
+  paused = true;
+  viewEndSec = Math.max(latestDataSec(), gatewaySessionLastSec);
+  plotRunActive = true;
+  setStatus(statusText, "ok");
+  applyResponse(s, { hydrate: false });
+  scheduleRender();
+  return s;
+}
+
 function rememberBoardIP(ip: string) {
   if (ip) localStorage.setItem(BOARD_IP_STORAGE_KEY, ip);
 }
@@ -3299,16 +3320,13 @@ async function runBatchSequence() {
       await programMotorFromParams(ip, baseParams);
       await prepareScenarioRun();
       ip = elIp.value.trim() || ip;
+      setActiveTab("telemetry");
+      elSidebar.classList.remove("sidebar-wide");
 
       const finishedRecipe = await runRecipeEventsSequentially(recipe);
       if (!finishedRecipe) break;
 
-      const stopped = await api.StopController(ip) as HilStatus;
-      paused = true;
-      viewEndSec = Math.max(latestDataSec(), gatewaySessionLastSec);
-      plotRunActive = true;
-      applyResponse(stopped, { hydrate: false });
-      scheduleRender();
+      await stopBoardRun(ip, "Batch item stopped; capture preserved");
 
       const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
       const runName = `${batchName}_${String(i + 1).padStart(2, "0")}_${safeRunStem(item.recipeName)}_${ts}`;
@@ -3342,8 +3360,14 @@ async function runBatchSequence() {
 
 async function startBatch() {
   if (batchRunning) return;
-  const items = readBatchItems();
-  if (items.length === 0) { elBatchProgress.textContent = "Add items first"; return; }
+  let items = readBatchItems();
+  if (items.length === 0) {
+    const currentEvents = readScenarioEvents();
+    if (currentEvents.length === 0) { elBatchProgress.textContent = "Add events first"; return; }
+    saveRecipe();
+    addBatchRow({ recipeName: elScenarioName.value.trim() || "default", endDelaySec: 0 });
+    items = readBatchItems();
+  }
   const invalid = items.find(item => !item.recipeName || !getRecipeByName(item.recipeName));
   if (invalid) { elBatchProgress.textContent = invalid.recipeName ? `Recipe "${invalid.recipeName}" not found` : "Select a saved recipe first"; return; }
 
@@ -3733,32 +3757,11 @@ elBtnApply.addEventListener("click", () => withButton(elBtnApply, async () => {
 }));
 
 elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
-  const { ip, freq, vdc, torque, baseFreq, maxVPu, accelTime } = readParams();
-  captureTelemetry = false;
-  capturePwm = false;
-  resetPlotBuffer();
-  recordStep(loadTimeline, 0, torque);
-  await api.SetParams(ip, freq, vdc, torque, baseFreq, maxVPu, accelTime, false, false, true);
-  captureTelemetry = true;
-  capturePwm = true;
-  const s = await api.Run(ip) as HilStatus;
-  plotRunActive = true;
-  applyBoardIP(s.board_ip);
-  rememberBoardIP(s.board_ip || ip);
-  setStatus("Running", "ok");
-  applyResponse(s);
+  await startBoardRunFromCurrentParams("Running");
 }));
 
 elBtnStop.addEventListener("click", () => withButton(elBtnStop, async () => {
-  const { ip } = readParams();
-  const s = await api.StopController(ip) as HilStatus;
-  applyBoardIP(s.board_ip);
-  paused = true;
-  viewEndSec = Math.max(latestDataSec(), gatewaySessionLastSec);
-  plotRunActive = true;
-  setStatus("Stopped; last capture preserved", "ok");
-  applyResponse(s);
-  scheduleRender();
+  await stopBoardRun();
 }));
 
 // Smoothing (10-sample boxcar ≈ 1 ms ≈ 1 PWM period at 10 kHz) is always on
