@@ -53,6 +53,8 @@ const (
 type HilStatus struct {
 	Status           string  `json:"status"`
 	State            string  `json:"state"`
+	PSVersion        string  `json:"ps_version"`
+	FPGAVersion      uint32  `json:"fpga_version"`
 	SpeedRadS        float32 `json:"speed_rad_s"`
 	IalphaA          float32 `json:"ialpha_A"`
 	IbetaA           float32 `json:"ibeta_A"`

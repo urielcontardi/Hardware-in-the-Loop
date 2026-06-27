@@ -47,31 +47,48 @@ const (
 	// means re-tuning the SVF cutoff. Display-rate reduction is the host's job
 	// (min/max envelope in decimateAndProject), not the FPGA decimator's.
 	transportDecim = 77
+	solverClockHz  = 200_000_000
+	solverStep     = 26
+	dmaTelemetryHz = solverClockHz / solverStep / transportDecim
 	gpioFallbackHz = 10000
 )
 
+type pwmTimedEvent struct {
+	TCycles uint32  `json:"t_cycles"`
+	A       uint8   `json:"a"`
+	B       uint8   `json:"b"`
+	C       uint8   `json:"c"`
+	Mask    uint8   `json:"mask"`
+	Epoch   uint16  `json:"epoch"`
+	TSec    float64 `json:"t_sec"`
+}
+
 type server struct {
-	ring        *ring.Ring
-	recv        *receiver.Receiver
-	pwmRecv     *pwmrecv.Receiver
-	localIP     string
-	runsDir     string
-	pwmMu       sync.RWMutex
-	pwmBase     uint64
-	pwmClockHz  uint32
-	pwmStatus   uint32
-	pwmHistory  []pwmrecv.Event
-	targetMu    sync.RWMutex
-	telemTarget string
-	scanMu      sync.Mutex
-	lastScanAt  time.Time
-	subsMu      sync.Mutex
-	subs        map[chan []frame.Sample]struct{}
-	recorder    *record.Recorder
-	raw         *rawbuf.Buffer
-	stateMu     sync.Mutex
-	lastSet     map[string]hiludp.SetParams
-	lastMotor   map[string]hiludp.MotorParams
+	ring            *ring.Ring
+	recv            *receiver.Receiver
+	pwmRecv         *pwmrecv.Receiver
+	localIP         string
+	runsDir         string
+	pwmMu           sync.RWMutex
+	pwmBase         uint64
+	pwmTimedBase    uint64
+	pwmClockHz      uint32
+	pwmStatus       uint32
+	pwmFifoMaxCount uint32
+	pwmHistory      []pwmrecv.Event
+	pwmTimedHistory []pwmTimedEvent
+	pwmPending      []pwmrecv.Event
+	targetMu        sync.RWMutex
+	telemTarget     string
+	scanMu          sync.Mutex
+	lastScanAt      time.Time
+	subsMu          sync.Mutex
+	subs            map[chan []frame.Sample]struct{}
+	recorder        *record.Recorder
+	raw             *rawbuf.Buffer
+	stateMu         sync.Mutex
+	lastSet         map[string]hiludp.SetParams
+	lastMotor       map[string]hiludp.MotorParams
 
 	// ingest state: written by the single receiver goroutine and swapped by
 	// HTTP handlers (resetSession/setMotor). ingestMu guards all of it; the
@@ -91,9 +108,10 @@ var srvRef atomic.Pointer[server]
 
 // RunMeta describes a saved .hilbin run file.
 type RunMeta struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Modified string `json:"modified"`
+	Name     string         `json:"name"`
+	Size     int64          `json:"size"`
+	Modified string         `json:"modified"`
+	Meta     map[string]any `json:"meta,omitempty"`
 }
 
 type motorRequest struct {
@@ -129,6 +147,35 @@ type discoverRequest struct {
 	IP string `json:"ip,omitempty"`
 }
 
+func readHilbinMeta(path string) map[string]any {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(f, header); err != nil {
+		return nil
+	}
+	if string(header[:7]) != "HILDATA" {
+		return nil
+	}
+	jsonSize := int(uint32(header[8]) | uint32(header[9])<<8 | uint32(header[10])<<16 | uint32(header[11])<<24)
+	if jsonSize <= 0 || jsonSize > 1<<20 {
+		return nil
+	}
+	buf := make([]byte, jsonSize)
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(buf, &meta); err != nil {
+		return nil
+	}
+	return meta
+}
+
 func main() {
 	addr := strings.TrimSpace(os.Getenv("HIL_HTTP_ADDR"))
 	if addr == "" {
@@ -159,7 +206,7 @@ func main() {
 	recorder := record.New(runsDir)
 	defer recorder.Close()
 	raw := rawbuf.New(300_000)
-	pyr := pyramid.New(gpioFallbackHz)
+	pyr := pyramid.New(dmaTelemetryHz)
 	store, err := sessionstore.Open(filepath.Join(runsDir, "live_session.bin"), 4096)
 	if err != nil {
 		log.Fatalf("session store: %v", err)
@@ -185,6 +232,7 @@ func main() {
 			cur.store.Append(t, smp)
 			cur.pyramid.Push(t, m.Compute(smp).Values())
 		}
+		cur.alignPendingPwmLocked()
 		cur.ingestMu.Unlock()
 	})
 
@@ -600,6 +648,9 @@ func (s *server) resolveIP(preferred string) (string, error) {
 func stampBoardIP(ip string, status *hiludp.HilStatus) *hiludp.HilStatus {
 	if status != nil {
 		status.BoardIP = ip
+		if strings.EqualFold(status.TelemSource, "dma") {
+			status.TelemHz = dmaTelemetryHz
+		}
 	}
 	return status
 }
@@ -823,7 +874,27 @@ func (s *server) handlePause(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleReset(w http.ResponseWriter, r *http.Request) {
-	s.forwardCommand(w, r, hiludp.ResetSolver)
+	req, err := decodeJSON[ipRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	ip, err := s.resolveIP(req.IP)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	status, err := hiludp.ResetSolver(ip)
+	recordErr := s.recorder.Stop()
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	if recordErr != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("stop raw recorder: %w", recordErr))
+		return
+	}
+	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
 func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -847,7 +918,6 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("stop raw recorder: %w", recordErr))
 		return
 	}
-	s.ring.Clear()
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
 }
 
@@ -942,22 +1012,30 @@ func boolToUint64(v bool) uint64 {
 
 func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 	recording, recordWritten, recordDropped := s.recorder.Stats()
+	pwmTimed, pwmRaw, pwmPending, pwmStatus, pwmFifoMax := s.pwmHistoryStats()
+	pwmCount := uint64((pwmStatus >> 16) & 0xffff)
 	writeJSON(w, http.StatusOK, map[string]uint64{
-		"packets_raw":     s.recv.Stats.PacketsRaw.Load(),
-		"samples_rx":      s.recv.Stats.SamplesRx.Load(),
-		"packets_rx":      s.recv.Stats.PacketsRx.Load(),
-		"dropped":         s.recv.Stats.Dropped.Load(),
-		"crc_errors":      s.recv.Stats.CRCErrors.Load(),
-		"invalid":         s.recv.Stats.Invalid.Load(),
-		"seq_missed":      s.recv.Stats.SeqMissed.Load(),
-		"ring_len":        uint64(s.ring.Len()),
-		"pwm_packets_rx":  s.pwmRecv.Stats.PacketsRx.Load(),
-		"pwm_events_rx":   s.pwmRecv.Stats.EventsRx.Load(),
-		"pwm_dropped":     s.pwmRecv.Stats.Dropped.Load(),
-		"pwm_history_len": s.pwmHistoryLen(),
-		"recording":       boolToUint64(recording),
-		"record_written":  recordWritten,
-		"record_dropped":  recordDropped,
+		"packets_raw":         s.recv.Stats.PacketsRaw.Load(),
+		"samples_rx":          s.recv.Stats.SamplesRx.Load(),
+		"packets_rx":          s.recv.Stats.PacketsRx.Load(),
+		"dropped":             s.recv.Stats.Dropped.Load(),
+		"crc_errors":          s.recv.Stats.CRCErrors.Load(),
+		"invalid":             s.recv.Stats.Invalid.Load(),
+		"seq_missed":          s.recv.Stats.SeqMissed.Load(),
+		"ring_len":            uint64(s.ring.Len()),
+		"pwm_packets_rx":      s.pwmRecv.Stats.PacketsRx.Load(),
+		"pwm_events_rx":       s.pwmRecv.Stats.EventsRx.Load(),
+		"pwm_dropped":         s.pwmRecv.Stats.Dropped.Load(),
+		"pwm_fifo_count":      pwmCount,
+		"pwm_fifo_max_count":  uint64(pwmFifoMax),
+		"pwm_fifo_overflow":   boolToUint64((pwmStatus & (1 << 1)) != 0),
+		"pwm_fifo_full":       boolToUint64((pwmStatus & (1 << 3)) != 0),
+		"pwm_history_len":     pwmTimed,
+		"pwm_raw_history_len": pwmRaw,
+		"pwm_pending_len":     pwmPending,
+		"recording":           boolToUint64(recording),
+		"record_written":      recordWritten,
+		"record_dropped":      recordDropped,
 	})
 }
 
@@ -995,30 +1073,101 @@ func (s *server) storePwmBatch(b pwmrecv.Batch) {
 		return
 	}
 	s.recorder.SubmitPWM(b.ClockHz, b.Events)
+
+	s.ingestMu.Lock()
+	clk := s.clk
+	s.ingestMu.Unlock()
+
 	s.pwmMu.Lock()
 	defer s.pwmMu.Unlock()
 
 	s.pwmClockHz = b.ClockHz
 	s.pwmStatus = b.Status
+	if count := (b.Status >> 16) & 0xffff; count > s.pwmFifoMaxCount {
+		s.pwmFifoMaxCount = count
+	}
 	s.pwmHistory = append(s.pwmHistory, b.Events...)
 	if extra := len(s.pwmHistory) - pwmHistoryMaxEvents; extra > 0 {
 		s.pwmHistory = append([]pwmrecv.Event(nil), s.pwmHistory[extra:]...)
 		s.pwmBase += uint64(extra)
 	}
+	s.alignPwmEventsWithClockLocked(clk, b.Events)
+}
+
+func pwmSecondsFromClock(clk sampleClock, ev pwmrecv.Event) (float64, bool) {
+	if !clk.haveEpoch || ev.Epoch != clk.epoch {
+		return 0, false
+	}
+	abs := clk.wrap + uint64(ev.TCycles)
+	if abs < clk.baseAbs && clk.wrap < (1<<32) {
+		abs += 1 << 32
+	}
+	if abs < clk.baseAbs {
+		return 0, false
+	}
+	return float64(abs-clk.baseAbs) / sampleClockHz, true
+}
+
+func (s *server) alignPwmEventsWithClockLocked(clk sampleClock, events []pwmrecv.Event) {
+	if !clk.haveEpoch {
+		s.pwmPending = append(s.pwmPending, events...)
+		if extra := len(s.pwmPending) - pwmHistoryMaxEvents; extra > 0 {
+			s.pwmPending = append([]pwmrecv.Event(nil), s.pwmPending[extra:]...)
+		}
+		return
+	}
+	for _, ev := range events {
+		t, ok := pwmSecondsFromClock(clk, ev)
+		if !ok {
+			continue
+		}
+		if n := len(s.pwmTimedHistory); n > 0 && t <= s.pwmTimedHistory[n-1].TSec {
+			continue
+		}
+		s.pwmTimedHistory = append(s.pwmTimedHistory, pwmTimedEvent{
+			TCycles: ev.TCycles, A: ev.A, B: ev.B, C: ev.C,
+			Mask: ev.Mask, Epoch: ev.Epoch, TSec: t,
+		})
+	}
+	if extra := len(s.pwmTimedHistory) - pwmHistoryMaxEvents; extra > 0 {
+		s.pwmTimedHistory = append([]pwmTimedEvent(nil), s.pwmTimedHistory[extra:]...)
+		s.pwmTimedBase += uint64(extra)
+	}
+}
+
+func (s *server) alignPendingPwmLocked() {
+	clk := s.clk
+	s.pwmMu.Lock()
+	defer s.pwmMu.Unlock()
+	if len(s.pwmPending) == 0 {
+		return
+	}
+	pending := s.pwmPending
+	s.pwmPending = nil
+	s.alignPwmEventsWithClockLocked(clk, pending)
 }
 
 func (s *server) clearPwmHistory() {
 	s.pwmMu.Lock()
 	defer s.pwmMu.Unlock()
 	s.pwmBase += uint64(len(s.pwmHistory))
+	s.pwmTimedBase += uint64(len(s.pwmTimedHistory))
 	s.pwmHistory = s.pwmHistory[:0]
+	s.pwmTimedHistory = s.pwmTimedHistory[:0]
+	s.pwmPending = s.pwmPending[:0]
 	s.pwmStatus = 0
+	s.pwmFifoMaxCount = 0
+}
+
+func (s *server) pwmHistoryStats() (timed uint64, raw uint64, pending uint64, status uint32, maxCount uint32) {
+	s.pwmMu.RLock()
+	defer s.pwmMu.RUnlock()
+	return uint64(len(s.pwmTimedHistory)), uint64(len(s.pwmHistory)), uint64(len(s.pwmPending)), s.pwmStatus, s.pwmFifoMaxCount
 }
 
 func (s *server) pwmHistoryLen() uint64 {
-	s.pwmMu.RLock()
-	defer s.pwmMu.RUnlock()
-	return uint64(len(s.pwmHistory))
+	timed, _, _, _, _ := s.pwmHistoryStats()
+	return timed
 }
 
 func (s *server) subscribe() chan []frame.Sample {
@@ -1067,7 +1216,25 @@ func (s *server) pwmSnapshot() (uint64, []pwmrecv.Event, uint32, uint32) {
 	return s.pwmBase, events, s.pwmClockHz, s.pwmStatus
 }
 
-func (s *server) pwmSince(cursor uint64, maxEvents int) (uint64, []pwmrecv.Event, uint32, uint32) {
+func (s *server) pwmSince(cursor uint64, maxEvents int) (uint64, []pwmTimedEvent, uint32, uint32) {
+	s.pwmMu.RLock()
+	defer s.pwmMu.RUnlock()
+	if cursor < s.pwmTimedBase {
+		cursor = s.pwmTimedBase
+	}
+	start := int(cursor - s.pwmTimedBase)
+	if start >= len(s.pwmTimedHistory) {
+		return s.pwmTimedBase + uint64(len(s.pwmTimedHistory)), nil, s.pwmClockHz, s.pwmStatus
+	}
+	end := len(s.pwmTimedHistory)
+	if maxEvents > 0 && end-start > maxEvents {
+		end = start + maxEvents
+	}
+	events := append([]pwmTimedEvent(nil), s.pwmTimedHistory[start:end]...)
+	return s.pwmTimedBase + uint64(end), events, s.pwmClockHz, s.pwmStatus
+}
+
+func (s *server) pwmRawSince(cursor uint64, maxEvents int) (uint64, []pwmrecv.Event, uint32, uint32) {
 	s.pwmMu.RLock()
 	defer s.pwmMu.RUnlock()
 	if cursor < s.pwmBase {
@@ -1085,11 +1252,29 @@ func (s *server) pwmSince(cursor uint64, maxEvents int) (uint64, []pwmrecv.Event
 	return s.pwmBase + uint64(end), events, s.pwmClockHz, s.pwmStatus
 }
 
-func writePWMBatch(w http.ResponseWriter, seq uint32, clockHz uint32, status uint32, events []pwmrecv.Event) error {
+func writePWMRawBatch(w http.ResponseWriter, seq uint32, clockHz uint32, status uint32, events []pwmrecv.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
 	payload, err := json.Marshal(pwmrecv.Batch{Type: "pwm_events", Seq: seq, ClockHz: clockHz, Status: status, Events: events})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: pwm_events\ndata: %s\n\n", payload)
+	return err
+}
+
+func writePWMBatch(w http.ResponseWriter, seq uint32, clockHz uint32, status uint32, events []pwmTimedEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(struct {
+		Type    string          `json:"type"`
+		Seq     uint32          `json:"seq"`
+		ClockHz uint32          `json:"clock_hz"`
+		Status  uint32          `json:"status"`
+		Events  []pwmTimedEvent `json:"events"`
+	}{Type: "pwm_events", Seq: seq, ClockHz: clockHz, Status: status, Events: events})
 	if err != nil {
 		return err
 	}
@@ -1128,10 +1313,12 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer s.unsubscribe(ch)
 
 	var pwmSeq uint32
-	// Follow the live tail. Replaying the complete retained PWM history here can
-	// enqueue hundreds of thousands of JSON events before the first UI frame.
-	base, replay, clockHz, status := s.pwmSnapshot()
-	pwmCursor := base + uint64(len(replay))
+	// Replay retained PWM history from the same session store used by telemetry.
+	// The frontend aligns events to the first telemetry hardware timestamp and
+	// drops any pre-origin events, so reconnecting does not leave a blank PWM
+	// prefix in the visible window.
+	base, _, clockHz, status := s.pwmSnapshot()
+	pwmCursor := base
 	flusher.Flush()
 
 	pwmTicker := time.NewTicker(16 * time.Millisecond)
@@ -1157,11 +1344,11 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-pwmTicker.C:
 			for burst := 0; burst < 8; burst++ {
 				var events []pwmrecv.Event
-				pwmCursor, events, clockHz, status = s.pwmSince(pwmCursor, pwmSSEBatchEvents)
+				pwmCursor, events, clockHz, status = s.pwmRawSince(pwmCursor, pwmSSEBatchEvents)
 				if len(events) == 0 {
 					break
 				}
-				if err := writePWMBatch(w, pwmSeq, clockHz, status, events); err != nil {
+				if err := writePWMRawBatch(w, pwmSeq, clockHz, status, events); err != nil {
 					return
 				}
 				pwmSeq++
@@ -1198,10 +1385,12 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
+			path := filepath.Join(s.runsDir, e.Name())
 			runs = append(runs, RunMeta{
 				Name:     e.Name(),
 				Size:     info.Size(),
 				Modified: info.ModTime().UTC().Format(time.RFC3339),
+				Meta:     readHilbinMeta(path),
 			})
 		}
 		sort.Slice(runs, func(i, j int) bool { return runs[i].Modified > runs[j].Modified })

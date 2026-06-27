@@ -11,12 +11,14 @@ import { RenderScheduler } from "./renderscheduler";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Sample = { t_cycles?: number; epoch?: number; Ia: number; Ib: number; FluxA: number; FluxB: number; Speed: number; TL?: number };
-type PwmEvent = { t_cycles: number; a: number; b: number; c: number; mask: number; epoch: number };
+type PwmEvent = { t_cycles: number; a: number; b: number; c: number; mask: number; epoch: number; t_sec?: number };
 type PwmPlotEvent = PwmEvent & { t_sec: number };
 type PwmEventBatch = { type: string; seq: number; clock_hz: number; status: number; events: PwmEvent[] };
 type HilStatus = {
   status: string;
   state: "idle" | "running" | "paused" | "stopped" | string;
+  ps_version?: string;
+  fpga_version?: number;
   speed_rad_s: number; ialpha_A: number; ibeta_A: number;
   flux_alpha_Wb: number; flux_beta_Wb: number;
   freq_hz: number; freq_actual_hz: number;
@@ -262,10 +264,12 @@ const MAX_SAMPLES = 600_000;  // approximately 6 s of full-rate detail
 // Both telemetry samples and PWM events are timestamped by the SAME run-local
 // FPGA counter (hil_time <= pwm_cap_time in RTL). Using hardware time for both
 // gives exact alignment. Two edge-cases are handled:
-//   • Counter frozen when solver is idle → duplicate t_cycles → enforce
-//     strict monotonicity by nudging forward by a nominal period.
-//   • Counter resets to 0 on each run (epoch++) → clear telemetry buffers
-//     on epoch change so old samples never bleed into the new run's view.
+//   • Counter frozen when solver is idle -> duplicate t_cycles are dropped.
+//   • UDP/SSE can duplicate or reorder PWM event packets -> drop any PWM event
+//     whose absolute hardware time does not advance, because pwmStepData uses
+//     binary searches and requires pwmEvents sorted by t_sec.
+//   • Counter resets to 0 on each run (epoch++) -> clear old plot buffers so
+//     previous-run samples never bleed into the new run's view.
 const HW_CLOCK_HZ             = 100_000_000;
 const TELEM_NOMINAL_PERIOD_S  = 1 / TELEM_DISPLAY_HZ;
 
@@ -286,10 +290,14 @@ let pwmActive = false;
 const pwmEvents: PwmPlotEvent[] = [];
 const PWM_COUNTER_MOD = 2 ** 32;
 const MAX_PWM_EVENTS = 1_500_000;
-const PWM_OVERVIEW_DT_SEC = 0.005;
+const MAX_PENDING_PWM_EVENTS = 250_000;
+const PWM_OVERVIEW_DT_SEC = 0.001;
 const MAX_PWM_OVERVIEW_SAMPLES = 1_500_000;
+const pendingPwmEvents: PwmEvent[] = [];
 let pwmLastRawCycles: number | null = null;
+let pwmLastAbsCycles: number | null = null;
 let pwmWrapOffsetCycles = 0;
+let lastPwmPlotTime = -Infinity;
 const pwmOverviewT: number[] = [];
 const pwmOverviewA: number[] = [];
 const pwmOverviewB: number[] = [];
@@ -311,11 +319,8 @@ let capturePwm = false;
 let paused = false;
 let windowSec = 1.0;
 let viewEndSec = 0;
-// PWM events are timestamped by the FPGA hardware counter, which drifts from
-// the host-paced telemetry clock (it freezes while the solver is idle). So the
-// PWM plot needs its own right edge in hardware time: live, it tracks the last
-// PWM event; paused, it follows the telemetry window by the drift offset
-// captured at pause, so pan/zoom keep both plots on the same relative range.
+// Kept for compatibility with older view-state code; rendering now uses the
+// shared telemetry/PWM hardware timeline directly.
 let pwmViewEndSec = 0;
 let pwmTelemOffset = 0;
 const WINDOW_PRESETS_MS = [500, 1000, 5000, 30000, 60000];
@@ -350,15 +355,23 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
       <div class="sidebar-scroll">
 
-      <section class="panel">
+      <section class="panel connection-panel">
         <div class="panel-title">CONNECTION</div>
-        <div class="field-inline">
+        <div class="field-inline connection-ip-row">
           <label>Board IP</label>
           <input id="ip" type="text" value="192.168.15.14" class="write-input" />
         </div>
         <div class="btn-row">
           <button id="btn-discover" class="btn btn-write">Find</button>
           <button id="btn-connect" class="btn btn-write">Connect</button>
+        </div>
+        <div class="version-card" id="version-card">
+          <div class="version-main">
+            <span class="version-chip" title="PS application version">PS <strong id="version-ps">unknown</strong></span>
+            <span class="version-chip" title="FPGA bitstream version">FPGA <strong id="version-fpga">unknown</strong></span>
+          </div>
+          <div class="version-sub" title="Telemetry source and sample rate"><span id="version-telem">offline</span></div>
+          <button id="btn-refresh-version" class="btn btn-xs version-refresh" type="button" title="Refresh board versions">Refresh</button>
         </div>
         <div id="conn-status" class="ps-status hidden"></div>
       </section>
@@ -452,7 +465,6 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <div class="btn-row" style="margin-top:6px">
             <button id="btn-apply" class="btn btn-sm" title="Apply controller/DC setpoints without changing the motor model">Apply Setpoints</button>
-            <button id="btn-reset" class="btn btn-sm" title="Pulse FPGA solver reset — clears integrator states without changing params">Reset solver</button>
           </div>
           <div id="ps-status" class="ps-status hidden"></div>
         </section>
@@ -635,7 +647,15 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <span class="panel-title">RUN HISTORY</span>
             <span id="runs-summary" class="panel-note">0 runs</span>
           </div>
-          <input id="runs-search" class="write-input" type="search" placeholder="Filter runs" style="margin-bottom:6px" />
+          <div class="history-tools">
+            <input id="runs-search" class="write-input" type="search" placeholder="Filter runs" />
+            <button id="btn-runs-select-visible" class="btn btn-xs" type="button">Select visible</button>
+          </div>
+          <div class="history-actions">
+            <span id="runs-selected" class="panel-note">0 selected</span>
+            <button id="btn-runs-delete-selected" class="btn btn-xs btn-danger" type="button" disabled>Delete selected</button>
+          </div>
+          <div class="history-note">Delete removes the .hilbin file from disk.</div>
           <div id="runs-list" class="runs-list">
             <div class="runs-empty" id="runs-empty">No runs saved yet.</div>
           </div>
@@ -763,7 +783,6 @@ const elBtnApply    = document.querySelector<HTMLButtonElement>("#btn-apply")!;
 const elBtnApplyMotor = document.querySelector<HTMLButtonElement>("#btn-apply-motor")!;
 const elBtnRun      = document.querySelector<HTMLButtonElement>("#btn-run")!;
 const elBtnStop     = document.querySelector<HTMLButtonElement>("#btn-stop")!;
-const elBtnReset    = document.querySelector<HTMLButtonElement>("#btn-reset")!;
 const elFreqBadge   = document.querySelector<HTMLDivElement>("#freq-badge")!;
 const elBtnClear    = document.querySelector<HTMLButtonElement>("#btn-clear")!;
 const elBtnPause    = document.querySelector<HTMLButtonElement>("#btn-pause")!;
@@ -771,6 +790,10 @@ const elBtnLatest   = document.querySelector<HTMLButtonElement>("#btn-latest")!;
 const elBtnLive     = document.querySelector<HTMLButtonElement>("#btn-live")!;
 const elPsStatus    = document.querySelector<HTMLDivElement>("#ps-status")!;
 const elConnStatus  = document.querySelector<HTMLDivElement>("#conn-status")!;
+const elVersionPS    = document.querySelector<HTMLElement>("#version-ps")!;
+const elVersionFPGA  = document.querySelector<HTMLElement>("#version-fpga")!;
+const elVersionTelem = document.querySelector<HTMLElement>("#version-telem")!;
+const elBtnRefreshVersion = document.querySelector<HTMLButtonElement>("#btn-refresh-version")!;
 const elStateBadge  = document.querySelector<HTMLDivElement>("#state-badge")!;
 const elWsBadge     = document.querySelector<HTMLDivElement>("#ws-badge")!;
 const elStatus      = document.querySelector<HTMLDivElement>("#status")!;
@@ -919,6 +942,7 @@ const elBtnExportCsv  = document.querySelector<HTMLButtonElement>("#btn-export-c
 const elLoadFileInput = document.querySelector<HTMLInputElement>("#load-file-input")!;
 const elRunMetaBadge  = document.querySelector<HTMLDivElement>("#run-meta-badge")!;
 const elBatchTable      = document.querySelector<HTMLDivElement>("#batch-table")!;
+const elBatchName       = document.querySelector<HTMLInputElement>("#batch-name")!;
 const elBtnAddBatchItem = document.querySelector<HTMLButtonElement>("#btn-add-batch-item")!;
 const elBtnBatchRun     = document.querySelector<HTMLButtonElement>("#btn-batch-run")!;
 const elBtnBatchStop    = document.querySelector<HTMLButtonElement>("#btn-batch-stop")!;
@@ -933,6 +957,9 @@ const elRunsSearch         = document.querySelector<HTMLInputElement>("#runs-sea
 const elRunsSummary        = document.querySelector<HTMLSpanElement>("#runs-summary")!;
 const elRunsList           = document.querySelector<HTMLDivElement>("#runs-list")!;
 const elRunsEmpty          = document.querySelector<HTMLDivElement>("#runs-empty")!;
+const elRunsSelected       = document.querySelector<HTMLSpanElement>("#runs-selected")!;
+const elBtnRunsSelectVisible = document.querySelector<HTMLButtonElement>("#btn-runs-select-visible")!;
+const elBtnRunsDeleteSelected = document.querySelector<HTMLButtonElement>("#btn-runs-delete-selected")!;
 
 const savedBoardIP = localStorage.getItem(BOARD_IP_STORAGE_KEY);
 if (savedBoardIP) elIp.value = savedBoardIP;
@@ -1025,7 +1052,20 @@ let scenarioT0 = 0;
 
 // ── Batch runner state ────────────────────────────────────────────────────────
 type BatchItem = { recipeName: string; endDelaySec: number };
-type RunMeta   = { name: string; size: number; modified: string };
+type HilbinMeta = {
+  version?: number;
+  date?: string;
+  name?: string;
+  sample_count?: number;
+  pwm_count?: number;
+  npp?: number;
+  motor?: Record<string, number>;
+  controller?: Record<string, number>;
+  scenario?: { name?: string; events?: RecipeEvent[]; endTime?: number };
+  batch?: { name?: string; index?: number; count?: number };
+  board?: { ip?: string; ps_version?: string; fpga_version?: string };
+};
+type RunMeta   = { name: string; size: number; modified: string; meta?: HilbinMeta };
 let batchRunning = false;
 let batchIndex   = 0;
 let batchTimeouts: number[] = [];
@@ -1348,7 +1388,7 @@ elBtnSaveRun.addEventListener("click", () => withButton(elBtnSaveRun, async () =
   if (isWails) {
     await triggerSave(name);
   } else {
-    await saveRunToServer(name);
+    await saveRunToServer(name, { scenario: { name: elScenarioName.value.trim() || "manual", events: readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value })), endTime: getScenarioEndTime() } });
     setStatus(`Saved: ${name}.hilbin`, "ok");
   }
 }));
@@ -1362,6 +1402,15 @@ elConfigImportInput.addEventListener("change", () => {
 });
 
 elRunsSearch.addEventListener("input", applyRunFilter);
+elBtnRunsSelectVisible.addEventListener("click", selectVisibleRuns);
+elBtnRunsDeleteSelected.addEventListener("click", deleteSelectedRuns);
+elBtnRefreshVersion.addEventListener("click", () => withButton(elBtnRefreshVersion, async () => {
+  const ip = elIp.value.trim();
+  if (!ip) throw new Error("Missing board IP");
+  const s = await api.GetStatus(ip) as HilStatus;
+  applyResponse(s, { hydrate: false });
+  showConnStatus(`Version refreshed from ${ip}`, true);
+}));
 updateBatchSummary();
 applyRunFilter();
 
@@ -1753,37 +1802,71 @@ elTooltip.className = "plot-tooltip";
 elTooltip.style.display = "none";
 document.body.appendChild(elTooltip);
 
+function nearestIndex(xs: number[], t: number): number {
+  if (xs.length === 0) return -1;
+  let lo = 0, hi = xs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (xs[mid] < t) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === 0) return 0;
+  const prev = lo - 1;
+  return Math.abs(xs[prev] - t) <= Math.abs(xs[lo] - t) ? prev : lo;
+}
+
+function appendTooltipRow(html: string, color: string, name: string, val: number, unit: string): string {
+  return html + `<div class="tt-row">
+    <span class="tt-dot" style="background:${color}"></span>
+    <span class="tt-name">${name}</span>
+    <span class="tt-val">${val.toFixed(4)}</span>
+    <span class="tt-unit">${unit}</span>
+  </div>`;
+}
+
 function showTooltip(u: uPlot) {
   const idx = u.cursor.idx;
-  if (idx == null || idx < 0 || (u.data[0] as number[]).length === 0) {
-    elTooltip.style.display = "none";
-    return;
-  }
-  const t = (u.data[0] as number[])[idx];
-  if (t == null) { elTooltip.style.display = "none"; return; }
+  const xs = u.data[0] as number[];
+  if (idx == null || idx < 0 || xs.length === 0) return;
+  const t = xs[idx];
+  if (t == null || !isFinite(t)) return;
 
   let html = `<div class="tt-time">t = ${t.toFixed(5)} s</div>`;
 
-  // Collect values from all subplots at this cursor index (all share same xs).
+  if (pwmPlot) {
+    const px = pwmPlot.data[0] as number[];
+    const pi = nearestIndex(px, t);
+    const pwmMeta = [
+      { name: "PWM A", color: "#ffd54f" },
+      { name: "PWM B", color: "#4fc3f7" },
+      { name: "PWM C", color: "#ef9a9a" },
+    ];
+    if (pi >= 0) {
+      pwmMeta.forEach((m, k) => {
+        if (!pwmVisible[k]) return;
+        const val = (pwmPlot!.data[k + 1] as number[])?.[pi];
+        if (val == null || !isFinite(val)) return;
+        html = appendTooltipRow(html, m.color, m.name, val, "");
+      });
+    }
+  }
+
   plots.forEach((p, s) => {
+    const plotXs = p.data[0] as number[];
+    const ti = nearestIndex(plotXs, t);
+    if (ti < 0) return;
     const chIdx = getChIdx(s);
     chIdx.forEach((ci, si) => {
       if (!visible[ci]) return;
-      const val = (p.data[si + 1] as number[])?.[idx];
+      const val = (p.data[si + 1] as number[])?.[ti];
       if (val == null || !isFinite(val)) return;
-      html += `<div class="tt-row">
-        <span class="tt-dot" style="background:${CHANNELS[ci].color}"></span>
-        <span class="tt-name">${CHANNELS[ci].name}</span>
-        <span class="tt-val">${val.toFixed(4)}</span>
-        <span class="tt-unit">${CHANNELS[ci].unit}</span>
-      </div>`;
+      html = appendTooltipRow(html, CHANNELS[ci].color, CHANNELS[ci].name, val, CHANNELS[ci].unit);
     });
   });
 
   elTooltip.innerHTML = html;
   elTooltip.style.display = "block";
 
-  // Position near cursor, avoiding screen edges.
   const rect = u.root.getBoundingClientRect();
   const cx = rect.left + (u.cursor.left ?? 0);
   const cy = rect.top  + (u.cursor.top  ?? 0);
@@ -1976,6 +2059,7 @@ function buildPlots() {
       height: h,
       pxAlign: 0,
       cursor: { show: true, drag: { x: false, y: false, setScale: false }, sync: { key: cursorSync.key } },
+      hooks: { setCursor: [showTooltip] },
       scales: { x: { time: false } },
       axes: [
         { stroke: "#3a5575", grid: { stroke: "#0e1d30", width: 1 }, ticks: { stroke: "#0e1d30" } },
@@ -2038,12 +2122,13 @@ new ResizeObserver(() => {
 requestAnimationFrame(() => buildPlots());
 
 function npcLevel(state: number): number | null {
-  // NPC gate-state encoding from RTL. Dead-time states are plotted as half
-  // levels, matching the solver-side gate-to-voltage approximation.
+  // Plot user-facing PWM state as a ternary leg level only. The RTL can expose
+  // transient dead-time codes, but showing them as +/-0.5 makes the trace look
+  // analog and hides the intended {-1, 0, 1} switching sequence.
   if (state === 0b0011) return 1;
-  if (state === 0b0010) return 0.5;
+  if (state === 0b0010) return 0;
   if (state === 0b0110) return 0;
-  if (state === 0b0100) return -0.5;
+  if (state === 0b0100) return 0;
   if (state === 0b1100) return -1;
   return null;
 }
@@ -2142,33 +2227,39 @@ function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], n
   // Draw real PWM edges while the window is reasonably sparse. If it is too
   // dense, fall back to a min/max envelope so we keep the -1/0/1 states without
   // inventing averaged duty-equivalent values.
-  const maxTransitions = Math.max(2000, (elPlotArea.clientWidth || 800) * 4);
-  if (pwmEvents.length === 0) return pwmOverviewData(viewStart, viewEnd, maxTransitions);
+  const plotWidth = elPlotArea.clientWidth || 800;
+  // Once transition density approaches screen-pixel density, true stepped paths
+  // alias: subpixel pulses can disappear between adjacent x coordinates. Switch
+  // to a per-pixel min/max envelope early so narrow PWM activity stays visible.
+  const maxTransitions = Math.max(240, Math.floor(plotWidth * 0.75));
+  const zeroHold = (): [number[], number[], number[], number[]] => {
+    if (viewEnd < viewStart) return [[], [], [], []];
+    return [[viewStart, viewEnd], [0, 0], [0, 0], [0, 0]];
+  };
+  if (pwmEvents.length === 0) return zeroHold();
 
   const firstTime = pwmTime(pwmEvents[0]);
   const lastTime = pwmTime(pwmEvents[pwmEvents.length - 1]);
-  if (viewEnd < firstTime) {
-    const overview = pwmOverviewData(viewStart, viewEnd, maxTransitions);
-    if (overview[0].length > 0) return overview;
-  }
-  const plotStart = Math.max(viewStart, firstTime);
+  const plotStart = viewStart;
   const plotEnd = pwmActive ? viewEnd : Math.min(viewEnd, lastTime);
-  if (plotEnd < plotStart || viewEnd < firstTime || viewStart > lastTime) return [[], [], [], []];
+  if (plotEnd < plotStart) return [[], [], [], []];
+  if (plotEnd < firstTime) return zeroHold();
+  if (!pwmActive && viewStart > lastTime) return [[], [], [], []];
 
   const xs: number[] = [];
   const ya: number[] = [];
   const yb: number[] = [];
   const yc: number[] = [];
   const firstIdx = lowerBoundPwmTime(plotStart);
-  const prevIdx = Math.max(0, firstIdx - 1);
+  const prevIdx = firstIdx - 1;
   const lastIdx = upperBoundPwmTime(plotEnd);
   const transitionCount = Math.max(0, lastIdx - firstIdx);
   if (transitionCount > maxTransitions) {
     let idx = prevIdx;
-    let a = applyNpcLevel(pwmEvents[prevIdx].a, 0);
-    let b = applyNpcLevel(pwmEvents[prevIdx].b, 0);
-    let c = applyNpcLevel(pwmEvents[prevIdx].c, 0);
-    const buckets = Math.max(1, Math.floor(maxTransitions / 2));
+    let a = prevIdx >= 0 ? applyNpcLevel(pwmEvents[prevIdx].a, 0) : 0;
+    let b = prevIdx >= 0 ? applyNpcLevel(pwmEvents[prevIdx].b, 0) : 0;
+    let c = prevIdx >= 0 ? applyNpcLevel(pwmEvents[prevIdx].c, 0) : 0;
+    const buckets = Math.max(1, Math.floor(plotWidth));
     for (let j = 0; j < buckets; j++) {
       const t0 = plotStart + (plotEnd - plotStart) * j / buckets;
       const t1 = plotStart + (plotEnd - plotStart) * (j + 1) / buckets;
@@ -2199,9 +2290,9 @@ function pwmStepData(viewStart: number, viewEnd: number): [number[], number[], n
     return [xs, ya, yb, yc];
   }
   let lastT = plotStart;
-  let a = applyNpcLevel(pwmEvents[prevIdx].a, 0);
-  let b = applyNpcLevel(pwmEvents[prevIdx].b, 0);
-  let c = applyNpcLevel(pwmEvents[prevIdx].c, 0);
+  let a = prevIdx >= 0 ? applyNpcLevel(pwmEvents[prevIdx].a, 0) : 0;
+  let b = prevIdx >= 0 ? applyNpcLevel(pwmEvents[prevIdx].b, 0) : 0;
+  let c = prevIdx >= 0 ? applyNpcLevel(pwmEvents[prevIdx].c, 0) : 0;
   xs.push(plotStart); ya.push(a); yb.push(b); yc.push(c);
   for (let i = firstIdx; i < lastIdx; i++) {
     const ev = pwmEvents[i];
@@ -2228,6 +2319,116 @@ function clearTelemBuffers() {
   samplesBuf.length = 0;
   lastTelemPlotTime = -Infinity;
   sampleCount = 0;
+}
+
+function clearPwmBuffers(resetClockState = true) {
+  pwmEvents.length = 0;
+  pwmOverviewT.length = 0;
+  pwmOverviewA.length = 0;
+  pwmOverviewB.length = 0;
+  pwmOverviewC.length = 0;
+  pwmOverviewNextT = null;
+  pwmOverviewAState = 0;
+  pwmOverviewBState = 0;
+  pwmOverviewCState = 0;
+  lastPwmPlotTime = -Infinity;
+  if (resetClockState) {
+    pendingPwmEvents.length = 0;
+    pwmEpoch = null;
+    pwmActive = false;
+    pwmLastRawCycles = null;
+    pwmLastAbsCycles = null;
+    pwmWrapOffsetCycles = 0;
+  }
+}
+
+function normalizePwmEventsInPlace() {
+  if (pwmEvents.length < 2) return;
+  pwmEvents.sort((a, b) => a.t_sec - b.t_sec);
+  let write = 0;
+  let last = -Infinity;
+  for (let read = 0; read < pwmEvents.length; read++) {
+    const ev = pwmEvents[read];
+    if (!Number.isFinite(ev.t_sec) || ev.t_sec <= last) continue;
+    pwmEvents[write++] = ev;
+    last = ev.t_sec;
+  }
+  pwmEvents.length = write;
+}
+
+function pwmTimelineReady(): boolean {
+  return telemBaseAbsCycles !== null && telemEpoch !== null;
+}
+
+function queuePendingPwm(events: PwmEvent[]) {
+  if (events.length === 0) return;
+  pendingPwmEvents.push(...events);
+  if (pendingPwmEvents.length > MAX_PENDING_PWM_EVENTS) {
+    pendingPwmEvents.splice(0, pendingPwmEvents.length - MAX_PENDING_PWM_EVENTS);
+  }
+}
+
+function appendPwmPlotEvent(ev: PwmEvent, tSec: number) {
+  if (tSec < 0 || tSec <= lastPwmPlotTime) return;
+  lastPwmPlotTime = tSec;
+  appendPwmOverviewUntil(tSec);
+  pwmOverviewAState = applyNpcLevel(ev.a, pwmOverviewAState);
+  pwmOverviewBState = applyNpcLevel(ev.b, pwmOverviewBState);
+  pwmOverviewCState = applyNpcLevel(ev.c, pwmOverviewCState);
+  pwmEvents.push({ ...ev, t_sec: tSec });
+}
+
+function ingestPwmEvents(events: PwmEvent[]) {
+  const aligned = events.every(ev => typeof ev.t_sec === "number" && Number.isFinite(ev.t_sec));
+  if (aligned) {
+    for (const ev of events) appendPwmPlotEvent(ev, ev.t_sec!);
+    if (pwmEvents.length > MAX_PWM_EVENTS) pwmEvents.splice(0, pwmEvents.length - MAX_PWM_EVENTS);
+    return;
+  }
+
+  if (!pwmTimelineReady()) {
+    queuePendingPwm(events);
+    return;
+  }
+
+  for (const ev of events) {
+    if (telemEpoch === null || ev.epoch !== telemEpoch) continue;
+
+    const raw = ev.t_cycles >>> 0;
+
+    if (pwmEpoch !== null && ev.epoch !== pwmEpoch) {
+      clearPwmBuffers(false);
+      pwmWrapOffsetCycles = 0;
+      pwmLastRawCycles = null;
+      pwmLastAbsCycles = null;
+    } else if (pwmLastRawCycles !== null && raw < pwmLastRawCycles && pwmLastRawCycles - raw > 0x80000000) {
+      pwmWrapOffsetCycles += PWM_COUNTER_MOD;
+    }
+
+    const absCycles = pwmWrapOffsetCycles + raw;
+    pwmEpoch = ev.epoch;
+
+    // The renderer uses binary searches over pwmEvents, so accepting a stale,
+    // duplicate or reordered UDP/SSE event corrupts the step reconstruction.
+    if (pwmLastAbsCycles !== null && absCycles <= pwmLastAbsCycles) continue;
+
+    const base = telemBaseAbsCycles;
+    if (base === null) continue;
+    const tSec = secondsFromTelemetryOrigin(raw, pwmWrapOffsetCycles, base, pwmClockHz);
+    if (tSec < 0 || tSec <= lastPwmPlotTime) continue;
+
+    pwmLastRawCycles = raw;
+    pwmLastAbsCycles = absCycles;
+    appendPwmPlotEvent(ev, tSec);
+  }
+
+  if (pwmEvents.length > MAX_PWM_EVENTS) pwmEvents.splice(0, pwmEvents.length - MAX_PWM_EVENTS);
+}
+
+function drainPendingPwmEvents() {
+  if (!pwmTimelineReady() || pendingPwmEvents.length === 0) return;
+  const pending = pendingPwmEvents.splice(0);
+  ingestPwmEvents(pending);
 }
 
 // Painted by RenderScheduler at most once per RENDER_INTERVAL_MS inside a
@@ -2319,6 +2520,7 @@ function ingestTelemetry(samples: Sample[]) {
       // Epoch incremented → new run started. Clear stale samples so the
       // old frozen-counter data at end-of-previous-run doesn't linger.
       clearTelemBuffers();
+      clearPwmBuffers();
       telemWrapOffsetCycles = 0;
       telemBaseAbsCycles = null;
       telemLastRawCycles = null;
@@ -2352,6 +2554,8 @@ function ingestTelemetry(samples: Sample[]) {
     tBuf.splice(0, drop);
     samplesBuf.splice(0, drop);
   }
+
+  drainPendingPwmEvents();
 
   const last = samples[samples.length - 1];
   CHANNELS.forEach((ch, i) => {
@@ -2438,28 +2642,7 @@ api.onPwmEvents((batch: PwmEventBatch) => {
   if (!capturePwm || !batch || !Array.isArray(batch.events) || batch.events.length === 0) return;
   pwmClockHz = batch.clock_hz || pwmClockHz;
   pwmActive = (batch.status & 0x1) !== 0;
-  for (const ev of batch.events) {
-    const raw = ev.t_cycles >>> 0;
-    if (pwmEpoch !== null && ev.epoch !== pwmEpoch) {
-      pwmWrapOffsetCycles = 0;
-      pwmLastRawCycles = null;
-    } else if (pwmLastRawCycles !== null && raw < pwmLastRawCycles && pwmLastRawCycles - raw > 0x80000000) {
-      pwmWrapOffsetCycles += PWM_COUNTER_MOD;
-    }
-    pwmEpoch = ev.epoch;
-    pwmLastRawCycles = raw;
-    // Use the same first-telemetry origin as the gateway session clock.
-    if (telemBaseAbsCycles === null || telemEpoch === null || ev.epoch !== telemEpoch) continue;
-    const tSec = secondsFromTelemetryOrigin(raw, pwmWrapOffsetCycles, telemBaseAbsCycles, pwmClockHz);
-    if (tSec < 0) continue;
-    appendPwmOverviewUntil(tSec);
-    pwmOverviewAState = applyNpcLevel(ev.a, pwmOverviewAState);
-    pwmOverviewBState = applyNpcLevel(ev.b, pwmOverviewBState);
-    pwmOverviewCState = applyNpcLevel(ev.c, pwmOverviewCState);
-    pwmEvents.push({ ...ev, t_sec: tSec });
-  }
-
-  if (pwmEvents.length > MAX_PWM_EVENTS) pwmEvents.splice(0, pwmEvents.length - MAX_PWM_EVENTS);
+  ingestPwmEvents(batch.events);
   scheduleRender();
 });
 
@@ -2477,6 +2660,28 @@ function showPsStatus(text: string, ok: boolean) {
 function showConnStatus(text: string, ok: boolean) {
   elConnStatus.textContent = text;
   elConnStatus.className = `ps-status ${ok ? "ps-status-ok" : "ps-status-err"}`;
+}
+
+function formatFpgaVersion(v?: number): string {
+  if (v == null) return "unknown";
+  const hex = (v >>> 0).toString(16).padStart(8, "0");
+  const y = Number(hex.slice(0, 4));
+  const m = Number(hex.slice(4, 6));
+  const d = Number(hex.slice(6, 8));
+  if (y >= 2020 && y <= 2099 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+    return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  return `0x${hex}`;
+}
+
+function updateVersionCard(s: HilStatus) {
+  elVersionPS.textContent = s.ps_version || "unknown";
+  elVersionPS.title = s.ps_version || "unknown";
+  elVersionFPGA.textContent = formatFpgaVersion(s.fpga_version);
+  elVersionFPGA.title = s.fpga_version == null ? "unknown" : `0x${(s.fpga_version >>> 0).toString(16).padStart(8, "0")}`;
+  elVersionTelem.textContent = s.telem_active === 1
+    ? `${s.telem_source || "telem"} @ ${s.telem_hz || 0} Hz`
+    : "offline";
 }
 
 function setStateBadge(state: string) {
@@ -2550,6 +2755,7 @@ async function withButton<T>(btn: HTMLButtonElement, fn: () => Promise<T>): Prom
 
 function applyResponse(s: HilStatus | null, opts: { hydrate?: boolean } = {}) {
   if (!s) return;
+  updateVersionCard(s);
   setStateBadge(s.state);
   if (s.state !== "running" || s.enable !== 1) pwmActive = false;
   applyBoardIP(s.board_ip);
@@ -2605,19 +2811,7 @@ function resetPlotBuffer() {
   telemWrapOffsetCycles = 0;
   telemBaseAbsCycles = null;
   telemEpoch = null;
-  pwmEvents.length = 0;
-  pwmOverviewT.length = 0;
-  pwmOverviewA.length = 0;
-  pwmOverviewB.length = 0;
-  pwmOverviewC.length = 0;
-  pwmOverviewNextT = null;
-  pwmOverviewAState = 0;
-  pwmOverviewBState = 0;
-  pwmOverviewCState = 0;
-  pwmEpoch = null;
-  pwmActive = false;
-  pwmLastRawCycles = null;
-  pwmWrapOffsetCycles = 0;
+  clearPwmBuffers();
   plots.forEach((p, s) => {
     const chIdx = getChIdx(s);
     p.setData([[], ...chIdx.map(() => [])] as uPlot.AlignedData);
@@ -2641,11 +2835,7 @@ function clearPlotView() {
   samplesBuf.length = 0;
   sampleCount = 0;
   latestHistorical = null;
-  pwmEvents.length = 0;
-  pwmOverviewT.length = 0;
-  pwmOverviewA.length = 0;
-  pwmOverviewB.length = 0;
-  pwmOverviewC.length = 0;
+  clearPwmBuffers(false);
   pwmOverviewNextT = historyFloorSec;
   loadTimeline.length = 0;
   recordStep(loadTimeline, historyFloorSec, loadNow);
@@ -2661,19 +2851,43 @@ function clearPlotView() {
 }
 
 // ── Save / Load (.hilbin) ─────────────────────────────────────────────────────
-function serializeHilbin(name: string): ArrayBuffer {
+function currentPlantMeta() {
+  return {
+    rs: Number(elMotorRs.value), rr: Number(elMotorRr.value),
+    ls: Number(elMotorLs.value), lr: Number(elMotorLr.value),
+    lm: Number(elMotorLm.value), j:  Number(elMotorJ.value),
+  };
+}
+
+function currentControllerMeta() {
+  const p = readParams();
+  return {
+    rpm: Number(elRpm.value), freq_hz: p.freq, vdc_v: p.vdc, torque_nm: p.torque,
+    rated_rpm: Number(elRatedRpm.value), base_freq_hz: p.baseFreq,
+    max_v_pu: p.maxVPu, accel_time_s: p.accelTime,
+  };
+}
+
+function currentBoardMeta() {
+  return {
+    ip: elIp.value.trim(),
+    ps_version: elVersionPS.textContent || undefined,
+    fpga_version: elVersionFPGA.title || elVersionFPGA.textContent || undefined,
+  };
+}
+
+function serializeHilbin(name: string, extraMeta: Partial<HilbinMeta> = {}): ArrayBuffer {
   const meta = JSON.stringify({
-    version: 1,
+    version: 2,
     date: new Date().toISOString(),
     name,
     sample_count: tBuf.length,
     pwm_count: pwmEvents.length,
     npp: motorNpp,
-    motor: {
-      rs: Number(elMotorRs.value), rr: Number(elMotorRr.value),
-      ls: Number(elMotorLs.value), lr: Number(elMotorLr.value),
-      lm: Number(elMotorLm.value), j:  Number(elMotorJ.value),
-    },
+    motor: currentPlantMeta(),
+    controller: currentControllerMeta(),
+    board: currentBoardMeta(),
+    ...extraMeta,
   });
   const metaBytes = new TextEncoder().encode(meta);
   const jsonSize  = metaBytes.length;
@@ -2721,7 +2935,7 @@ function serializeHilbin(name: string): ArrayBuffer {
   return buf;
 }
 
-function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; sampleCount: number; pwmCount: number } {
+function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; sampleCount: number; pwmCount: number; meta: HilbinMeta } {
   const u8   = new Uint8Array(buf);
   const view = new DataView(buf);
 
@@ -2770,10 +2984,11 @@ function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; samp
     off += 8;
     pwmEvents.push({ t_cycles: 0, a, b, c, mask: 0, epoch: 0, t_sec });
   }
+  normalizePwmEventsInPlace();
 
   if (tBuf.length > 0) viewEndSec = tBuf[tBuf.length - 1];
   scheduleRender();
-  return { name: meta.name ?? "", date: meta.date ?? "", sampleCount: telemCount, pwmCount };
+  return { name: meta.name ?? "", date: meta.date ?? "", sampleCount: telemCount, pwmCount, meta };
 }
 
 function arrayBufferToBase64(buf: ArrayBuffer): string {
@@ -2793,8 +3008,8 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-async function triggerSave(name: string) {
-  const buf      = serializeHilbin(name);
+async function triggerSave(name: string, extraMeta: Partial<HilbinMeta> = {}) {
+  const buf      = serializeHilbin(name, extraMeta);
   const filename = (name.endsWith(".hilbin") ? name : name + ".hilbin").replace(/[/\\]+/g, "_");
   if (isWails && api.SaveRun) {
     await api.SaveRun(arrayBufferToBase64(buf), filename);
@@ -2865,10 +3080,15 @@ function exportToCsv() {
   setStatus(`Exported ${tBuf.length.toLocaleString()} samples → ${name}`, "ok");
 }
 
-function showRunMetaBadge(meta: { name: string; date: string; sampleCount: number; pwmCount: number }) {
+function showRunMetaBadge(meta: { name: string; date: string; sampleCount: number; pwmCount: number; meta?: HilbinMeta }) {
   const d = meta.date ? new Date(meta.date).toLocaleString() : "unknown date";
+  const m = meta.meta ?? {};
+  const sc = m.scenario?.name ? ` · scenario ${m.scenario.name}` : "";
+  const bt = m.batch?.name ? ` · batch ${m.batch.name}` : "";
+  const ctrl = m.controller ? ` · ${Math.round(m.controller.rpm ?? 0)} RPM · ${m.controller.vdc_v ?? "?"} Vdc` : "";
+  const plant = m.motor ? ` · Rs ${m.motor.rs ?? "?"} Rr ${m.motor.rr ?? "?"}` : "";
   elRunMetaBadge.textContent =
-    `Loaded: "${meta.name}" · ${d} · ${meta.sampleCount.toLocaleString()} samples · ${meta.pwmCount.toLocaleString()} PWM events`;
+    `Loaded: "${meta.name}" · ${d}${bt}${sc}${ctrl}${plant} · ${meta.sampleCount.toLocaleString()} samples · ${meta.pwmCount.toLocaleString()} PWM events`;
   elRunMetaBadge.classList.remove("hidden");
 }
 
@@ -2891,6 +3111,16 @@ function getRecipeByName(name: string): { events: RecipeEvent[]; endTime: number
 function updateBatchEmptyHint() {
   const hasRows = elBatchTable.querySelectorAll(".batch-row").length > 0;
   elBatchEmptyHint.style.display = hasRows ? "none" : "";
+}
+
+function defaultBatchName(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `batch_${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+function currentBatchName(): string {
+  return safeRunStem(elBatchName.value.trim() || defaultBatchName());
 }
 
 function updateBatchSummary() {
@@ -3017,6 +3247,8 @@ async function runBatchSequence() {
   } catch { /* proceed with stored IP */ }
 
   const items = readBatchItems();
+  const batchName = currentBatchName();
+  elBatchName.value = batchName;
   let completed = 0;
 
   for (let i = 0; i < items.length; i++) {
@@ -3057,8 +3289,11 @@ async function runBatchSequence() {
       capturePwm = false;
 
       const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
-      const runName = `${safeRunStem(item.recipeName)}_${ts}`;
-      await saveRunToServer(runName);
+      const runName = `${batchName}_${String(i + 1).padStart(2, "0")}_${safeRunStem(item.recipeName)}_${ts}`;
+      await saveRunToServer(runName, {
+        scenario: { name: item.recipeName, events: recipe.events, endTime: recipe.endTime },
+        batch: { name: batchName, index: i + 1, count: items.length },
+      });
 
       completed++;
       setBatchItemStatus(i, "done");
@@ -3162,9 +3397,9 @@ function safeRunStem(name: string): string {
     .slice(0, 80) || "run";
 }
 
-async function saveRunToServer(name: string): Promise<void> {
+async function saveRunToServer(name: string, extraMeta: Partial<HilbinMeta> = {}): Promise<void> {
   if (isWails) return; // Wails uses native file dialog
-  const buf = serializeHilbin(name);
+  const buf = serializeHilbin(name, extraMeta);
   const filename = (name.endsWith(".hilbin") ? name : name + ".hilbin").replace(/[/\\]+/g, "_");
   const source = gatewayHistoryEnabled ? "latest" : "display";
   const res = await fetch(gatewayURL(`/api/runs?name=${encodeURIComponent(filename)}&source=${source}`), {
@@ -3182,15 +3417,52 @@ async function loadRunHistory(): Promise<void> {
   if (isWails) { elRunsEmpty.textContent = "History not available in Wails mode."; return; }
   try {
     const runs = await getJSON<RunMeta[]>("/api/runs");
-    elRunsList.querySelectorAll(".run-card").forEach(c => c.remove());
+    elRunsList.querySelectorAll(".run-card,.run-group").forEach(c => c.remove());
+    const groups = new Map<string, RunMeta[]>();
     for (const run of runs) {
-      elRunsList.appendChild(buildRunCard(run));
+      const group = run.meta?.batch?.name || "Manual / single runs";
+      const arr = groups.get(group) ?? [];
+      arr.push(run);
+      groups.set(group, arr);
+    }
+    for (const [group, groupRuns] of groups) {
+      const section = document.createElement("div");
+      section.className = "run-group";
+      const isBatch = group !== "Manual / single runs";
+      const totalBytes = groupRuns.reduce((sum, r) => sum + r.size, 0);
+      section.innerHTML = `
+        <details class="run-group-details" open>
+          <summary class="run-group-summary">
+            <span class="run-group-title">${group}</span>
+            <span class="run-group-meta">${groupRuns.length} run${groupRuns.length === 1 ? "" : "s"} · ${formatBytes(totalBytes)}${isBatch ? " · batch" : ""}</span>
+          </summary>
+          <div class="run-group-list"></div>
+        </details>`;
+      const list = section.querySelector<HTMLDivElement>(".run-group-list")!;
+      for (const run of groupRuns) list.appendChild(buildRunCard(run));
+      elRunsList.appendChild(section);
     }
     applyRunFilter();
   } catch {
     elRunsEmpty.textContent = "Could not load history.";
     elRunsEmpty.style.display = "";
   }
+}
+
+function summarizeRunMeta(meta?: HilbinMeta): string {
+  if (!meta) return "legacy run · no saved setup metadata";
+  const parts: string[] = [];
+  if (meta.batch?.index && meta.batch?.count) parts.push(`item ${meta.batch.index}/${meta.batch.count}`);
+  if (meta.scenario?.name) parts.push(`scenario ${meta.scenario.name}`);
+  if (meta.controller) {
+    const rpm = Math.round(meta.controller.rpm ?? 0);
+    const vdc = meta.controller.vdc_v ?? "?";
+    const tq = meta.controller.torque_nm ?? "?";
+    parts.push(`${rpm} RPM`, `${vdc} Vdc`, `TL ${tq} Nm`);
+  }
+  if (meta.motor) parts.push(`Rs ${meta.motor.rs ?? "?"}`, `Rr ${meta.motor.rr ?? "?"}`);
+  if (meta.board?.ps_version) parts.push(`PS ${meta.board.ps_version}`);
+  return parts.join(" · ") || "saved setup metadata";
 }
 
 function buildRunCard(run: RunMeta): HTMLElement {
@@ -3202,20 +3474,27 @@ function buildRunCard(run: RunMeta): HTMLElement {
   const card = document.createElement("div");
   card.className = "run-card";
   card.dataset.name = run.name.toLowerCase();
+  card.dataset.filename = run.name;
   card.dataset.label = label.toLowerCase();
   card.innerHTML = `
+    <label class="run-card-select" title="Select for batch delete">
+      <input class="run-select" type="checkbox" aria-label="Select ${run.name}" />
+    </label>
     <div class="run-card-body run-btn-load" title="Click to load and view" style="cursor:pointer">
       <div class="run-card-name">${label}</div>
       <div class="run-card-meta">
         <span class="run-card-time" title="${absTime}">${relTime}</span>
         <span class="run-card-size">${size}</span>
       </div>
+      <div class="run-card-setup" title="${summarizeRunMeta(run.meta)}">${summarizeRunMeta(run.meta)}</div>
     </div>
     <div class="run-card-actions">
       <button class="btn btn-xs run-btn-download" data-name="${run.name}" type="button" title="Download .hilbin">↓ .hilbin</button>
       <button class="btn btn-xs run-btn-csv" data-name="${run.name}" type="button" title="Export CSV">↓ CSV</button>
-      <button class="btn btn-xs run-btn-delete" data-name="${run.name}" type="button" title="Delete run">✕</button>
+      <button class="btn btn-xs run-btn-delete" data-name="${run.name}" type="button" title="Delete run from disk">Delete</button>
     </div>`;
+
+  card.querySelector<HTMLInputElement>(".run-select")!.addEventListener("change", updateRunSelectionState);
 
   card.querySelector<HTMLElement>(".run-btn-load")!.addEventListener("click", async () => {
     try {
@@ -3257,23 +3536,30 @@ function buildRunCard(run: RunMeta): HTMLElement {
   });
 
   card.querySelector<HTMLButtonElement>(".run-btn-delete")!.addEventListener("click", async () => {
-    if (!confirm(`Delete "${run.name}"?`)) return;
-    try {
-      const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`), { method: "DELETE" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      card.classList.add("run-card-deleting");
-      card.addEventListener("transitionend", () => { card.remove(); updateRunsEmpty(); }, { once: true });
-    } catch (e) {
-      setStatus(`Delete failed: ${String(e)}`, "error");
-    }
+    if (!confirm(`Delete "${run.name}" from disk?`)) return;
+    await deleteRunCards([card]);
   });
 
   return card;
 }
 
+function runCards(): HTMLElement[] {
+  return Array.from(elRunsList.querySelectorAll<HTMLElement>(".run-card"));
+}
+
+function selectedRunCards(): HTMLElement[] {
+  return runCards().filter(card => card.querySelector<HTMLInputElement>(".run-select")?.checked);
+}
+
+function updateRunSelectionState() {
+  const selected = selectedRunCards().length;
+  elRunsSelected.textContent = `${selected} selected`;
+  elBtnRunsDeleteSelected.disabled = selected === 0;
+}
+
 function applyRunFilter() {
   const q = elRunsSearch.value.trim().toLowerCase();
-  const cards = Array.from(elRunsList.querySelectorAll<HTMLElement>(".run-card"));
+  const cards = runCards();
   let visible = 0;
   cards.forEach(card => {
     const haystack = `${card.dataset.name ?? ""} ${card.dataset.label ?? ""}`;
@@ -3281,20 +3567,64 @@ function applyRunFilter() {
     card.style.display = show ? "" : "none";
     if (show) visible++;
   });
+  elRunsList.querySelectorAll<HTMLElement>(".run-group").forEach(group => {
+    const groupVisible = Array.from(group.querySelectorAll<HTMLElement>(".run-card")).some(card => card.style.display !== "none");
+    group.style.display = groupVisible ? "" : "none";
+  });
   elRunsSummary.textContent = q ? `${visible}/${cards.length} runs` : `${cards.length} runs`;
   elRunsEmpty.textContent = cards.length === 0 ? "No runs saved yet." : "No runs match the filter.";
   elRunsEmpty.style.display = visible ? "none" : "";
+  updateRunSelectionState();
 }
 
 function updateRunsEmpty() {
   applyRunFilter();
 }
 
+function selectVisibleRuns() {
+  const visibleCards = runCards().filter(card => card.style.display !== "none");
+  const allSelected = visibleCards.length > 0 && visibleCards.every(card => card.querySelector<HTMLInputElement>(".run-select")?.checked);
+  visibleCards.forEach(card => {
+    const cb = card.querySelector<HTMLInputElement>(".run-select");
+    if (cb) cb.checked = !allSelected;
+  });
+  updateRunSelectionState();
+}
+
+async function deleteRunCards(cards: HTMLElement[]) {
+  if (cards.length === 0) return;
+  const names = cards.map(card => card.dataset.filename || "").filter(Boolean);
+  for (const card of cards) {
+    const name = card.dataset.filename;
+    if (!name) continue;
+    const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(name)}`), { method: "DELETE" });
+    if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+    card.classList.add("run-card-deleting");
+    window.setTimeout(() => { card.remove(); updateRunsEmpty(); }, 180);
+  }
+  setStatus(`Deleted ${names.length} run${names.length === 1 ? "" : "s"} from disk`, "ok");
+  updateRunSelectionState();
+}
+
+async function deleteSelectedRuns() {
+  const cards = selectedRunCards();
+  if (cards.length === 0) return;
+  if (!confirm(`Delete ${cards.length} selected run${cards.length === 1 ? "" : "s"} from disk?`)) return;
+  try {
+    elBtnRunsDeleteSelected.disabled = true;
+    await deleteRunCards(cards);
+  } catch (e) {
+    setStatus(`Delete failed: ${String(e)}`, "error");
+  } finally {
+    updateRunSelectionState();
+  }
+}
+
 // ── Scenario / batch config export-import ────────────────────────────────────
 function exportConfig() {
   const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
   const batchItems = readBatchItems();
-  const config = { version: 1, exported: new Date().toISOString(), recipes: all, batch: batchItems };
+  const config = { version: 1, exported: new Date().toISOString(), recipes: all, batchName: elBatchName.value.trim(), batch: batchItems };
   const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
@@ -3312,6 +3642,7 @@ function importConfig(file: File) {
       const merged = { ...existing, ...(config.recipes ?? {}) };
       localStorage.setItem(RECIPE_KEY, JSON.stringify(merged));
       refreshBatchRecipeSelects();
+      if (typeof config.batchName === "string") elBatchName.value = config.batchName;
       // Restore batch rows if present
       if (Array.isArray(config.batch) && config.batch.length > 0) {
         elBatchTable.querySelectorAll(".batch-row").forEach(r => r.remove());
@@ -3394,21 +3725,14 @@ elBtnRun.addEventListener("click", () => withButton(elBtnRun, async () => {
   applyResponse(s);
 }));
 
-elBtnReset.addEventListener("click", () => withButton(elBtnReset, async () => {
-  const { ip } = readParams();
-  const s = await api.ResetSolver(ip) as HilStatus;
-  applyBoardIP(s.board_ip);
-  setStatus("Solver states reset", "ok");
-  applyResponse(s);
-}));
-
 elBtnStop.addEventListener("click", () => withButton(elBtnStop, async () => {
   const { ip } = readParams();
   const s = await api.StopController(ip) as HilStatus;
   applyBoardIP(s.board_ip);
   paused = true;
-  viewEndSec = tBuf.length ? tBuf[tBuf.length - 1] : viewEndSec;
-  setStatus("Stopped (daemon alive — can Run again)", "ok");
+  viewEndSec = Math.max(latestDataSec(), gatewaySessionLastSec);
+  plotRunActive = true;
+  setStatus("Stopped; last capture preserved", "ok");
   applyResponse(s);
   scheduleRender();
 }));
@@ -3532,6 +3856,7 @@ setInterval(async () => {
   try {
     const s = await api.GetStatus(ip) as HilStatus;
     consecutiveStatusFailures = 0;
+    updateVersionCard(s);
     applyBoardIP(s.board_ip);
     setStateBadge(s.state);
     // refresh telem badge: if board says telem_active but we haven't seen

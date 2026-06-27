@@ -45,8 +45,8 @@ body {
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   border-top: 2px solid var(--lse-blue);
   flex-shrink: 0;
@@ -54,7 +54,7 @@ body {
 }
 
 .app-logo {
-  height: 32px;
+  height: 27px;
   width: auto;
   object-fit: contain;
   display: block;
@@ -65,7 +65,7 @@ body {
 }
 
 .app-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.03em;
   color: #e8f3ff;
@@ -180,7 +180,7 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 10px;
+  padding: 5px 8px;
   background: var(--bg-panel2);
 }
 
@@ -193,7 +193,7 @@ body {
 }
 
 .panel {
-  padding: 12px;
+  padding: 10px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -209,7 +209,7 @@ body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: #7fa8c8;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   padding-left: 7px;
   border-left: 2px solid var(--lse-blue);
   display: flex;
@@ -315,6 +315,40 @@ body {
 .icon-btn:hover { color: var(--fg); border-color: var(--blue); }
 
 /* ── CONNECTION PANEL ────────────────────────── */
+.connection-panel {
+  padding-top: 9px;
+  padding-bottom: 8px;
+}
+.connection-panel .panel-title {
+  margin-bottom: 5px;
+}
+.connection-ip-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  margin-bottom: 6px;
+}
+.connection-ip-row .write-input {
+  height: 28px;
+  font-size: 12px;
+}
+.connection-panel .btn-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+.connection-panel .btn-row .btn {
+  height: 27px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+#conn-status {
+  margin-top: 6px;
+  padding: 5px 7px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
 .conn-row {
   display: flex;
   gap: 6px;
@@ -439,7 +473,7 @@ body {
 
 /* ── STATUS BAR ───────────────────────────────── */
 .status-bar {
-  padding: 6px 10px;
+  padding: 5px 8px;
   font-size: 10px;
   color: var(--muted);
   background: var(--bg-panel2);
@@ -718,6 +752,64 @@ body {
   border: 1px solid #5a001a;
 }
 
+.version-card {
+  margin-top: 6px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 5px;
+  align-items: center;
+}
+.version-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.version-chip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-hi);
+  border-radius: 3px;
+  color: var(--muted);
+  background: #07111e;
+  font: 8.5px "IBM Plex Mono", monospace;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.version-chip strong {
+  min-width: 0;
+  max-width: 82px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+  font-weight: 700;
+}
+.version-sub {
+  grid-column: 1;
+  min-width: 0;
+  color: var(--muted);
+  font: 8.5px "IBM Plex Mono", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.version-refresh {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  height: 21px;
+  align-self: center;
+  padding: 2px 6px;
+  font-size: 8px;
+}
+
 /* PS telemetry readout */
 .ps-telemetry {
   margin-top: 8px;
@@ -955,8 +1047,8 @@ body {
 .sidebar-tabs {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 3px;
-  padding: 6px 8px;
+  gap: 4px;
+  padding: 5px 7px;
   background: #09111c;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -966,7 +1058,7 @@ body {
 
 .tab-btn {
   min-width: 0;
-  min-height: 28px;
+  min-height: 24px;
   border: 1px solid var(--border-hi);
   border-radius: var(--r);
   background: #0a1422;
@@ -1022,7 +1114,7 @@ body {
 
 .model-node,
 .model-part {
-  height: 24px;
+  height: 22px;
   min-width: 34px;
   padding: 3px 6px;
   border-radius: 4px;
@@ -1125,8 +1217,8 @@ body {
   letter-spacing: 0.05em;
 }
 .scenario-run-card {
-  margin: 0 0 8px;
-  padding: 8px;
+  margin: 0 0 6px;
+  padding: 7px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: #07111e;
@@ -1170,8 +1262,8 @@ body {
 .scenario-run-meta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  margin-top: 7px;
+  gap: 5px;
+  margin-top: 5px;
   color: var(--muted);
   font: 9px "IBM Plex Mono", monospace;
 }
@@ -1206,9 +1298,9 @@ body {
 .scenario-table {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  margin-top: 4px;
-  max-height: 268px;
+  gap: 4px;
+  margin-top: 3px;
+  max-height: 318px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #1e3a5f transparent;
@@ -1388,6 +1480,20 @@ body {
   font-size: 11px;
 }
 
+.history-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.history-note {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 /* ── About modal ────────────────────────────────────────────────────────────── */
 .about-modal-box {
   width: 100%;
@@ -1481,6 +1587,10 @@ body {
 }
 
 .run-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
   background: var(--bg-panel2);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1495,6 +1605,18 @@ body {
 .run-card-deleting {
   opacity: 0;
   pointer-events: none;
+}
+.run-card-select {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 2px;
+}
+.run-select {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--blue);
+  cursor: pointer;
 }
 .run-card-name {
   font-size: 11px;
@@ -1523,6 +1645,7 @@ body {
   font-family: "IBM Plex Mono", monospace;
 }
 .run-card-body {
+  min-width: 0;
   cursor: pointer;
   border-radius: 4px;
   padding: 2px 2px 4px;
@@ -1532,6 +1655,7 @@ body {
 .run-card-body:hover { background: rgba(79, 195, 247, 0.07); }
 
 .run-card-actions {
+  grid-column: 2;
   display: flex;
   gap: 5px;
 }
@@ -1543,4 +1667,55 @@ body {
 .run-btn-delete:hover {
   background: rgba(232,48,80,.1) !important;
   border-color: var(--danger) !important;
+}
+
+.batch-name-row {
+  margin-bottom: 8px;
+}
+
+.run-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #07111e;
+  overflow: hidden;
+}
+.run-group + .run-group { margin-top: 8px; }
+.run-group-details { display: block; }
+.run-group-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+}
+.run-group-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+.run-group-meta {
+  flex-shrink: 0;
+  color: var(--muted);
+  font: 9px "IBM Plex Mono", monospace;
+}
+.run-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+}
+.run-card-setup {
+  margin-top: 2px;
+  color: var(--muted);
+  font: 9px "IBM Plex Mono", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
