@@ -1,0 +1,53 @@
+# =============================================================================
+# Figura 02 - TIM_Solver (nucleo numerico). Dono de Q14.28 e passo 130 ns.
+# Estrutura real (src/rtl/TIM_Solver.vhd): timer, Clarke, matrizes A/B (shadow)
+# + Y estrutural (acoplamento nao-linear X.X), solver bilinear DSP48, estado X,
+# mapeamento de saidas.
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  fast:  {style: {fill: "#d9d9d9"; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  cdc:   {style: {fill: white;    stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  ext:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false; double-border: true}}
+  grp:   {style: {fill: "#f2f2f2"; stroke: black; stroke-width: 2; stroke-dash: 6; border-radius: 0; font-color: black; bold: true}}
+  dom:   {style: {fill: "#ececec"; stroke: black; stroke-width: 2; stroke-dash: 2; border-radius: 0; font-color: black; bold: true}}
+  arrow: {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+vin: "V_a V_b V_c\n(do HIL_AXI_Top, fig. 01)" {class: ext}
+
+solver: "TIM_Solver - dominio 200 MHz (MMCM) - Q14.28, 42-bit" {
+  class: grp
+  style.fill: "#d9d9d9"
+
+  timer: "Timer de passo\n26 ciclos = 130 ns" {class: fast}
+  clarke: "Transformada de Clarke\nV_abc -> V_alpha V_beta" {class: fast}
+  coef: "Coeficientes A, B (shadow)\naplicados quando idle" {class: fast}
+  ymat: "Matriz Y (estrutural)\nacoplamento nao-linear X.X" {class: fast}
+  bilinear: "Solver Bilinear (DSP48E1)\ndX = A X[k] + B U + Y(X.X)" {class: fast}
+  xstate: "Vetor de Estado X[k]\n(registradores)" {class: fast}
+  outmap: "Mapeamento de Saidas\nI_alpha I_beta  psi_alpha psi_beta  w_m" {class: fast}
+
+  clarke -> bilinear: "U = V_alpha V_beta" {class: arrow}
+  coef -> bilinear: "A, B" {class: arrow; style.stroke-dash: 4}
+  ymat -> bilinear: {class: arrow}
+  xstate -> bilinear: "X[k]" {class: arrow}
+  timer -> bilinear: "start (a cada 130 ns)" {class: arrow; style.stroke-dash: 4}
+  bilinear -> xstate: "X[k+1]" {class: arrow}
+  xstate -> outmap: {class: arrow}
+}
+
+out: "I_ab  psi_ab  w\n(para anti-aliasing/decimador, fig. 01)" {class: ext}
+
+vin -> solver.clarke: {class: arrow}
+solver.outmap -> out: {class: arrow}
+
+legenda: "Tudo no dominio 200 MHz (cinza). Bilinear = termo linear A X + B U mais termo nao-linear via matriz Y (acoplamento velocidade-fluxo). Ponto fixo Q14.28." {
+  near: bottom-center
+  shape: text
+  style: {font-color: black; font-size: 18}
+}
