@@ -1,0 +1,32 @@
+# =============================================================================
+# Figura 00 - Mapa (contexto). Dono da cadeia de taxas fim-a-fim.
+# Subsistemas como caixa-preta (ext). Nenhum interior aqui.
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  fast:  {style: {fill: "#d9d9d9"; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  cdc:   {style: {fill: white;    stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  ext:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false; double-border: true}}
+  grp:   {style: {fill: "#f2f2f2"; stroke: black; stroke-width: 2; stroke-dash: 6; border-radius: 0; font-color: black; bold: true}}
+  dom:   {style: {fill: "#ececec"; stroke: black; stroke-width: 2; stroke-dash: 2; border-radius: 0; font-color: black; bold: true}}
+  arrow: {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+sut: "Sistema em Teste\nPS - ARM Cortex-A9 - Linux/C (soft-RT)\n[fig. 03]" {class: ext}
+hil: "Hardware in the Loop\nFPGA / PL - VHDL (hard-RT)\nclocks: 100 MHz (AXI) + 200 MHz (solver)\n[fig. 01 / 02]" {class: ext}
+ws:  "Workstation\nPC Host - Go + TypeScript\n[fig. 04 / 05]" {class: ext}
+
+sut -> hil: "refs V/F (AXI-Lite) @ 1 kHz" {class: arrow}
+hil -> sut: "carrier_tick (IRQ) @ 1 kHz" {class: arrow; style.stroke-dash: 4}
+hil -> ws: "telemetria (UDP) ~100 kHz" {class: arrow}
+ws -> sut: "comandos (UDP)" {class: arrow; style.stroke-dash: 4}
+
+cadeia: "Cadeia de taxas: solver ~7,69 MHz (passo 130 ns) -> anti-aliasing (fc~40 kHz) -> decimador /77 -> ~100 kHz (UDP) -> decimacao de display (min/max, no host)" {
+  near: bottom-center
+  shape: text
+  style: {font-color: black; font-size: 20}
+}
