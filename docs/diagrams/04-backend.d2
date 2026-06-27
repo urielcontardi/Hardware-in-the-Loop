@@ -48,3 +48,9 @@ front: "Frontend (browser) [fig. 05]" {class: ext}
 board -> gw.ingest.recv: "UDP ~100 kHz" {class: arrow}
 gw.api -> front: "tiles (HTTP) + telemetria (SSE)" {class: arrow}
 front -> gw.api: comandos {class: arrow; style.stroke-dash: 4}
+
+legenda: "tracejado = comandos   |   solido = dados   |   borda dupla = caixa-preta" {
+  near: bottom-center
+  shape: text
+  style: {font-color: black; font-size: 16}
+}
