@@ -1214,10 +1214,15 @@ async function prepareScenarioRun() {
 
   // Scenario runs should be one-click: resolve a stale saved/default IP before
   // sending control commands, then keep the input and storage aligned.
-  const found = await api.DiscoverBoard(ip) as DiscoveryResponse;
-  ip = found.ip || ip;
-  applyBoardIP(ip);
-  rememberBoardIP(ip);
+  try {
+    const found = await api.DiscoverBoard(ip) as DiscoveryResponse;
+    ip = found.ip || ip;
+    applyBoardIP(ip);
+    rememberBoardIP(ip);
+  } catch {
+    applyBoardIP(ip);
+    rememberBoardIP(ip);
+  }
 
   captureTelemetry = false;
   capturePwm = false;
@@ -2729,6 +2734,29 @@ function readParams() {
   };
 }
 
+function restoreParamsToForm(p: ReturnType<typeof readParams>) {
+  elNpp.value = String(p.npp);
+  elRpm.value = String(Math.round(p.freq * 60 / p.npp));
+  elRatedRpm.value = String(Math.round(p.baseFreq * 60 / p.npp));
+  elVdc.value = String(p.vdc);
+  elTorque.value = String(p.torque);
+  elMaxVPu.value = String(p.maxVPu);
+  elAccelTime.value = String(p.accelTime);
+  elMotorRs.value = String(p.motorRs);
+  elMotorRr.value = String(p.motorRr);
+  elMotorLs.value = String(p.motorLs);
+  elMotorLr.value = String(p.motorLr);
+  elMotorLm.value = String(p.motorLm);
+  elMotorJ.value = String(p.motorJ);
+  motorNpp = p.npp;
+  syncMotorLmLr();
+}
+
+async function programMotorFromParams(ip: string, p: ReturnType<typeof readParams>) {
+  const s = await api.ProgramMotor(ip, p.motorRs, p.motorRr, p.motorLs, p.motorLr, p.motorLm, p.motorJ, p.npp) as HilStatus;
+  applyResponse(s, { hydrate: false });
+}
+
 function rememberBoardIP(ip: string) {
   if (ip) localStorage.setItem(BOARD_IP_STORAGE_KEY, ip);
 }
@@ -3248,6 +3276,7 @@ async function runBatchSequence() {
 
   const items = readBatchItems();
   const batchName = currentBatchName();
+  const baseParams = readParams();
   elBatchName.value = batchName;
   let completed = 0;
 
@@ -3266,27 +3295,20 @@ async function runBatchSequence() {
 
     try {
       elBatchProgress.textContent = `Running ${i + 1}/${items.length}: ${item.recipeName}`;
-      await api.StopController(ip);
-      await api.ResetSolver(ip);
-      captureTelemetry = false;
-      capturePwm = false;
-      resetPlotBuffer();
-
-      const p = readParams();
-      recordStep(loadTimeline, 0, p.torque);
-      await api.SetParams(ip, p.freq, p.vdc, p.torque, p.baseFreq, p.maxVPu, p.accelTime, false, false, true);
-      captureTelemetry = true;
-      capturePwm = true;
-      await api.Run(ip);
-      plotRunActive = true;
+      restoreParamsToForm(baseParams);
+      await programMotorFromParams(ip, baseParams);
+      await prepareScenarioRun();
+      ip = elIp.value.trim() || ip;
 
       const finishedRecipe = await runRecipeEventsSequentially(recipe);
       if (!finishedRecipe) break;
 
-      await api.StopController(ip);
-      await api.ResetSolver(ip);
-      captureTelemetry = false;
-      capturePwm = false;
+      const stopped = await api.StopController(ip) as HilStatus;
+      paused = true;
+      viewEndSec = Math.max(latestDataSec(), gatewaySessionLastSec);
+      plotRunActive = true;
+      applyResponse(stopped, { hydrate: false });
+      scheduleRender();
 
       const ts = new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
       const runName = `${batchName}_${String(i + 1).padStart(2, "0")}_${safeRunStem(item.recipeName)}_${ts}`;
@@ -3322,6 +3344,8 @@ async function startBatch() {
   if (batchRunning) return;
   const items = readBatchItems();
   if (items.length === 0) { elBatchProgress.textContent = "Add items first"; return; }
+  const invalid = items.find(item => !item.recipeName || !getRecipeByName(item.recipeName));
+  if (invalid) { elBatchProgress.textContent = invalid.recipeName ? `Recipe "${invalid.recipeName}" not found` : "Select a saved recipe first"; return; }
 
   batchRunning = true;
   batchT0      = performance.now();
