@@ -1,0 +1,54 @@
+# =============================================================================
+# Figura 05 - Frontend (apps/hil-go/frontend). Gateway = ext (caixa-preta).
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  fast:  {style: {fill: "#d9d9d9"; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  cdc:   {style: {fill: white;    stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  ext:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false; double-border: true}}
+  grp:   {style: {fill: "#f2f2f2"; stroke: black; stroke-width: 2; stroke-dash: 6; border-radius: 0; font-color: black; bold: true}}
+  dom:   {style: {fill: "#ececec"; stroke: black; stroke-width: 2; stroke-dash: 2; border-radius: 0; font-color: black; bold: true}}
+  arrow: {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+gw: "Gateway Go (HTTP / SSE) [fig. 04]" {class: ext}
+
+app: "Frontend (TypeScript / uPlot) - PC Host (navegador)" {
+  class: grp
+
+  main: "main.ts\norquestrador da UI" {class: box}
+
+  data: Camada de Dados {
+    class: dom
+    tile: "Tiles + Cache\n(decode)" {class: box}
+    history: "Janela Historica" {class: box}
+    tile -> history: {class: arrow}
+  }
+
+  view: Renderizacao {
+    class: dom
+    viewport: "Viewport\n(zoom / pan)" {class: box}
+    sched: "Render Scheduler\n(throttle)" {class: box}
+    uplot: "uPlot\n(canvas)" {class: box}
+    viewport -> sched: {class: arrow}
+    sched -> uplot: {class: arrow}
+  }
+
+  main -> data.tile: {class: arrow}
+  main -> view.viewport: {class: arrow}
+  data.tile -> view.uplot: series {class: arrow}
+}
+
+gw -> app.main: "telemetria ao vivo\n(SSE)" {class: arrow}
+gw -> app.data.tile: "tiles por zoom\n(HTTP)" {class: arrow}
+app.main -> gw: comandos {class: arrow; style.stroke-dash: 4}
+
+legenda: "tracejado = comandos   |   solido = dados (telemetria/tiles)   |   borda dupla = caixa-preta" {
+  near: bottom-center
+  shape: text
+  style: {font-color: black; font-size: 16}
+}
