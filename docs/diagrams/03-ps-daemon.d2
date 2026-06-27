@@ -1,0 +1,56 @@
+# =============================================================================
+# Figura 03 - PS / daemon (src/ps_app). Dono dos dois regimes temporais:
+# controle por ISR @ 1 kHz e telemetria por DMA @ ~100 kHz. Vizinhos = ext.
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  fast:  {style: {fill: "#d9d9d9"; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  cdc:   {style: {fill: white;    stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  ext:   {style: {fill: white;    stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false; double-border: true}}
+  grp:   {style: {fill: "#f2f2f2"; stroke: black; stroke-width: 2; stroke-dash: 6; border-radius: 0; font-color: black; bold: true}}
+  dom:   {style: {fill: "#ececec"; stroke: black; stroke-width: 2; stroke-dash: 2; border-radius: 0; font-color: black; bold: true}}
+  arrow: {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+pl: "PL (FPGA / VHDL)\nHIL_AXI_Top [fig. 01]" {class: ext}
+
+daemon: "hil-daemon (PS - ARM Cortex-A9 - Linux/C, soft-RT)" {
+  class: grp
+
+  ctrl: "Malha de Controle - ISR por carrier_tick @ 1 kHz" {
+    class: dom
+    main: "Maquina de Estados\nidle / run / pause / stop" {class: box}
+    vf: "Controle V/F\n(rampa de freq/tensao)" {class: box}
+    gpio: "Escrita AXI-Lite (mmap)\nv_a v_b v_c + coeficientes" {class: box}
+    main -> vf: {class: arrow}
+    vf -> gpio: {class: arrow}
+  }
+
+  telem: "Telemetria - DMA @ ~100 kHz" {
+    class: dom
+    dma: "Driver DMA (S2MM)\nburst 128 frames (~1,28 ms)" {class: box}
+    pack: "Empacota -> UDP" {class: box}
+    pwm: "Eventos NPC -> UDP" {class: box}
+    dma -> pack: {class: arrow}
+  }
+}
+
+host: "Workstation (Gateway Go) [fig. 04]" {class: ext}
+
+pl -> daemon.ctrl.main: "carrier_tick (IRQ @ 1 kHz)" {class: arrow; style.stroke-dash: 4}
+daemon.ctrl.gpio -> pl: "refs + coeficientes (AXI-Lite)" {class: arrow}
+pl -> daemon.telem.dma: "AXI-Stream / DMA (~100 kHz)" {class: arrow}
+pl -> daemon.telem.pwm: "estados de gate" {class: arrow}
+host -> daemon.ctrl.main: "comandos (UDP)" {class: arrow; style.stroke-dash: 4}
+daemon.telem.pack -> host: "telemetria (UDP ~100 kHz)" {class: arrow}
+daemon.telem.pwm -> host: "eventos PWM (UDP)" {class: arrow}
+
+legenda: "tracejado = controle/IRQ   |   solido = dados   |   borda dupla = caixa-preta   |   o tempo real estrito (130 ns) vive na PL, nao no PS" {
+  near: bottom-center
+  shape: text
+  style: {font-color: black; font-size: 18}
+}
