@@ -727,6 +727,7 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.TelemOff(ip)
+	time.Sleep(80 * time.Millisecond) // drain in-flight UDP samples before sealing recorder
 	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
@@ -901,6 +902,7 @@ func (s *server) handleReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.ResetSolver(ip)
+	time.Sleep(80 * time.Millisecond) // drain in-flight UDP samples before sealing recorder
 	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
@@ -925,6 +927,7 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.Stop(ip)
+	time.Sleep(80 * time.Millisecond) // drain in-flight UDP samples before sealing recorder
 	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
