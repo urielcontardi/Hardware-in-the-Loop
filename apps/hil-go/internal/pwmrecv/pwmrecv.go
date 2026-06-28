@@ -49,7 +49,7 @@ type Receiver struct {
 }
 
 func New(port int) *Receiver {
-	return &Receiver{port: port, C: make(chan Batch, 128), quit: make(chan struct{})}
+	return &Receiver{port: port, C: make(chan Batch, 4096), quit: make(chan struct{})}
 }
 
 func (r *Receiver) Start() error {

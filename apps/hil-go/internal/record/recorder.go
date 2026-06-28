@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -172,6 +173,9 @@ func (r *Recorder) Stop() error {
 	if err := binary.Write(r.file, binary.LittleEndian, uint32(len(r.pwmEvents))); err != nil {
 		return err
 	}
+	sort.SliceStable(r.pwmEvents, func(i, j int) bool {
+		return r.pwmEvents[i].t < r.pwmEvents[j].t
+	})
 	for _, ev := range r.pwmEvents {
 		var raw [8]byte
 		binary.LittleEndian.PutUint32(raw[:4], math.Float32bits(ev.t))
@@ -248,8 +252,10 @@ func (r *Recorder) SubmitPWM(clock uint32, events []pwmrecv.Event) {
 	}
 }
 
-// CopyLatest copies the latest completed raw capture to dst once.
-func (r *Recorder) CopyLatest(dst string) (bool, error) {
+// CopyLatest copies the latest completed raw capture to dst once, merging extra
+// into the stored JSON metadata header (preserves recorder-owned fields such as
+// sample_count, pwm_count, raw and clock_hz).
+func (r *Recorder) CopyLatest(dst string, extra map[string]any) (bool, error) {
 	r.mu.Lock()
 	if r.latestPath == "" || r.latestUsed {
 		r.mu.Unlock()
@@ -257,35 +263,87 @@ func (r *Recorder) CopyLatest(dst string) (bool, error) {
 	}
 	src := r.latestPath
 	r.mu.Unlock()
+
 	if filepath.Clean(src) == filepath.Clean(dst) {
+		if len(extra) > 0 {
+			if err := rewriteHilbinMeta(dst, extra); err != nil {
+				return false, err
+			}
+		}
 		r.mu.Lock()
 		r.latestUsed = true
 		r.mu.Unlock()
 		return true, nil
 	}
-	in, err := os.Open(src)
+
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return false, err
 	}
-	defer in.Close()
-	out, err := os.Create(dst)
+	out, mergeErr := mergeHilbinMeta(data, extra)
+	if mergeErr != nil {
+		return false, mergeErr
+	}
+	if writeErr := os.WriteFile(dst, out, 0644); writeErr != nil {
+		return false, writeErr
+	}
+	_ = os.Remove(src)
+	r.mu.Lock()
+	r.latestUsed = true
+	r.mu.Unlock()
+	return true, nil
+}
+
+// rewriteHilbinMeta merges extra into the header of an existing hilbin file.
+func rewriteHilbinMeta(path string, extra map[string]any) error {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return false, err
+		return err
 	}
-	_, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		return false, copyErr
+	out, err := mergeHilbinMeta(data, extra)
+	if err != nil {
+		return err
 	}
-	if closeErr == nil {
-		_ = os.Remove(src)
+	return os.WriteFile(path, out, 0644)
+}
+
+// mergeHilbinMeta rebuilds a hilbin byte slice with extra fields merged into
+// the JSON metadata header. Recorder-owned fields (sample_count, pwm_count,
+// raw, clock_hz, version, date) are preserved from the original.
+func mergeHilbinMeta(data []byte, extra map[string]any) ([]byte, error) {
+	if len(data) < 12 || string(data[:7]) != "HILDATA" || len(extra) == 0 {
+		return data, nil
 	}
-	if closeErr == nil {
-		r.mu.Lock()
-		r.latestUsed = true
-		r.mu.Unlock()
+	origJSONSize := int(binary.LittleEndian.Uint32(data[8:12]))
+	if origJSONSize <= 0 || origJSONSize > 1<<20 || 12+origJSONSize > len(data) {
+		return data, nil
 	}
-	return true, closeErr
+	var meta map[string]any
+	if err := json.Unmarshal(data[12:12+origJSONSize], &meta); err != nil {
+		return data, nil
+	}
+	for k, v := range extra {
+		switch k {
+		case "version", "date", "sample_count", "pwm_count", "raw", "clock_hz":
+			// keep recorder's values
+		default:
+			meta[k] = v
+		}
+	}
+	newJSON, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	origAligned := (12 + origJSONSize + 7) &^ 7
+	newAligned := (12 + len(newJSON) + 7) &^ 7
+	body := data[origAligned:]
+	result := make([]byte, newAligned+len(body))
+	copy(result[:7], "HILDATA")
+	result[7] = 1
+	binary.LittleEndian.PutUint32(result[8:12], uint32(len(newJSON)))
+	copy(result[12:], newJSON)
+	copy(result[newAligned:], body)
+	return result, nil
 }
 
 func (r *Recorder) Stats() (active bool, written, dropped uint64) {
