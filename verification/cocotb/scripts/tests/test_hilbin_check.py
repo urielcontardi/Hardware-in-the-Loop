@@ -115,7 +115,7 @@ def test_critical_gap_detected(tmp_path):
 # ── check_file: warning-level gap ────────────────────────────────────────────
 
 def test_warning_gap_no_error(tmp_path):
-    """A 15 ms gap (> warn 5 ms, < crit 50 ms) → warning but not error."""
+    """A 15 ms gap (> warn 10 ms, < crit 50 ms) → warning but not error."""
     fpga_t = list(np.linspace(0.0, 2.0, 200))
     pwm_t = list(np.linspace(0.001, 1.0, 200)) + list(np.linspace(1.015, 2.0, 200))
     path = _make_hilbin(tmp_path, fpga_t, pwm_t)

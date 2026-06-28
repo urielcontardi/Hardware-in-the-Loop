@@ -151,6 +151,10 @@ def check_file(path: Path) -> CheckResult:
             )
 
         # Gaps in the forward-going events
+        # NOTE: backward (OOO) events inflate the following forward dt, so a gap
+        # flagged here that immediately follows an OOO cluster may be an artifact
+        # of packet reordering rather than a real capture outage.  After recorder.go
+        # sorts events at Stop(), new captures will not exhibit this false-positive.
         gap_mask = dt > GAP_WARN_S
         for gi in np.where(gap_mask)[0]:
             dt_ms = float(dt[gi]) * 1000.0
