@@ -329,7 +329,7 @@ func (a *App) SaveRun(dataB64 string, suggestedName string) error {
 	if err != nil || path == "" {
 		return err
 	}
-	if copied, copyErr := a.recorder.CopyLatest(path); copyErr != nil {
+	if copied, copyErr := a.recorder.CopyLatest(path, nil); copyErr != nil {
 		return copyErr
 	} else if copied {
 		return nil

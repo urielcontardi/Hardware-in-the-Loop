@@ -107,3 +107,6 @@ apps/hil-go/runs/
 
 # always-on full-rate live telemetry session (runtime artifact)
 apps/hil-go/runs/live_session.bin
+
+verification/cocotb/reports/hilbin
+verification/cocotb/reports/hilbin_pngs

@@ -942,7 +942,7 @@ const elBtnExportCsv  = document.querySelector<HTMLButtonElement>("#btn-export-c
 const elLoadFileInput = document.querySelector<HTMLInputElement>("#load-file-input")!;
 const elRunMetaBadge  = document.querySelector<HTMLDivElement>("#run-meta-badge")!;
 const elBatchTable      = document.querySelector<HTMLDivElement>("#batch-table")!;
-const elBatchName       = document.querySelector<HTMLInputElement>("#batch-name")!;
+const elBatchName       = document.querySelector<HTMLInputElement>("#batch-name");
 const elBtnAddBatchItem = document.querySelector<HTMLButtonElement>("#btn-add-batch-item")!;
 const elBtnBatchRun     = document.querySelector<HTMLButtonElement>("#btn-batch-run")!;
 const elBtnBatchStop    = document.querySelector<HTMLButtonElement>("#btn-batch-stop")!;
@@ -1724,9 +1724,18 @@ function decimateFrom(
   const n = Math.max(0, iEnd - iStart);
   if (n === 0) return { xs: [], ys: Array.from({ length: N_CH }, () => []) };
 
+  const tlDefault = Number(elTorque.value) || 0;
+  // TL is a step-function command, never a measured per-sample value — always
+  // read it from loadTimeline (matches viewToProjected on the live path).
+  const readChannel = (c: number, i: number) =>
+    CHANNELS[c].name === "TL"
+      ? stepValueAt(loadTimeline, tbuf[i], tlDefault)
+      : CHANNELS[c].read(sbuf[i]);
+
   const smoothed = smoothingWindow <= 1
-    ? (c: number, i: number) => CHANNELS[c].read(sbuf[i])
+    ? readChannel
     : (c: number, i: number) => {
+        if (CHANNELS[c].name === "TL") return stepValueAt(loadTimeline, tbuf[i], tlDefault);
         const half = Math.floor(smoothingWindow / 2);
         const lo = Math.max(0, i - half);
         const hi = Math.min(total - 1, i + half);
@@ -1745,33 +1754,28 @@ function decimateFrom(
     return { xs, ys };
   }
 
-  const extremaPerBucket = Math.max(2, 2 * N_CH);
-  const buckets = Math.max(1, Math.floor(maxPts / extremaPerBucket));
+  // Mean per bucket — matches the server-side tile.mean rendering path so offline
+  // hilbin files look identical to live-session gateway history. The old approach
+  // used maxPts/(2*N_CH) = 66 buckets for N_CH=9, each covering ~0.2 s; a 30 Hz
+  // flux cycle spans ~6 buckets, so the extrema just showed the amplitude envelope
+  // rather than the waveform.  With maxPts buckets every bucket is ~1/maxPts of
+  // the visible window, which at typical 1200 px gives sub-cycle resolution.
+  const buckets = Math.min(n, maxPts);
   const bucketSize = n / buckets;
   const xs: number[] = [];
   const ys: number[][] = Array.from({ length: N_CH }, () => []);
 
   for (let b = 0; b < buckets; b++) {
     const i0 = iStart + Math.floor(b * bucketSize);
-    const i1 = Math.min(iStart + Math.floor((b + 1) * bucketSize), iEnd) - 1;
-    if (i0 > i1) continue;
-
-    const extrema = new Set<number>();
+    const i1 = Math.min(iStart + Math.floor((b + 1) * bucketSize), iEnd);
+    if (i0 >= i1) continue;
+    const cnt = i1 - i0;
+    const midT = tbuf[(i0 + i1 - 1) >> 1];
+    xs.push(midT);
     for (let c = 0; c < N_CH; c++) {
-      let minIdx = i0, maxIdx = i0;
-      let minV = smoothed(c, i0), maxV = minV;
-      for (let i = i0 + 1; i <= i1; i++) {
-        const value = smoothed(c, i);
-        if (value < minV) { minV = value; minIdx = i; }
-        if (value > maxV) { maxV = value; maxIdx = i; }
-      }
-      extrema.add(minIdx); extrema.add(maxIdx);
-    }
-
-    const ordered = [...extrema].sort((a, b) => a - b);
-    for (const idx of ordered) {
-      xs.push(tbuf[idx]);
-      for (let c = 0; c < N_CH; c++) ys[c].push(smoothed(c, idx));
+      let sum = 0;
+      for (let i = i0; i < i1; i++) sum += smoothed(c, i);
+      ys[c].push(sum / cnt);
     }
   }
 
@@ -3024,6 +3028,17 @@ function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; samp
     sampleCount++;
   }
 
+  // The recorder always stores TL=0 per-sample (it only sees raw telemetry, not
+  // the commanded load).  If the hilbin has scenario metadata, use its torque_nm
+  // events as the authoritative load history, overriding the flat zero above.
+  const scenarioEvents: { t: number; target: string; param: string; value: number }[] =
+    Array.isArray(meta.scenario?.events) ? meta.scenario.events : [];
+  for (const ev of scenarioEvents) {
+    if (ev.param === "torque_nm" && typeof ev.t === "number" && typeof ev.value === "number") {
+      recordStep(loadTimeline, ev.t, ev.value);
+    }
+  }
+
   const pwmCount = view.getUint32(off, true); off += 4;
   for (let i = 0; i < pwmCount; i++) {
     const t_sec = view.getFloat32(off,     true);
@@ -3035,7 +3050,13 @@ function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; samp
   }
   normalizePwmEventsInPlace();
 
-  if (tBuf.length > 0) viewEndSec = tBuf[tBuf.length - 1];
+  if (tBuf.length > 0) {
+    viewEndSec = tBuf[tBuf.length - 1];
+    // Fit the window to show the full loaded run so the user sees all data at
+    // once; they can zoom in after.  WINDOW_MIN_SEC prevents a zero-length window
+    // for single-sample files.
+    windowSec = Math.max(viewEndSec, WINDOW_MIN_SEC);
+  }
   scheduleRender();
   return { name: meta.name ?? "", date: meta.date ?? "", sampleCount: telemCount, pwmCount, meta };
 }
@@ -3169,7 +3190,7 @@ function defaultBatchName(): string {
 }
 
 function currentBatchName(): string {
-  return safeRunStem(elBatchName.value.trim() || defaultBatchName());
+  return safeRunStem(elBatchName?.value.trim() || defaultBatchName());
 }
 
 function updateBatchSummary() {
@@ -3298,7 +3319,7 @@ async function runBatchSequence() {
   const items = readBatchItems();
   const batchName = currentBatchName();
   const baseParams = readParams();
-  elBatchName.value = batchName;
+  if (elBatchName) elBatchName.value = batchName;
   let completed = 0;
   let finalMessage = "Batch stopped";
 
@@ -3405,10 +3426,15 @@ async function startBatch() {
     elBatchProgress.textContent = `Batch ${batchIndex + 1}/${count} · t=${elapsed}s`;
   }, 200);
 
-  runBatchSequence().finally(() => {
-    if (batchProgressTimer !== null) { clearInterval(batchProgressTimer); batchProgressTimer = null; }
-    elBtnBatchRun.disabled = false;
-  });
+  runBatchSequence()
+    .catch(e => {
+      console.error("batch run failed", e);
+      stopBatch(`Batch failed: ${e}`);
+    })
+    .finally(() => {
+      if (batchProgressTimer !== null) { clearInterval(batchProgressTimer); batchProgressTimer = null; }
+      elBtnBatchRun.disabled = false;
+    });
 }
 
 // ── Run history ───────────────────────────────────────────────────────────────
@@ -3545,6 +3571,7 @@ function buildRunCard(run: RunMeta): HTMLElement {
       <div class="run-card-setup" title="${summarizeRunMeta(run.meta)}">${summarizeRunMeta(run.meta)}</div>
     </div>
     <div class="run-card-actions">
+      <button class="btn btn-xs run-btn-details" data-name="${run.name}" type="button" title="View run conditions and scenario timeline">Details</button>
       <button class="btn btn-xs run-btn-download" data-name="${run.name}" type="button" title="Download .hilbin">↓ .hilbin</button>
       <button class="btn btn-xs run-btn-csv" data-name="${run.name}" type="button" title="Export CSV">↓ CSV</button>
       <button class="btn btn-xs run-btn-delete" data-name="${run.name}" type="button" title="Delete run from disk">Delete</button>
@@ -3596,7 +3623,122 @@ function buildRunCard(run: RunMeta): HTMLElement {
     await deleteRunCards([card]);
   });
 
+  card.querySelector<HTMLButtonElement>(".run-btn-details")!.addEventListener("click", () => {
+    showRunDetailsModal(run, () => card.querySelector<HTMLElement>(".run-btn-load")!.click());
+  });
+
   return card;
+}
+
+function humanParamName(param: string): string {
+  const map: Record<string, string> = {
+    freq_hz: "Speed (freq)", vdc_v: "DC voltage", torque_nm: "Load torque",
+    base_freq_hz: "Rated freq", max_v_pu: "Max V p.u.", accel_time_s: "Accel time",
+    rs: "Rs (stator R)", rr: "Rr (rotor R)", ls: "Ls", lr: "Lr", lm: "Lm", j: "Inertia J",
+  };
+  return map[param] ?? param;
+}
+
+function humanParamUnit(param: string): string {
+  const map: Record<string, string> = {
+    freq_hz: "Hz", vdc_v: "V", torque_nm: "Nm", base_freq_hz: "Hz",
+    max_v_pu: "p.u.", accel_time_s: "s", rs: "Ω", rr: "Ω",
+    ls: "H", lr: "H", lm: "H", j: "kg·m²",
+  };
+  return map[param] ?? "";
+}
+
+function showRunDetailsModal(run: RunMeta, onLoad: () => void) {
+  const { label, date } = parseRunFilename(run.name);
+  const m = run.meta ?? {};
+  const absTime = date ? date.toLocaleString() : run.modified;
+
+  const ctrl = m.controller ?? {};
+  const motor = m.motor ?? {};
+  const board = m.board ?? {};
+  const events = m.scenario?.events ?? [];
+
+  const row = (label: string, value: string | number | undefined, unit = "") =>
+    value !== undefined && value !== ""
+      ? `<tr><td class="rd-label">${label}</td><td class="rd-value">${value}${unit ? `<span class="rd-unit"> ${unit}</span>` : ""}</td></tr>`
+      : "";
+
+  const rpm = ctrl.rpm !== undefined ? Math.round(ctrl.rpm) : (ctrl.freq_hz !== undefined ? `${ctrl.freq_hz} Hz` : undefined);
+  const controlRows = [
+    row("Speed", rpm, typeof rpm === "number" ? "RPM" : ""),
+    row("DC voltage", ctrl.vdc_v, "V"),
+    row("Load torque", ctrl.torque_nm, "Nm"),
+    row("Rated speed", ctrl.rated_rpm !== undefined ? Math.round(ctrl.rated_rpm) : undefined, "RPM"),
+    row("Accel time", ctrl.accel_time_s, "s"),
+    row("Max V", ctrl.max_v_pu, "p.u."),
+    row("NPP", m.npp),
+  ].filter(Boolean).join("");
+
+  const motorRows = [
+    row("Rs", motor.rs, "Ω"), row("Rr", motor.rr, "Ω"),
+    row("Ls", motor.ls, "H"), row("Lr", motor.lr, "H"),
+    row("Lm", motor.lm, "H"), row("J",  motor.j,  "kg·m²"),
+  ].filter(Boolean).join("");
+
+  const boardRows = [
+    row("Board IP", board.ip),
+    row("PS firmware", board.ps_version),
+    row("FPGA firmware", board.fpga_version),
+  ].filter(Boolean).join("");
+
+  const sorted = [...events].sort((a, b) => a.t - b.t);
+  const timelineHtml = sorted.length
+    ? sorted.map(ev => {
+        const t = formatScenarioSeconds(ev.t);
+        const name = humanParamName(ev.param);
+        const unit = humanParamUnit(ev.param);
+        return `<div class="rd-event"><span class="rd-event-t">${t}</span><span class="rd-event-desc">${name} → <strong>${ev.value}${unit ? ` ${unit}` : ""}</strong></span></div>`;
+      }).join("")
+    : `<div class="rd-no-events">No scenario events recorded.</div>`;
+
+  const batchInfo = m.batch?.name
+    ? `<div class="rd-batch-tag">Batch: ${m.batch.name}${m.batch.index && m.batch.count ? ` (${m.batch.index}/${m.batch.count})` : ""}</div>`
+    : "";
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-box rd-modal">
+      <div class="modal-header">
+        <div class="rd-header-text">
+          <span class="rd-title">${label}</span>
+          <span class="rd-date">${absTime}</span>
+        </div>
+        <button class="icon-btn rd-close" style="font-size:18px">×</button>
+      </div>
+      <div class="rd-body">
+        ${batchInfo}
+        ${controlRows || motorRows ? `
+        <div class="rd-section-title">Initial conditions</div>
+        <div class="rd-tables">
+          ${controlRows ? `<table class="rd-table"><tbody>${controlRows}</tbody></table>` : ""}
+          ${motorRows  ? `<table class="rd-table"><tbody>${motorRows}</tbody></table>`  : ""}
+          ${boardRows  ? `<table class="rd-table"><tbody>${boardRows}</tbody></table>`  : ""}
+        </div>` : ""}
+        <div class="rd-section-title">Scenario timeline</div>
+        <div class="rd-timeline">${timelineHtml}</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-sm rd-btn-load">Load & view</button>
+        <button class="btn btn-sm rd-btn-cancel">Close</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", e => { if (e.target === overlay) close(); });
+  overlay.querySelector(".rd-close")!.addEventListener("click", close);
+  overlay.querySelector(".rd-btn-cancel")!.addEventListener("click", close);
+  overlay.querySelector(".rd-btn-load")!.addEventListener("click", () => { close(); onLoad(); });
+  document.addEventListener("keydown", function onKey(e) {
+    if (e.key === "Escape") { close(); document.removeEventListener("keydown", onKey); }
+  });
 }
 
 function runCards(): HTMLElement[] {
@@ -3680,7 +3822,7 @@ async function deleteSelectedRuns() {
 function exportConfig() {
   const all = JSON.parse(localStorage.getItem(RECIPE_KEY) || "{}");
   const batchItems = readBatchItems();
-  const config = { version: 1, exported: new Date().toISOString(), recipes: all, batchName: elBatchName.value.trim(), batch: batchItems };
+  const config = { version: 1, exported: new Date().toISOString(), recipes: all, batchName: currentBatchName(), batch: batchItems };
   const blob = new Blob([JSON.stringify(config, null, 2)], { type: "application/json" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
@@ -3698,7 +3840,7 @@ function importConfig(file: File) {
       const merged = { ...existing, ...(config.recipes ?? {}) };
       localStorage.setItem(RECIPE_KEY, JSON.stringify(merged));
       refreshBatchRecipeSelects();
-      if (typeof config.batchName === "string") elBatchName.value = config.batchName;
+      if (elBatchName && typeof config.batchName === "string") elBatchName.value = config.batchName;
       // Restore batch rows if present
       if (Array.isArray(config.batch) && config.batch.length > 0) {
         elBatchTable.querySelectorAll(".batch-row").forEach(r => r.remove());

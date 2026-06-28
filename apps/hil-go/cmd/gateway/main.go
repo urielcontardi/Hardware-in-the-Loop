@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,6 +146,21 @@ type ipRequest struct {
 
 type discoverRequest struct {
 	IP string `json:"ip,omitempty"`
+}
+
+func readHilbinMetaFromBytes(data []byte) map[string]any {
+	if len(data) < 12 || string(data[:7]) != "HILDATA" {
+		return nil
+	}
+	jsonSize := int(binary.LittleEndian.Uint32(data[8:12]))
+	if jsonSize <= 0 || jsonSize > 1<<20 || 12+jsonSize > len(data) {
+		return nil
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(data[12:12+jsonSize], &meta); err != nil {
+		return nil
+	}
+	return meta
 }
 
 func readHilbinMeta(path string) map[string]any {
@@ -1348,6 +1364,12 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				if len(events) == 0 {
 					break
 				}
+				// Sort by TCycles within each batch to tolerate occasional
+				// out-of-order UDP packet delivery. Batches span only a few
+				// milliseconds so 32-bit counter wrap cannot occur within one.
+				sort.Slice(events, func(i, j int) bool {
+					return events[i].TCycles < events[j].TCycles
+				})
 				if err := writePWMRawBatch(w, pwmSeq, clockHz, status, events); err != nil {
 					return
 				}
@@ -1410,8 +1432,14 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			name += ".hilbin"
 		}
 		path := filepath.Join(s.runsDir, filepath.Base(name))
+		data, err := io.ReadAll(io.LimitReader(r.Body, 512<<20))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("read body: %w", err))
+			return
+		}
 		if source != "display" && s.recorder != nil {
-			copied, copyErr := s.recorder.CopyLatest(path)
+			extra := readHilbinMetaFromBytes(data)
+			copied, copyErr := s.recorder.CopyLatest(path, extra)
 			if copyErr != nil {
 				writeError(w, http.StatusInternalServerError, fmt.Errorf("copy raw capture: %w", copyErr))
 				return
@@ -1421,11 +1449,6 @@ func (s *server) handleRuns(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, RunMeta{Name: name, Size: fi.Size(), Modified: fi.ModTime().UTC().Format(time.RFC3339)})
 				return
 			}
-		}
-		data, err := io.ReadAll(io.LimitReader(r.Body, 512<<20))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("read body: %w", err))
-			return
 		}
 		if err := os.WriteFile(path, data, 0644); err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("write file: %w", err))
