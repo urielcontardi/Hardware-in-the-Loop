@@ -238,6 +238,7 @@ Architecture rtl of HIL_AXI_Top is
     signal solver_rst_sync1        : std_logic := '0';
     signal solver_rst_sync2        : std_logic := '0';
     signal solver_rst_sync_n       : std_logic := '0';
+    signal telem_clear_axi         : std_logic := '0';
     signal solver_mmcm_rst        : std_logic;
     signal solver_clk_fb          : std_logic;
     signal solver_clk_fb_buf      : std_logic;
@@ -668,44 +669,51 @@ Begin
             svf_feeding <= '0'; svf_fcnt <= 0;
             svf_s1_v <= '0'; svf_s2_v <= '0';
         elsif rising_edge(clk) then
-            -- Stage 3: write back final state
-            if svf_s2_v = '1' then
-                svf_lp(svf_s2_ch) <= svf_s2_lpnew;
-                svf_bp(svf_s2_ch) <= svf_s2_bx - shift_right(svf_s2_Kbp, SVF_FSH);
-            end if;
-            svf_s2_v <= svf_s1_v;
-
-            -- Stage 2: combine partials
-            if svf_s1_v = '1' then
-                svf_s2_ch    <= svf_s1_ch;
-                svf_s2_lpnew <= svf_s1_lpnew;
-                svf_s2_Kbp   <= svf_s1_Ka + svf_s1_Kb;
-                svf_s2_bx    <= svf_s1_bx - svf_s1_lp5;
-            end if;
-
-            -- Stage 1: read one channel, level-1 parallel adds
-            svf_s1_v <= svf_feeding;
-            if svf_feeding = '1' then
-                lpc  := svf_lp(svf_fcnt);
-                bpc  := svf_bp(svf_fcnt);
-                xext := shift_left(resize(signed(svf_xin(svf_fcnt)), SVF_W), SVF_GUARD);
-                svf_s1_ch    <= svf_fcnt;
-                svf_s1_lpnew <= lpc + shift_right(bpc, SVF_FSH);
-                svf_s1_Ka    <= bpc + shift_right(bpc, 2);
-                svf_s1_Kb    <= shift_right(bpc, 3) + shift_right(bpc, 4);
-                svf_s1_bx    <= bpc + shift_right(xext, SVF_FSH);
-                svf_s1_lp5   <= shift_right(lpc, SVF_FSH);
-                if svf_fcnt = 4 then
-                    svf_feeding <= '0';
-                else
-                    svf_fcnt <= svf_fcnt + 1;
+            if telem_clear_axi = '1' then
+                svf_lp <= (others => (others => '0'));
+                svf_bp <= (others => (others => '0'));
+                svf_feeding <= '0'; svf_fcnt <= 0;
+                svf_s1_v <= '0'; svf_s2_v <= '0';
+            else
+                -- Stage 3: write back final state
+                if svf_s2_v = '1' then
+                    svf_lp(svf_s2_ch) <= svf_s2_lpnew;
+                    svf_bp(svf_s2_ch) <= svf_s2_bx - shift_right(svf_s2_Kbp, SVF_FSH);
                 end if;
-            end if;
+                svf_s2_v <= svf_s1_v;
 
-            -- Start the per-sample sweep on data_valid
-            if data_valid_axi = '1' then
-                svf_feeding <= '1';
-                svf_fcnt    <= 0;
+                -- Stage 2: combine partials
+                if svf_s1_v = '1' then
+                    svf_s2_ch    <= svf_s1_ch;
+                    svf_s2_lpnew <= svf_s1_lpnew;
+                    svf_s2_Kbp   <= svf_s1_Ka + svf_s1_Kb;
+                    svf_s2_bx    <= svf_s1_bx - svf_s1_lp5;
+                end if;
+
+                -- Stage 1: read one channel, level-1 parallel adds
+                svf_s1_v <= svf_feeding;
+                if svf_feeding = '1' then
+                    lpc  := svf_lp(svf_fcnt);
+                    bpc  := svf_bp(svf_fcnt);
+                    xext := shift_left(resize(signed(svf_xin(svf_fcnt)), SVF_W), SVF_GUARD);
+                    svf_s1_ch    <= svf_fcnt;
+                    svf_s1_lpnew <= lpc + shift_right(bpc, SVF_FSH);
+                    svf_s1_Ka    <= bpc + shift_right(bpc, 2);
+                    svf_s1_Kb    <= shift_right(bpc, 3) + shift_right(bpc, 4);
+                    svf_s1_bx    <= bpc + shift_right(xext, SVF_FSH);
+                    svf_s1_lp5   <= shift_right(lpc, SVF_FSH);
+                    if svf_fcnt = 4 then
+                        svf_feeding <= '0';
+                    else
+                        svf_fcnt <= svf_fcnt + 1;
+                    end if;
+                end if;
+
+                -- Start the per-sample sweep on data_valid
+                if data_valid_axi = '1' then
+                    svf_feeding <= '1';
+                    svf_fcnt    <= 0;
+                end if;
             end if;
         end if;
     end process SVF_Filter;
@@ -799,7 +807,9 @@ Begin
                 solver_busy_dbg_axi     <= '0';
                 solver_done_dbg_axi     <= '0';
                 data_valid_axi          <= '0';
+                telem_clear_axi         <= '0';
             else
+                telem_clear_axi <= pwm_solver_reset_s;
                 solver_sample_toggle_m1 <= solver_sample_toggle;
                 solver_sample_toggle_m2 <= solver_sample_toggle_m1;
                 solver_sample_toggle_d  <= solver_sample_toggle_m2;
@@ -823,7 +833,19 @@ Begin
                 solver_busy_dbg_axi     <= solver_busy_dbg_s;
                 solver_done_dbg_axi     <= solver_done_toggle_m2 xor solver_done_toggle_d;
                 data_valid_axi          <= solver_sample_toggle_m2 xor solver_sample_toggle_d;
-                if (solver_sample_toggle_m2 xor solver_sample_toggle_d) = '1' then
+                if telem_clear_axi = '1' then
+                    solver_sample_toggle_m1 <= '0';
+                    solver_sample_toggle_m2 <= '0';
+                    solver_sample_toggle_d  <= '0';
+                    solver_sample_ack_toggle <= '0';
+                    solver_sample_pulse     <= '0';
+                    ialpha_raw_axi          <= (others => '0');
+                    ibeta_raw_axi           <= (others => '0');
+                    flux_alpha_raw_axi      <= (others => '0');
+                    flux_beta_raw_axi       <= (others => '0');
+                    speed_raw_axi           <= (others => '0');
+                    data_valid_axi          <= '0';
+                elsif (solver_sample_toggle_m2 xor solver_sample_toggle_d) = '1' then
                     ialpha_raw_axi          <= ialpha_snap_solver;
                     ibeta_raw_axi           <= ibeta_snap_solver;
                     flux_alpha_raw_axi      <= flux_alpha_snap_solver;
@@ -1062,6 +1084,12 @@ Begin
     begin
         if rising_edge(clk) then
             if rst_n = '0' then
+                axis_tvalid_r <= '0';
+                axis_tlast_r  <= '0';
+                axis_tdata_r  <= (others => '0');
+                axis_frame_cnt <= (others => '0');
+                decim_count   <= (others => '0');
+            elsif telem_clear_axi = '1' then
                 axis_tvalid_r <= '0';
                 axis_tlast_r  <= '0';
                 axis_tdata_r  <= (others => '0');
