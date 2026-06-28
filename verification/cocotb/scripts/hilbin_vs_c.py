@@ -33,6 +33,12 @@ from models.im_reference_model import (  # noqa: E402
 )
 import fpga_vs_c as L4  # noqa: E402  (reuse replay + metrics + report helpers)
 
+# ── Gap reseed threshold ──────────────────────────────────────────────────────
+# PWM gaps shorter than this are minor UDP jitter (handled by OOO sort).
+# Gaps longer than this indicate FIFO overflow; the C model is reseeded from
+# FPGA telemetry at the gap boundary to prevent divergence.
+GAP_RESEED_THRESHOLD_S = 0.020   # 20 ms
+
 RUNS_DIR = Path(__file__).resolve().parents[3] / "apps" / "hil-go" / "runs"
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports" / "hilbin"
 
@@ -143,26 +149,53 @@ def _metrics(fpga, cmod, t_lo, t_hi) -> dict:
     return out
 
 
-def run_c_model_seeded(pwm, vdc, params, t_start, t_end, seed):
-    """Replay only the window [t_start, t_end] through the C model, seeding its
-    state from the FPGA's recorded state at t_start.
+def _find_pwm_gaps(tev: np.ndarray, threshold_s: float) -> list[tuple[int, float]]:
+    """Return (index_before_gap, gap_duration_s) for each gap > threshold_s.
 
-    MODEL_B2 integrates exactly (is_alpha, is_beta, fluxR_alpha, fluxR_beta, wm),
-    which is exactly what the FPGA telemetry records (ia, ib, flux_a, flux_b,
-    speed) — a 1:1 seed. This lets us compare any region (incl. late steady
-    state at t=100 s) without replaying the whole capture at the 130 ns step.
+    Only positive dt values exceeding the threshold are returned; out-of-order
+    events (dt <= 0) are ignored here and handled by the upstream sort step.
+
+    dt is rounded to nanosecond precision before comparison to eliminate
+    IEEE-754 representation noise in float64 arithmetic (e.g. 1.020 - 1.0 can
+    produce 0.020000000000000018 rather than exactly 0.020).
+    """
+    if len(tev) < 2:
+        return []
+    dt = np.diff(tev.astype(np.float64))
+    mask = np.round(dt, 9) > threshold_s
+    return [(int(i), float(dt[i])) for i in np.where(mask)[0]]
+
+
+def run_c_model_seeded(pwm, vdc, params, t_start, t_end, seed, fpga=None):
+    """Replay [t_start, t_end] through the C model, seeding from FPGA at t_start.
+
+    When a gap > GAP_RESEED_THRESHOLD_S is detected in the PWM stream the C
+    model is reseeded from the nearest FPGA telemetry sample instead of
+    integrating at the stale gate state.  This prevents the current explosion
+    that would otherwise occur during a FIFO overflow or UDP packet loss window.
+
+    If fpga is None the old behaviour (no reseed) is preserved for callers that
+    do not have FPGA telemetry available.
+
+    Return dict includes:
+        gap_count  — number of gaps reseeded
+        gap_total_s — cumulative duration of all gaps [s]
     """
     model = InductionMotorReferenceModel(params=params, backend="c")
     priv = ctypes.cast(model._impl._model.priv, ctypes.POINTER(_CIMPrivateData)).contents
-    priv.out.is_alpha = float(seed["ia"])
-    priv.out.is_beta = float(seed["ib"])
-    priv.out.fluxR_alpha = float(seed["flux_a"])
-    priv.out.fluxR_beta = float(seed["flux_b"])
-    priv.out.wm = float(seed["speed"])
+
+    def _apply_seed(s: dict) -> None:
+        priv.out.is_alpha   = float(s["ia"])
+        priv.out.is_beta    = float(s["ib"])
+        priv.out.fluxR_alpha = float(s["flux_a"])
+        priv.out.fluxR_beta  = float(s["flux_b"])
+        priv.out.wm         = float(s["speed"])
+
+    _apply_seed(seed)
 
     ts = L4.SOLVER_TS
     vhalf = vdc / 2.0
-    store_every = max(1, round((1.0 / 10_000.0) / ts))  # decimate stored → ~10 kHz
+    store_every = max(1, round((1.0 / 10_000.0) / ts))
     tev = pwm["t"]
     ga, gb, gc = pwm["a"], pwm["b"], pwm["c"]
     j0 = max(0, int(np.searchsorted(tev, t_start)) - 1)
@@ -170,24 +203,46 @@ def run_c_model_seeded(pwm, vdc, params, t_start, t_end, seed):
     T, IA, IB, FA, FB, SP = [], [], [], [], [], []
     t = float(tev[j0])
     k = 0
+    gap_count = 0
+    gap_total_s = 0.0
+
     for j in range(j0, len(tev) - 1):
         if t > t_end:
             break
-        n = int(round(float(tev[j + 1] - tev[j]) / ts))
+        dt = float(tev[j + 1] - tev[j])
+        n = int(round(dt / ts))
         if n <= 0 or n > 5_000_000:
             continue
-        vva, vvb, vvc = (L4._gate_to_v(ga[j], vhalf), L4._gate_to_v(gb[j], vhalf),
-                         L4._gate_to_v(gc[j], vhalf))
+
+        if dt > GAP_RESEED_THRESHOLD_S and fpga is not None:
+            # Reseed from FPGA telemetry at the gap boundary, then jump the
+            # simulation clock to the end of the gap so the next PWM event
+            # applies at the correct time.
+            _apply_seed(_seed_at(fpga, float(tev[j + 1])))
+            t = float(tev[j + 1])
+            gap_count += 1
+            gap_total_s += dt
+            continue
+
+        vva = L4._gate_to_v(ga[j], vhalf)
+        vvb = L4._gate_to_v(gb[j], vhalf)
+        vvc = L4._gate_to_v(gc[j], vhalf)
         for _ in range(n):
             st = model.step(vva, vvb, vvc, 0.0)
             if k % store_every == 0 and t >= t_start:
                 T.append(t); IA.append(st.i_alpha); IB.append(st.i_beta)
-                FA.append(st.flux_alpha); FB.append(st.flux_beta); SP.append(st.speed_mech)
+                FA.append(st.flux_alpha); FB.append(st.flux_beta)
+                SP.append(st.speed_mech)
             t += ts
             k += 1
-    return {"t": np.array(T), "ia": np.array(IA), "ib": np.array(IB),
-            "flux_a": np.array(FA), "flux_b": np.array(FB), "speed": np.array(SP),
-            "backend": model.backend_name}
+
+    return {
+        "t": np.array(T), "ia": np.array(IA), "ib": np.array(IB),
+        "flux_a": np.array(FA), "flux_b": np.array(FB), "speed": np.array(SP),
+        "backend": model.backend_name,
+        "gap_count": gap_count,
+        "gap_total_s": round(gap_total_s, 4),
+    }
 
 
 def _seed_at(fpga: dict, t_start: float) -> dict:
@@ -286,6 +341,9 @@ def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float 
 
     fpga = _clip_fpga(fpga)
     pwm = _rezero(pwm)
+    if pwm["t"].size > 1:
+        _ord = np.argsort(pwm["t"], kind="stable")
+        pwm = {k: v[_ord] for k, v in pwm.items()}
     seg_dur = float(fpga["t"][-1]) if fpga["t"].size else 0.0
     if seg_dur < 0.1 or pwm["t"].size < 4:
         print(f"  segmento monotônico curto demais ({seg_dur:.3f}s) — pulando")
@@ -307,7 +365,7 @@ def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float 
         if tb - ta < 0.05:
             continue
         seed = _seed_at(fpga, ta)
-        cmod = run_c_model_seeded(pwm, vdc, params, ta, tb, seed)
+        cmod = run_c_model_seeded(pwm, vdc, params, ta, tb, seed, fpga=fpga)
         if cmod["t"].size < 8:
             print(f"  [{label}] replay vazio — pulando")
             continue
@@ -315,13 +373,19 @@ def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float 
         cmod["t"] = cmod["t"] + lag
         fwin = _win(fpga, ta, tb)
         m = _metrics(fwin, cmod, ta, tb)
+        gaps_str = (f"  gaps={cmod['gap_count']}({cmod['gap_total_s']:.2f}s)"
+                    if cmod["gap_count"] else "")
         print(f"  [{label} {ta:.2f}-{tb:.2f}s] iα NRMSE={m.get('ia_nrmse')}%  "
-              f"lag={lag*1e3:+.2f}ms  backend={cmod['backend']}")
+              f"lag={lag*1e3:+.2f}ms  backend={cmod['backend']}{gaps_str}")
         title = (f"{name} — {label} ({ta:.1f}–{tb:.1f}s) — FPGA vs Modelo C"
                  + (f"  iα NRMSE {m['ia_nrmse']:.1f}%" if m.get("ia_nrmse") else ""))
         make_png(fwin, cmod, out_dir / f"{label}.png", title)
         make_report_light(fwin, cmod, out_dir / f"{label}.html")
         _save_npz(fwin, cmod, out_dir / f"{label}.npz")
+        m["pwm_gaps"] = {
+            "count": cmod["gap_count"],
+            "total_s": cmod["gap_total_s"],
+        }
         out[label] = m
 
     (out_dir / "metrics.json").write_text(json.dumps(out, indent=2))
