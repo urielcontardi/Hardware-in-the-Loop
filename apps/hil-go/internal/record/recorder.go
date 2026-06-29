@@ -423,6 +423,9 @@ func (r *Recorder) writeBatch(b batch) {
 		if !r.haveBase {
 			r.lastCycles, r.baseEpoch, r.haveBase = s.TCycles, s.Epoch, true
 			r.baseAbsCycles = uint64(s.TCycles)
+			// Inject initial PWM state: solver reset guarantees all phases are low
+			// at run start. Gives the viewer a t=0 anchor before the first transition.
+			r.pwmEvents = append(r.pwmEvents, pwmRecord{t: 0, a: 0, b: 0, c: 0})
 		} else if s.Epoch == r.baseEpoch &&
 			s.TCycles <= r.lastCycles &&
 			!(s.TCycles < r.lastCycles && r.lastCycles-s.TCycles > 0x80000000) {

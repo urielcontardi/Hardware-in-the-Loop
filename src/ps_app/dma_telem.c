@@ -28,6 +28,7 @@
 #define DMACR_RESET    (1u << 2)
 
 #define DMASR_HALTED   (1u << 0)
+#define DMASR_INT_ERR  (1u << 4)   /* premature TLAST — transient at run boundaries */
 #define DMASR_IOC_IRQ  (1u << 12)
 #define DMASR_ERR_IRQ  (1u << 14)
 
@@ -231,7 +232,11 @@ int dma_telem_next(dma_sample_t *out, int timeout_ms)
             usleep(1000);
             dma_wr(S2MM_DMACR, DMACR_RUN);
             arm_transfer(active_buf);
-            return -1;
+            /* DMAIntErr (premature TLAST) is expected at solver-reset boundaries:
+             * the FPGA terminates the AXI stream early when the solver is held in
+             * reset. Treat as a skipped burst (return 0) so the caller does not
+             * count it toward the GPIO fallback threshold. */
+            return (sr & DMASR_INT_ERR) ? 0 : -1;
         }
 
         if (sr & DMASR_IOC_IRQ) break;
