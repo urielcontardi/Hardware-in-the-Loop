@@ -243,7 +243,13 @@ func (r *Recorder) SubmitPWM(clock uint32, events []pwmrecv.Event) {
 			r.pwmWrapCycles += 1 << 32
 		}
 		r.pwmLastCycles = ev.TCycles
-		t := float32(float64(r.pwmWrapCycles+uint64(ev.TCycles)) / float64(r.pwmClockHz))
+		absTC := r.pwmWrapCycles + uint64(ev.TCycles)
+		// Align to the same origin as telemetry samples so that PWM t=0 matches sample t=0.
+		// Drop events that arrive before the first telemetry sample establishes the base.
+		if !r.haveBase || absTC < r.baseAbsCycles {
+			continue
+		}
+		t := float32(float64(absTC-r.baseAbsCycles) / float64(r.pwmClockHz))
 		if len(r.pwmEvents) >= maxPWMEvents {
 			r.dropped.Add(1)
 			continue

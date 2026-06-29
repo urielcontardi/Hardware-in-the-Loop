@@ -727,7 +727,9 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.TelemOff(ip)
-	time.Sleep(80 * time.Millisecond) // drain in-flight UDP samples before sealing recorder
+	time.Sleep(80 * time.Millisecond) // drain in-flight UDP telemetry samples
+	s.pwmRecv.Punch(ip, pwmEventsPort) // flush FIFO into recorder before sealing
+	time.Sleep(80 * time.Millisecond)
 	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
@@ -847,6 +849,14 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.clearPwmHistory()
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
+	// Re-send telemetry+PWM destination so that repeated run/stop cycles keep
+	// data flowing. The board resets telem_dst on stop; without this the second
+	// run would receive no samples and no PWM events.
+	decim := transportDecim
+	sampleHz := uint32(gpioFallbackHz)
+	if _, setErr := hiludp.Set(ip, hiludp.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: s.localIP}); setErr != nil {
+		log.Printf("handleRun: re-set telemetry failed (non-fatal): %v", setErr)
+	}
 	if _, err := s.recorder.Start(""); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("start raw recorder: %w", err))
 		return
@@ -902,7 +912,9 @@ func (s *server) handleReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.ResetSolver(ip)
-	time.Sleep(80 * time.Millisecond) // drain in-flight UDP samples before sealing recorder
+	time.Sleep(80 * time.Millisecond) // drain in-flight UDP telemetry samples
+	s.pwmRecv.Punch(ip, pwmEventsPort) // flush FIFO into recorder before sealing
+	time.Sleep(80 * time.Millisecond)
 	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
@@ -927,7 +939,11 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.Stop(ip)
-	time.Sleep(80 * time.Millisecond) // drain in-flight UDP samples before sealing recorder
+	time.Sleep(80 * time.Millisecond) // drain in-flight UDP telemetry samples
+	// Punch the board so it sends the PWM FIFO contents accumulated during the run.
+	// This must happen after Stop so the FPGA has committed all transitions.
+	s.pwmRecv.Punch(ip, pwmEventsPort)
+	time.Sleep(80 * time.Millisecond) // wait for FIFO dump to arrive and be processed
 	recordErr := s.recorder.Stop()
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
