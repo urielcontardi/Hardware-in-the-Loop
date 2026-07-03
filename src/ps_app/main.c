@@ -193,7 +193,14 @@ static void *telem_thread_fn(void *arg)
             /* dma_telem_next: waits for active buffer, re-arms the other,
              * then decodes — DMA is always running with minimal gap. */
             int n = dma_telem_next(dma_buf, 500 /* ms timeout */);
-            if (n <= 0) {
+            if (n == 0) {
+                /* Transient DMAIntErr at run/reset boundaries: DMA was reset and
+                 * re-armed, but there is no completed burst to forward. Do not
+                 * count this toward the GPIO fallback threshold. */
+                dma_errors = 0;
+                continue;
+            }
+            if (n < 0) {
                 if (++dma_errors >= 3) {
                     fprintf(stderr,
                             "dma_telem: disabling DMA telemetry after errors; "

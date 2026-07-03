@@ -727,7 +727,7 @@ func (s *server) handleDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.TelemOff(ip)
-	time.Sleep(80 * time.Millisecond) // drain in-flight UDP telemetry samples
+	time.Sleep(80 * time.Millisecond)  // drain in-flight UDP telemetry samples
 	s.pwmRecv.Punch(ip, pwmEventsPort) // flush FIFO into recorder before sealing
 	time.Sleep(80 * time.Millisecond)
 	recordErr := s.recorder.Stop()
@@ -867,9 +867,49 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	s.recorder.SetMetadata(s.captureMetadata(ip, status))
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))
+}
+
+func ptrValue(p *float32, fallback float32) float32 {
+	if p == nil {
+		return fallback
+	}
+	return *p
+}
+
+func (s *server) captureMetadata(ip string, status *hiludp.HilStatus) map[string]any {
+	controller := map[string]any{}
+	if status != nil {
+		controller = map[string]any{
+			"freq_hz":        status.FreqHz,
+			"freq_actual_hz": status.FreqActualHz,
+			"vdc_v":          status.VdcV,
+			"torque_nm":      status.TorqueNm,
+			"base_freq_hz":   status.BaseFreqHz,
+			"max_v_pu":       status.MaxVPu,
+			"accel_time_s":   status.AccelTimeSec,
+		}
+	}
+
+	s.stateMu.Lock()
+	motor := s.lastMotor[ip]
+	s.stateMu.Unlock()
+
+	return map[string]any{
+		"controller": controller,
+		"motor": map[string]any{
+			"rs":  ptrValue(motor.Rs, 0.435),
+			"rr":  ptrValue(motor.Rr, 0.2826),
+			"ls":  ptrValue(motor.Ls, 3.1364e-3),
+			"lr":  ptrValue(motor.Lr, 6.3264e-3),
+			"lm":  ptrValue(motor.Lm, 109.9442e-3),
+			"j":   ptrValue(motor.J, 0.192),
+			"npp": ptrValue(motor.Npp, 2.0),
+		},
+	}
 }
 
 func (s *server) runWithRecovery(ip string) (*hiludp.HilStatus, error) {
@@ -912,7 +952,7 @@ func (s *server) handleReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, err := hiludp.ResetSolver(ip)
-	time.Sleep(80 * time.Millisecond) // drain in-flight UDP telemetry samples
+	time.Sleep(80 * time.Millisecond)  // drain in-flight UDP telemetry samples
 	s.pwmRecv.Punch(ip, pwmEventsPort) // flush FIFO into recorder before sealing
 	time.Sleep(80 * time.Millisecond)
 	recordErr := s.recorder.Stop()

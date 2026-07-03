@@ -66,10 +66,12 @@ type Recorder struct {
 	pwmWrapCycles uint64
 	pwmHaveBase   bool
 	pwmEvents     []pwmRecord
+	pendingPWM    []pwmrecv.Event
 	haveBase      bool
 	generation    uint64
 	latestPath    string
 	latestUsed    bool
+	extraMeta     map[string]any
 	queue         chan batch
 	done          chan struct{}
 	wg            sync.WaitGroup
@@ -136,10 +138,26 @@ func (r *Recorder) Start(name string) (string, error) {
 	r.sampleCount, r.haveEpoch, r.haveBase, r.wrapCycles = 0, false, false, 0
 	r.pwmClockHz, r.pwmHaveBase, r.pwmWrapCycles = clockHz, false, 0
 	r.pwmEvents = r.pwmEvents[:0]
+	r.pendingPWM = r.pendingPWM[:0]
 	r.latestPath, r.latestUsed = "", false
+	r.extraMeta = nil
 	r.mu.Unlock()
 	r.active.Store(true)
 	return path, nil
+}
+
+func (r *Recorder) SetMetadata(extra map[string]any) {
+	if len(extra) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.extraMeta == nil {
+		r.extraMeta = make(map[string]any, len(extra))
+	}
+	for k, v := range extra {
+		r.extraMeta[k] = v
+	}
 }
 
 func (r *Recorder) Stop() error {
@@ -195,6 +213,11 @@ func (r *Recorder) Stop() error {
 	if err := os.Rename(r.path, finalPath); err != nil {
 		return err
 	}
+	if len(r.extraMeta) > 0 {
+		if err := rewriteHilbinMeta(finalPath, r.extraMeta); err != nil {
+			return err
+		}
+	}
 	r.latestPath, r.latestUsed = finalPath, false
 	r.file, r.path = nil, ""
 	return nil
@@ -237,24 +260,55 @@ func (r *Recorder) SubmitPWM(clock uint32, events []pwmrecv.Event) {
 		if !r.prepareEpochLocked(ev.Epoch) {
 			continue
 		}
-		if !r.pwmHaveBase {
-			r.pwmEpoch, r.pwmLastCycles, r.pwmHaveBase = ev.Epoch, ev.TCycles, true
-		} else if ev.TCycles < r.pwmLastCycles && r.pwmLastCycles-ev.TCycles > 0x80000000 {
-			r.pwmWrapCycles += 1 << 32
-		}
-		r.pwmLastCycles = ev.TCycles
-		absTC := r.pwmWrapCycles + uint64(ev.TCycles)
-		// Align to the same origin as telemetry samples so that PWM t=0 matches sample t=0.
-		// Drop events that arrive before the first telemetry sample establishes the base.
-		if !r.haveBase || absTC < r.baseAbsCycles {
+		if !r.haveBase {
+			if len(r.pendingPWM) >= maxPWMEvents {
+				r.dropped.Add(1)
+				continue
+			}
+			r.pendingPWM = append(r.pendingPWM, ev)
 			continue
 		}
-		t := float32(float64(absTC-r.baseAbsCycles) / float64(r.pwmClockHz))
-		if len(r.pwmEvents) >= maxPWMEvents {
-			r.dropped.Add(1)
+		r.appendPWMEventLocked(ev)
+	}
+}
+
+func (r *Recorder) appendPWMEventLocked(ev pwmrecv.Event) {
+	if r.file == nil || !r.haveBase {
+		return
+	}
+	if !r.pwmHaveBase {
+		r.pwmEpoch, r.pwmLastCycles, r.pwmHaveBase = ev.Epoch, ev.TCycles, true
+		if ev.TCycles < uint32(r.baseAbsCycles) &&
+			uint32(r.baseAbsCycles)-ev.TCycles > 0x80000000 {
+			r.pwmWrapCycles = 1 << 32
+		}
+	} else if ev.TCycles < r.pwmLastCycles && r.pwmLastCycles-ev.TCycles > 0x80000000 {
+		r.pwmWrapCycles += 1 << 32
+	}
+	r.pwmLastCycles = ev.TCycles
+	absTC := r.pwmWrapCycles + uint64(ev.TCycles)
+	if absTC < r.baseAbsCycles {
+		return
+	}
+	t := float32(float64(absTC-r.baseAbsCycles) / float64(r.pwmClockHz))
+	if len(r.pwmEvents) >= maxPWMEvents {
+		r.dropped.Add(1)
+		return
+	}
+	r.pwmEvents = append(r.pwmEvents, pwmRecord{t: t, a: ev.A, b: ev.B, c: ev.C})
+}
+
+func (r *Recorder) flushPendingPWMLocked() {
+	if !r.haveBase || len(r.pendingPWM) == 0 {
+		return
+	}
+	pending := r.pendingPWM
+	r.pendingPWM = nil
+	for _, ev := range pending {
+		if ev.Epoch&0x3fff != r.runEpoch {
 			continue
 		}
-		r.pwmEvents = append(r.pwmEvents, pwmRecord{t: t, a: ev.A, b: ev.B, c: ev.C})
+		r.appendPWMEventLocked(ev)
 	}
 }
 
@@ -400,6 +454,7 @@ func (r *Recorder) prepareEpochLocked(epoch uint16) bool {
 	r.sampleCount, r.haveBase, r.wrapCycles, r.baseAbsCycles = 0, false, 0, 0
 	r.pwmHaveBase, r.pwmWrapCycles = false, 0
 	r.pwmEvents = r.pwmEvents[:0]
+	r.pendingPWM = r.pendingPWM[:0]
 	return true
 }
 
@@ -423,9 +478,7 @@ func (r *Recorder) writeBatch(b batch) {
 		if !r.haveBase {
 			r.lastCycles, r.baseEpoch, r.haveBase = s.TCycles, s.Epoch, true
 			r.baseAbsCycles = uint64(s.TCycles)
-			// Inject initial PWM state: solver reset guarantees all phases are low
-			// at run start. Gives the viewer a t=0 anchor before the first transition.
-			r.pwmEvents = append(r.pwmEvents, pwmRecord{t: 0, a: 0, b: 0, c: 0})
+			r.flushPendingPWMLocked()
 		} else if s.Epoch == r.baseEpoch &&
 			s.TCycles <= r.lastCycles &&
 			!(s.TCycles < r.lastCycles && r.lastCycles-s.TCycles > 0x80000000) {

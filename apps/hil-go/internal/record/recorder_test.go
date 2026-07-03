@@ -83,7 +83,7 @@ func TestRecorderWritesCompatibleHilbinAcrossTimestampWrap(t *testing.T) {
 		t.Fatalf("pwm count=%d", got)
 	}
 	pwmTime := math.Float32frombits(binary.LittleEndian.Uint32(data[pwmOff+4:]))
-	if math.Abs(float64(pwmTime)-5.0/clockHz) > 1e-12 {
+	if math.Abs(float64(pwmTime)-16.0/clockHz) > 1e-12 {
 		t.Fatalf("pwm time=%g", pwmTime)
 	}
 	if data[pwmOff+8] != 1 || data[pwmOff+9] != 2 || data[pwmOff+10] != 3 {
@@ -107,8 +107,8 @@ func TestCopyLatestMergesExtraMetadata(t *testing.T) {
 	}
 
 	extra := map[string]any{
-		"name":    "batch_01_scenario1",
-		"batch":   map[string]any{"name": "mybatch", "index": float64(1), "count": float64(2)},
+		"name":     "batch_01_scenario1",
+		"batch":    map[string]any{"name": "mybatch", "index": float64(1), "count": float64(2)},
 		"scenario": map[string]any{"name": "scenario1"},
 		// these must be ignored (recorder owns them)
 		"sample_count": float64(999),
