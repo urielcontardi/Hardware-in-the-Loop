@@ -42,6 +42,17 @@ GAP_RESEED_THRESHOLD_S = 0.020   # 20 ms
 RUNS_DIR = Path(__file__).resolve().parents[3] / "apps" / "hil-go" / "runs"
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports" / "hilbin"
 
+FIRMWARE_DEFAULT_PARAMS = IMPhysicalParams(
+    rs=0.435,
+    rr=0.2826,
+    lm=109.9442e-3,
+    ls=3.1364e-3,
+    lr=6.3264e-3,
+    j=0.192,
+    npp=2.0,
+    ts=26.0 / 200_000_000,
+)
+
 _SAMPLE_FLOATS = 7  # t, ia, ib, flux_a, flux_b, speed, pad
 _PWM_DTYPE = np.dtype([("t", "<f4"), ("a", "u1"), ("b", "u1"), ("c", "u1"), ("pad", "u1")])
 
@@ -166,75 +177,100 @@ def _find_pwm_gaps(tev: np.ndarray, threshold_s: float) -> list[tuple[int, float
     return [(int(i), float(dt[i])) for i in np.where(mask)[0]]
 
 
-def run_c_model_seeded(pwm, vdc, params, t_start, t_end, seed, fpga=None):
-    """Replay [t_start, t_end] through the C model, seeding from FPGA at t_start.
+def _gate_to_v_rtl(g, vdc):
+    """NPC gate-state voltage mapping used by HIL_AXI_Top.vhd.
 
-    When a gap > GAP_RESEED_THRESHOLD_S is detected in the PWM stream the C
-    model is reseeded from the nearest FPGA telemetry sample instead of
-    integrating at the stale gate state.  This prevents the current explosion
-    that would otherwise occur during a FIFO overflow or UDP packet loss window.
+    The FPGA intentionally models dead-time/zero states as half levels:
+    POS=+Vdc/2, ZERO_P=+Vdc/4, ZERO_N=-Vdc/4, NEG=-Vdc/2.
+    """
+    if g in (3, 1):
+        return 0.5 * vdc
+    if g == 2:
+        return 0.25 * vdc
+    if g == 4:
+        return -0.25 * vdc
+    if g in (12, -1):
+        return -0.5 * vdc
+    return 0.0
 
-    If fpga is None the old behaviour (no reseed) is preserved for callers that
-    do not have FPGA telemetry available.
 
-    Return dict includes:
-        gap_count  — number of gaps reseeded
-        gap_total_s — cumulative duration of all gaps [s]
+def _svf_step(lp, bp, raw):
+    """Floating-point equivalent of the RTL SVF telemetry anti-alias filter."""
+    old_lp = lp
+    old_bp = bp
+    new_lp = old_lp + old_bp / 32.0
+    new_bp = old_bp + raw / 32.0 - old_lp / 32.0 - (1.4375 * old_bp) / 32.0
+    return new_lp, new_bp
+
+
+def run_c_model_seeded(pwm, vdc, params, t_start, t_end, seed, fpga=None, tload=0.0,
+                       output_hz=100_000.0, pwm_delay_s=0.0):
+    """Replay [t_start, t_end] through the C model on the solver tick grid.
+
+    The FPGA does not integrate from PWM edge to PWM edge. It samples the current
+    NPC gate state when each TIM_Solver step is launched and holds that voltage
+    for the solver step. Replaying on the same fixed grid avoids edge-interval
+    rounding artefacts and leaves only a single phase/delay term to tune.
     """
     model = InductionMotorReferenceModel(params=params, backend="c")
     priv = ctypes.cast(model._impl._model.priv, ctypes.POINTER(_CIMPrivateData)).contents
 
     def _apply_seed(s: dict) -> None:
-        priv.out.is_alpha   = float(s["ia"])
-        priv.out.is_beta    = float(s["ib"])
+        priv.out.is_alpha = float(s["ia"])
+        priv.out.is_beta = float(s["ib"])
         priv.out.fluxR_alpha = float(s["flux_a"])
-        priv.out.fluxR_beta  = float(s["flux_b"])
-        priv.out.wm         = float(s["speed"])
+        priv.out.fluxR_beta = float(s["flux_b"])
+        priv.out.wm = float(s["speed"])
+        priv.out.wr = float(s["speed"]) * params.npp
 
     _apply_seed(seed)
 
-    ts = L4.SOLVER_TS
-    vhalf = vdc / 2.0
-    store_every = max(1, round((1.0 / 10_000.0) / ts))
+    ts = params.ts
+    store_every = max(1, round((1.0 / output_hz) / ts))
     tev = pwm["t"]
     ga, gb, gc = pwm["a"], pwm["b"], pwm["c"]
-    j0 = max(0, int(np.searchsorted(tev, t_start)) - 1)
+    if tev.size < 1:
+        return {"t": np.array([]), "ia": np.array([]), "ib": np.array([]),
+                "flux_a": np.array([]), "flux_b": np.array([]), "speed": np.array([]),
+                "backend": model.backend_name, "gap_count": 0, "gap_total_s": 0.0}
 
     T, IA, IB, FA, FB, SP = [], [], [], [], [], []
-    t = float(tev[j0])
-    k = 0
+    svf_lp = np.array([seed["ia"], seed["ib"], seed["flux_a"], seed["flux_b"], seed["speed"]], dtype=float)
+    svf_bp = np.zeros(5, dtype=float)
+
     gap_count = 0
     gap_total_s = 0.0
+    gaps = _find_pwm_gaps(tev, GAP_RESEED_THRESHOLD_S)
+    gap_by_end = {i + 1: dt for i, dt in gaps}
+    next_gap_pos = 0
 
-    for j in range(j0, len(tev) - 1):
-        if t > t_end:
-            break
-        dt = float(tev[j + 1] - tev[j])
-        n = int(round(dt / ts))
-        if n <= 0 or n > 5_000_000:
-            continue
-
-        if dt > GAP_RESEED_THRESHOLD_S and fpga is not None:
-            # Reseed from FPGA telemetry at the gap boundary, then jump the
-            # simulation clock to the end of the gap so the next PWM event
-            # applies at the correct time.
-            _apply_seed(_seed_at(fpga, float(tev[j + 1])))
-            t = float(tev[j + 1])
-            gap_count += 1
-            gap_total_s += dt
-            continue
-
-        vva = L4._gate_to_v(ga[j], vhalf)
-        vvb = L4._gate_to_v(gb[j], vhalf)
-        vvc = L4._gate_to_v(gc[j], vhalf)
-        for _ in range(n):
-            st = model.step(vva, vvb, vvc, 0.0)
-            if k % store_every == 0 and t >= t_start:
-                T.append(t); IA.append(st.i_alpha); IB.append(st.i_beta)
-                FA.append(st.flux_alpha); FB.append(st.flux_beta)
-                SP.append(st.speed_mech)
-            t += ts
-            k += 1
+    n_steps = max(0, int(np.floor((t_end - t_start) / ts)))
+    j = max(0, int(np.searchsorted(tev, t_start + pwm_delay_s, side="right")) - 1)
+    for k in range(n_steps + 1):
+        t = t_start + k * ts
+        sample_t = t + pwm_delay_s
+        while j + 1 < len(tev) and tev[j + 1] <= sample_t:
+            j += 1
+            if next_gap_pos < len(gaps) and gaps[next_gap_pos][0] + 1 == j:
+                dt = gaps[next_gap_pos][1]
+                next_gap_pos += 1
+                if fpga is not None:
+                    gap_seed = _seed_at(fpga, float(tev[j]))
+                    _apply_seed(gap_seed)
+                    svf_lp = np.array([gap_seed["ia"], gap_seed["ib"], gap_seed["flux_a"], gap_seed["flux_b"], gap_seed["speed"]], dtype=float)
+                    svf_bp = np.zeros(5, dtype=float)
+                    gap_count += 1
+                    gap_total_s += dt
+        vva = _gate_to_v_rtl(ga[j], vdc)
+        vvb = _gate_to_v_rtl(gb[j], vdc)
+        vvc = _gate_to_v_rtl(gc[j], vdc)
+        st = model.step(vva, vvb, vvc, tload)
+        raw = np.array([st.i_alpha, st.i_beta, st.flux_alpha, st.flux_beta, st.speed_mech], dtype=float)
+        for fk in range(5):
+            svf_lp[fk], svf_bp[fk] = _svf_step(svf_lp[fk], svf_bp[fk], raw[fk])
+        if k % store_every == 0:
+            T.append(t); IA.append(svf_lp[0]); IB.append(svf_lp[1])
+            FA.append(svf_lp[2]); FB.append(svf_lp[3]); SP.append(svf_lp[4])
 
     return {
         "t": np.array(T), "ia": np.array(IA), "ib": np.array(IB),
@@ -243,7 +279,6 @@ def run_c_model_seeded(pwm, vdc, params, t_start, t_end, seed, fpga=None):
         "gap_count": gap_count,
         "gap_total_s": round(gap_total_s, 4),
     }
-
 
 def _seed_at(fpga: dict, t_start: float) -> dict:
     """FPGA state at the sample nearest t_start (the seed for the C model)."""
@@ -330,7 +365,22 @@ def _win(fpga: dict, ta: float, tb: float) -> dict:
     return {k: v[m] for k, v in fpga.items()}
 
 
-def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float = 0.5) -> dict:
+def _params_from_args(args) -> IMPhysicalParams:
+    return IMPhysicalParams(
+        rs=args.rs,
+        rr=args.rr,
+        lm=args.lm,
+        ls=args.ls,
+        lr=args.lr,
+        j=args.j,
+        npp=args.npp,
+        ts=args.ts,
+    )
+
+
+def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float = 0.5,
+            params: IMPhysicalParams = FIRMWARE_DEFAULT_PARAMS, output_hz: float = 100_000.0,
+            pwm_delay_s: float = 0.0, auto_pwm_delay_us: float = 0.0) -> dict:
     name = path.stem
     print(f"\n══ {name} ══")
     meta, fpga, pwm = parse_hilbin(path)
@@ -349,7 +399,6 @@ def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float 
         print(f"  segmento monotônico curto demais ({seg_dur:.3f}s) — pulando")
         return {"capture": name, "error": "no usable monotonic segment"}
 
-    params = IMPhysicalParams.defaults()
     out_dir = out_root / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -359,13 +408,59 @@ def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float 
         "partida": (0.0, min(window, seg_dur)),
         "regime": (max(0.0, seg_dur - window), seg_dur),
     }
-    print(f"  duração do segmento = {seg_dur:.2f}s  (Vdc={vdc:.0f} V)")
-    out = {"capture": name, "vdc": vdc, "tload": tload, "seg_dur_s": round(seg_dur, 3)}
+    print(f"  duração do segmento = {seg_dur:.2f}s  (Vdc={vdc:.0f} V, J={params.j:g}, Rs={params.rs:g})")
+    out = {
+        "capture": name,
+        "vdc": vdc,
+        "tload": tload,
+        "seg_dur_s": round(seg_dur, 3),
+        "params": {
+            "rs": params.rs, "rr": params.rr, "lm": params.lm, "ls": params.ls,
+            "lr": params.lr, "j": params.j, "npp": params.npp, "ts": params.ts,
+        },
+        "comparison_notes": [
+            "PWM replay uses the RTL NPC voltage mapping: POS=+Vdc/2, ZERO_P=+Vdc/4, ZERO_N=-Vdc/4, NEG=-Vdc/2.",
+            "C outputs are passed through the same floating-point SVF form used by the FPGA telemetry path before metrics.",
+            "If the .hilbin has no run metadata, firmware default motor parameters are used.",
+            f"C replay output is stored at {output_hz:g} Hz for plotting and metrics interpolation.",
+            "C replay samples captured PWM on the fixed solver tick grid, matching the FPGA input semantics.",
+            f"PWM timestamp delay applied to replay: {pwm_delay_s * 1e6:+.1f} us.",
+        ],
+    }
     for label, (ta, tb) in windows.items():
         if tb - ta < 0.05:
             continue
+        delay_s = pwm_delay_s
+        delay_sweep = None
+        if auto_pwm_delay_us > 0 and label == "regime":
+            sweep = np.arange(-auto_pwm_delay_us, auto_pwm_delay_us + 0.1, 50.0) * 1e-6
+            best = None
+            # Use a very short tail slice; Python/ctypes is only a coarse sync estimator.
+            swa = max(ta, tb - min(0.02, tb - ta))
+            for cand in sweep:
+                seed_s = _seed_at(fpga, swa)
+                ctest = run_c_model_seeded(pwm, vdc, params, swa, tb, seed_s, fpga=fpga,
+                                           tload=tload, output_hz=min(output_hz, 50_000.0),
+                                           pwm_delay_s=float(cand))
+                if ctest["t"].size < 8:
+                    continue
+                mtest = _metrics(_win(fpga, swa, tb), ctest, swa, tb)
+                score = float(mtest.get("ia_nrmse", 1e9)) + float(mtest.get("ib_nrmse", 1e9))
+                if best is None or score < best[0]:
+                    best = (score, float(cand), mtest)
+            if best is not None:
+                delay_s = best[1]
+                delay_sweep = {
+                    "range_us": [-auto_pwm_delay_us, auto_pwm_delay_us],
+                    "step_us": 50.0,
+                    "selected_us": round(delay_s * 1e6, 3),
+                    "score": round(best[0], 5),
+                    "tail_metrics": best[2],
+                }
+                print(f"  [{label}] auto PWM delay = {delay_s * 1e6:+.1f} us")
         seed = _seed_at(fpga, ta)
-        cmod = run_c_model_seeded(pwm, vdc, params, ta, tb, seed, fpga=fpga)
+        cmod = run_c_model_seeded(pwm, vdc, params, ta, tb, seed, fpga=fpga, tload=tload,
+                                  output_hz=output_hz, pwm_delay_s=delay_s)
         if cmod["t"].size < 8:
             print(f"  [{label}] replay vazio — pulando")
             continue
@@ -382,6 +477,9 @@ def run_one(path: Path, vdc: float, tload: float, out_root: Path, window: float 
         make_png(fwin, cmod, out_dir / f"{label}.png", title)
         make_report_light(fwin, cmod, out_dir / f"{label}.html")
         _save_npz(fwin, cmod, out_dir / f"{label}.npz")
+        m["pwm_delay_us"] = round(delay_s * 1e6, 3)
+        if delay_sweep is not None:
+            m["pwm_delay_sweep"] = delay_sweep
         m["pwm_gaps"] = {
             "count": cmod["gap_count"],
             "total_s": cmod["gap_total_s"],
@@ -402,6 +500,21 @@ def main() -> None:
     ap.add_argument("--out", default=str(REPORTS_DIR), help="output root dir")
     ap.add_argument("--window", type=float, default=0.5,
                     help="replay window length per region [s] (default 0.5)")
+    ap.add_argument("--output-hz", type=float, default=100_000.0,
+                    help="C replay output sample rate for plots/metrics [Hz] (default 100000)")
+    ap.add_argument("--pwm-delay-us", type=float, default=0.0,
+                    help="delay added to PWM timestamps during replay [us] (default 0)")
+    ap.add_argument("--auto-pwm-delay-us", type=float, default=0.0,
+                    help="sweep +/- this delay on the regime tail and use the best PWM delay [us]")
+    ap.add_argument("--ts", type=float, default=FIRMWARE_DEFAULT_PARAMS.ts,
+                    help="solver step [s] (default firmware TIMER_STEPS/200MHz)")
+    ap.add_argument("--rs", type=float, default=FIRMWARE_DEFAULT_PARAMS.rs)
+    ap.add_argument("--rr", type=float, default=FIRMWARE_DEFAULT_PARAMS.rr)
+    ap.add_argument("--lm", type=float, default=FIRMWARE_DEFAULT_PARAMS.lm)
+    ap.add_argument("--ls", type=float, default=FIRMWARE_DEFAULT_PARAMS.ls)
+    ap.add_argument("--lr", type=float, default=FIRMWARE_DEFAULT_PARAMS.lr)
+    ap.add_argument("--j", type=float, default=FIRMWARE_DEFAULT_PARAMS.j)
+    ap.add_argument("--npp", type=float, default=FIRMWARE_DEFAULT_PARAMS.npp)
     args = ap.parse_args()
 
     out_root = Path(args.out)
@@ -418,7 +531,8 @@ def main() -> None:
     summary = []
     for f in files:
         try:
-            summary.append(run_one(f, args.vdc, args.tload, out_root, args.window))
+            summary.append(run_one(f, args.vdc, args.tload, out_root, args.window, _params_from_args(args),
+                                   args.output_hz, args.pwm_delay_us * 1e-6, args.auto_pwm_delay_us))
         except Exception as exc:  # keep batch going
             print(f"  ERRO em {f.name}: {exc}")
             summary.append({"capture": f.stem, "error": str(exc)})

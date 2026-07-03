@@ -35,15 +35,28 @@ class IMPhysicalParams:
 
     @classmethod
     def defaults(cls) -> "IMPhysicalParams":
+        """Return motor parameters, overridable for campaign runs.
+
+        Environment overrides keep the C reference and VHDL generic overrides
+        in lockstep when running cocotb scenarios, e.g. `IM_RS=0.435 IM_J=0.192`.
+        """
+
+        def env_float(name: str, default: float) -> float:
+            raw = os.environ.get(name)
+            return default if raw in (None, "") else float(raw)
+
+        clock_hz = env_float("IM_CLOCK_FREQUENCY", 200_000_000.0)
+        step_cycles = env_float("IM_SOLVER_STEP_CYCLES", 26.0)
+        default_ts = step_cycles / clock_hz
         return cls(
-            rs=0.4396,
-            rr=0.2826,
-            lm=109.9442e-3,
-            ls=3.1364e-3,
-            lr=6.3264e-3,
-            j=0.4,
-            npp=2.0,
-            ts=26.0/200_000_000,  # 130 ns - matches TIMER_STEPS=26 @ 200 MHz
+            rs=env_float("IM_RS", 0.435),
+            rr=env_float("IM_RR", 0.2826),
+            lm=env_float("IM_LM", 109.9442e-3),
+            ls=env_float("IM_LS", 3.1364e-3),
+            lr=env_float("IM_LR", 6.3264e-3),
+            j=env_float("IM_J", 0.192),
+            npp=env_float("IM_NPP", 2.0),
+            ts=env_float("IM_TS", default_ts),
         )
 
 

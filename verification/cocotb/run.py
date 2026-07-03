@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -206,9 +207,27 @@ Examples:
 
     elif args.top == "top_hil":
         test_module    = "tests.test_top_hil"
+
+        def env_float(name: str, default: float) -> float:
+            raw = os.environ.get(name)
+            return default if raw in (None, "") else float(raw)
+
+        def env_int(name: str, default: int) -> int:
+            raw = os.environ.get(name)
+            return default if raw in (None, "") else int(raw)
+
         sim_parameters = {
-            "CLK_FREQUENCY": 100_000_000,
-            "BAUD_RATE":     1_000_000,
+            "CLK_FREQUENCY": env_int("IM_CLOCK_FREQUENCY", 200_000_000),
+            "PWM_FREQUENCY": env_int("HIL_PWM_FREQUENCY", 1_000),
+            "SOLVER_STEP_CYCLES": env_int("IM_SOLVER_STEP_CYCLES", 26),
+            "MOTOR_RS": env_float("IM_RS", 0.435),
+            "MOTOR_RR": env_float("IM_RR", 0.2826),
+            "MOTOR_LS": env_float("IM_LS", 3.1364e-3),
+            "MOTOR_LR": env_float("IM_LR", 6.3264e-3),
+            "MOTOR_LM": env_float("IM_LM", 109.9442e-3),
+            "MOTOR_J": env_float("IM_J", 0.192),
+            "MOTOR_NPP": env_float("IM_NPP", 2.0),
+            "BAUD_RATE": env_int("HIL_UART_BAUD", 1_000_000),
         }
 
     else:  # tim_solver
@@ -218,10 +237,29 @@ Examples:
             "vf":        "tests.test_tim_solver_vf",
             "sine":      "tests.test_tim_solver_sine",
         }[test_suite]
+
+        def env_float(name: str, default: float) -> float:
+            raw = os.environ.get(name)
+            return default if raw in (None, "") else float(raw)
+
+        def env_int(name: str, default: int) -> int:
+            raw = os.environ.get(name)
+            return default if raw in (None, "") else int(raw)
+
         # Hardware target: 200 MHz solver clock, 26 clocks per motor step.
-        # Ts is passed as a decimal string because some simulators reject real
-        # generic overrides in exponential notation.
-        sim_parameters = {"CLOCK_FREQUENCY": 200_000_000}
+        # Motor generics are overridable so L2 can be run with the exact same
+        # parameter set as the synthesized HIL_AXI_Top or a PSIM reference case.
+        sim_parameters = {
+            "CLOCK_FREQUENCY": env_int("IM_CLOCK_FREQUENCY", 200_000_000),
+            "SOLVER_STEP_CYCLES": env_int("IM_SOLVER_STEP_CYCLES", 26),
+            "rs": env_float("IM_RS", 0.435),
+            "rr": env_float("IM_RR", 0.2826),
+            "ls": env_float("IM_LS", 3.1364e-3),
+            "lr": env_float("IM_LR", 6.3264e-3),
+            "lm": env_float("IM_LM", 109.9442e-3),
+            "j": env_float("IM_J", 0.192),
+            "npp": env_float("IM_NPP", 2.0),
+        }
 
     # ── Waveform setup ───────────────────────────────────────────────────
     # Wave flags are simulator runtime args → go in test_args, NOT plusargs.

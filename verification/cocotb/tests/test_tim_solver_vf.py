@@ -11,7 +11,9 @@ RECORD_INTERVAL motor steps so the file stays manageable).
 """
 
 import csv
+import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -30,33 +32,52 @@ DATA_WIDTH       = 42
 FP_FRACTION_BITS = 28
 FP_SCALE         = 1 << FP_FRACTION_BITS
 
-# ── Simulation extent ─────────────────────────────────────────────────────────
-SIM_DURATION_S  = 1.5          # motor time  [s]
-TS_S            = 26.0/200_000_000  # 130 ns - 26 cycles @ 200 MHz, must match VHDL generic
-SIM_STEPS       = int(SIM_DURATION_S / TS_S)   # ~5 625 000 steps
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else float(raw)
 
-WARMUP_STEPS    = 200          # steps discarded before recording / metrics
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else int(raw)
+
+
+def _env_path(name: str, default: Path) -> Path:
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else Path(raw)
+
+
+# ── Simulation extent ─────────────────────────────────────────────────────────
+SIM_DURATION_S  = _env_float("HIL_VF_DURATION_S", 1.5)
+CLOCK_FREQUENCY = _env_int("IM_CLOCK_FREQUENCY", 200_000_000)
+SOLVER_STEP_CYCLES = _env_int("IM_SOLVER_STEP_CYCLES", 26)
+TS_S            = _env_float("IM_TS", SOLVER_STEP_CYCLES / CLOCK_FREQUENCY)
+CLK_PERIOD_PS   = int(round(1e12 / CLOCK_FREQUENCY))
+SIM_STEPS       = int(SIM_DURATION_S / TS_S)
+
+WARMUP_STEPS    = _env_int("HIL_VF_WARMUP_STEPS", 200)
 
 # ── Clock / timer constants ───────────────────────────────────────────────────
 # CLOCK_FREQUENCY=200 MHz x Ts=130 ns -> exactly 26 clock cycles per motor step.
 # After the first wait_data_valid sync, data_valid fires every TIMER_STEPS cycles,
 # unless the solver overruns.
-CLOCK_FREQUENCY = 200_000_000
-TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)   # 26
+TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)
 
-# ── V/F control parameters (matching PSIM setup) ─────────────────────────────
-F_NOMINAL_HZ    = 60.0
-V_PEAK_NOMINAL  = 620.0        # Phase peak voltage at f_nominal [V]
-ACC_RAMP_HZ_S   = 60.0         # 60 Hz/s → nominal reached after 1 s
-TLOAD_NM        = 0.0
+# ── V/F control parameters ───────────────────────────────────────────────────
+F_NOMINAL_HZ    = _env_float("HIL_VF_F_NOMINAL_HZ", 60.0)
+V_PEAK_NOMINAL  = _env_float("HIL_VF_V_PEAK_NOMINAL", 620.0)
+ACC_RAMP_HZ_S   = _env_float("HIL_VF_ACC_RAMP_HZ_S", 60.0)
+TLOAD_NM        = _env_float("HIL_VF_TLOAD_NM", 0.0)
+INITIAL_THETA   = _env_float("HIL_VF_INITIAL_THETA_RAD", INITIAL_THETA)
 
 # ── Recording / progress ──────────────────────────────────────────────────────
-RECORD_INTERVAL  = 400         # save 1 CSV row per this many motor steps
-PROGRESS_EVERY   = SIM_STEPS // 100   # print once per 1 % (= 150 000 steps)
+RECORD_INTERVAL  = _env_int("HIL_VF_RECORD_INTERVAL", 400)
+PROGRESS_EVERY   = max(1, SIM_STEPS // 100)
 
 # ── Output paths ─────────────────────────────────────────────────────────────
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
-CSV_PATH    = REPORTS_DIR / "vf_vhdl_vs_ref.csv"
+CSV_PATH    = _env_path("HIL_VF_CSV", REPORTS_DIR / "vf_vhdl_vs_ref.csv")
+METRICS_PATH = _env_path("HIL_VF_METRICS", REPORTS_DIR / "vf_metrics.json")
 
 
 # ── Fixed-point helpers ───────────────────────────────────────────────────────
@@ -162,7 +183,7 @@ def _print_progress(
 async def test_tim_solver_vf_stimulus(dut):
     """Drive TIM_Solver with a 1.5 s V/F ramp and compare against C reference."""
 
-    clock = Clock(dut.sysclk, 5000, unit="ps")   # 200 MHz (5 ns) - matches CLOCK_FREQUENCY generic
+    clock = Clock(dut.sysclk, CLK_PERIOD_PS, unit="ps")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
@@ -202,13 +223,27 @@ async def test_tim_solver_vf_stimulus(dut):
     BATCH_TIME_NS    = int(RECORD_INTERVAL * TS_S * 1e9)    # 400 × 100 ns = 40 000 ns
 
     dut._log.info(
-        f"V/F simulation: {SIM_STEPS:,} steps ({SIM_DURATION_S:.1f} s motor time)  "
+        f"V/F simulation: {SIM_STEPS:,} steps ({SIM_DURATION_S:.3f} s motor time)  "
         f"batch={RECORD_INTERVAL} steps  {N_BATCHES:,} batches"
     )
+    dut._log.info(
+        "V/F parameters: "
+        f"f_nom={F_NOMINAL_HZ:g}Hz v_peak={V_PEAK_NOMINAL:g}V "
+        f"acc={ACC_RAMP_HZ_S:g}Hz/s tload={TLOAD_NM:g}Nm theta0={INITIAL_THETA:g}rad"
+    )
+    dut._log.info(
+        "Motor parameters: "
+        f"Rs={params.rs:g} Rr={params.rr:g} Ls={params.ls:g} Lr={params.lr:g} "
+        f"Lm={params.lm:g} J={params.j:g} npp={params.npp:g} Ts={params.ts:g}"
+    )
+    dut._log.info(
+        f"Simulation clock: {CLOCK_FREQUENCY} Hz, period={CLK_PERIOD_PS} ps, "
+        f"solver_step_cycles={SOLVER_STEP_CYCLES}, timer_steps={TIMER_STEPS}"
+    )
     print(
-        f"\n[VF] Starting: {SIM_STEPS:,} steps ({SIM_DURATION_S:.1f} s)  "
-        f"ACC={ACC_RAMP_HZ_S} Hz/s  batch={RECORD_INTERVAL} steps  "
-        f"{N_BATCHES:,} batches\n",
+        f"\n[VF] Starting: {SIM_STEPS:,} steps ({SIM_DURATION_S:.3f} s)  "
+        f"ACC={ACC_RAMP_HZ_S} Hz/s  Tload={TLOAD_NM} Nm  "
+        f"batch={RECORD_INTERVAL} steps  {N_BATCHES:,} batches\n",
         flush=True,
     )
 
@@ -305,6 +340,7 @@ async def test_tim_solver_vf_stimulus(dut):
 
     # ── Write CSV ──────────────────────────────────────────────────────────────
     if rows:
+        CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
         with CSV_PATH.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
@@ -323,12 +359,48 @@ async def test_tim_solver_vf_stimulus(dut):
     mae_flux_beta  = sum(abs(r["vhdl_flux_beta"]  - r["ref_flux_beta"])  for r in rows) / len(rows)
     mae_speed      = sum(abs(r["vhdl_speed"]       - r["ref_speed"])       for r in rows) / len(rows)
 
-    dut._log.info(f"VHDL vs C Reference — {SIM_DURATION_S:.1f}s V/F run")
+    metrics = {
+        "level": "L2",
+        "test": "tim_solver_vf",
+        "simulator": os.environ.get("SIM", "nvc"),
+        "duration_s": SIM_DURATION_S,
+        "sim_steps": SIM_STEPS,
+        "record_interval_steps": RECORD_INTERVAL,
+        "clock_frequency_hz": CLOCK_FREQUENCY,
+        "solver_step_cycles": SOLVER_STEP_CYCLES,
+        "clock_period_ps": CLK_PERIOD_PS,
+        "csv_rows": len(rows),
+        "vf": {
+            "f_nominal_hz": F_NOMINAL_HZ,
+            "v_peak_nominal_v": V_PEAK_NOMINAL,
+            "acc_ramp_hz_s": ACC_RAMP_HZ_S,
+            "t_acc_s": F_NOMINAL_HZ / ACC_RAMP_HZ_S if ACC_RAMP_HZ_S else None,
+            "tload_nm": TLOAD_NM,
+            "initial_theta_rad": INITIAL_THETA,
+        },
+        "motor": {
+            "rs": params.rs, "rr": params.rr, "ls": params.ls, "lr": params.lr,
+            "lm": params.lm, "j": params.j, "npp": params.npp, "ts": params.ts,
+        },
+        "metrics": {
+            "nrmse_i_alpha": nrmse_i_alpha,
+            "nrmse_i_beta": nrmse_i_beta,
+            "mae_flux_alpha_wb": mae_flux_alpha,
+            "mae_flux_beta_wb": mae_flux_beta,
+            "mae_speed_rad_s": mae_speed,
+            "mae_speed_rpm": _rpm(mae_speed),
+        },
+    }
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    METRICS_PATH.write_text(json.dumps(metrics, indent=2))
+
+    dut._log.info(f"VHDL vs C Reference — {SIM_DURATION_S:.3f}s V/F run")
     dut._log.info(f"  NRMSE i_alpha  = {nrmse_i_alpha:.6f}")
     dut._log.info(f"  NRMSE i_beta   = {nrmse_i_beta:.6f}")
     dut._log.info(f"  MAE flux_alpha = {mae_flux_alpha:.2e} Wb")
     dut._log.info(f"  MAE flux_beta  = {mae_flux_beta:.2e} Wb")
     dut._log.info(f"  MAE speed_mech = {mae_speed:.4f} rad/s ({_rpm(mae_speed):.2f} RPM)")
+    dut._log.info(f"Metrics saved: {METRICS_PATH}")
 
     assert nrmse_i_alpha < 0.10, f"i_alpha mismatch: {nrmse_i_alpha:.6f}"
     assert nrmse_i_beta  < 0.10, f"i_beta  mismatch: {nrmse_i_beta:.6f}"

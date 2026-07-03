@@ -21,7 +21,9 @@ Output CSV: reports/sine_vhdl_vs_ref.csv
 """
 
 import csv
+import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -38,22 +40,40 @@ DATA_WIDTH       = 42
 FP_FRACTION_BITS = 28
 FP_SCALE         = 1 << FP_FRACTION_BITS
 
-# Simulation parameters
-SIM_STEPS    = 3000   # × Ts = 300 µs total motor time
-WARMUP_STEPS = 50     # discard initial reset artefacts
 
-CLOCK_FREQUENCY = 200_000_000
-TS_S            = 26.0/200_000_000              # 130 ns - 26 cycles @ 200 MHz
-TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)   # 26
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else float(raw)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else int(raw)
+
+
+def _env_path(name: str, default: Path) -> Path:
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else Path(raw)
+
+# Simulation parameters
+SIM_STEPS    = _env_int("HIL_SINE_STEPS", 3000)
+WARMUP_STEPS = _env_int("HIL_SINE_WARMUP_STEPS", 50)
+
+CLOCK_FREQUENCY = _env_int("IM_CLOCK_FREQUENCY", 200_000_000)
+SOLVER_STEP_CYCLES = _env_int("IM_SOLVER_STEP_CYCLES", 26)
+TS_S            = _env_float("IM_TS", SOLVER_STEP_CYCLES / CLOCK_FREQUENCY)
+TIMER_STEPS     = int(CLOCK_FREQUENCY * TS_S)
+CLK_PERIOD_PS   = int(round(1e12 / CLOCK_FREQUENCY))
 
 # Sine parameters — full-amplitude 60 Hz from t = 0
-FREQUENCY_HZ   = 60.0
-V_PEAK         = 620.0          # Phase peak [V]
-INITIAL_THETA  = math.pi / 4   # 45° → excites both α and β channels from step 0
-TLOAD_NM       = 0.0
+FREQUENCY_HZ   = _env_float("HIL_SINE_FREQ_HZ", 60.0)
+V_PEAK         = _env_float("HIL_SINE_V_PEAK", 620.0)
+INITIAL_THETA  = _env_float("HIL_SINE_INITIAL_THETA_RAD", math.pi / 4)
+TLOAD_NM       = _env_float("HIL_SINE_TLOAD_NM", 0.0)
 
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
-CSV_PATH    = REPORTS_DIR / "sine_vhdl_vs_ref.csv"
+CSV_PATH    = _env_path("HIL_SINE_CSV", REPORTS_DIR / "sine_vhdl_vs_ref.csv")
+METRICS_PATH = _env_path("HIL_SINE_METRICS", REPORTS_DIR / "sine_metrics.json")
 
 
 # ---------------------------------------------------------------------------
@@ -119,13 +139,22 @@ async def wait_data_valid(dut) -> None:
 async def test_tim_solver_sine_stimulus(dut):
     """Drive TIM_Solver with 60 Hz pure sine and compare against C reference model."""
 
-    clock = Clock(dut.sysclk, 5000, unit="ps")  # 200 MHz (5 ns) - matches CLOCK_FREQUENCY generic
+    clock = Clock(dut.sysclk, CLK_PERIOD_PS, unit="ps")
     cocotb.start_soon(clock.start())
     await reset_dut(dut)
 
     params = IMPhysicalParams.defaults()
     ref    = InductionMotorReferenceModel(params=params, backend="auto")
     dut._log.info(f"Reference backend: {ref.backend_name}")
+    dut._log.info(
+        f"Sine simulation: steps={SIM_STEPS:,} Ts={params.ts:g}s "
+        f"clock={CLOCK_FREQUENCY}Hz step_cycles={SOLVER_STEP_CYCLES}"
+    )
+    dut._log.info(
+        "Motor parameters: "
+        f"Rs={params.rs:g} Rr={params.rr:g} Ls={params.ls:g} Lr={params.lr:g} "
+        f"Lm={params.lm:g} J={params.j:g} npp={params.npp:g}"
+    )
 
     sine = SineControl(
         frequency_hz  = FREQUENCY_HZ,
@@ -193,6 +222,7 @@ async def test_tim_solver_sine_stimulus(dut):
 
     # Write CSV
     if rows:
+        CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
         with CSV_PATH.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
@@ -207,12 +237,44 @@ async def test_tim_solver_sine_stimulus(dut):
     mae_flux_beta  = sum(abs(r["vhdl_flux_beta"]  - r["ref_flux_beta"])  for r in rows) / len(rows)
     mae_speed      = sum(abs(r["vhdl_speed"]       - r["ref_speed"])       for r in rows) / len(rows)
 
-    dut._log.info(f"Pure sine {FREQUENCY_HZ} Hz, {V_PEAK} V peak — 300 µs window")
+    metrics = {
+        "level": "L2",
+        "test": "tim_solver_sine",
+        "simulator": os.environ.get("SIM", "nvc"),
+        "sim_steps": SIM_STEPS,
+        "warmup_steps": WARMUP_STEPS,
+        "duration_s": SIM_STEPS * params.ts,
+        "clock_frequency_hz": CLOCK_FREQUENCY,
+        "solver_step_cycles": SOLVER_STEP_CYCLES,
+        "clock_period_ps": CLK_PERIOD_PS,
+        "sine": {
+            "frequency_hz": FREQUENCY_HZ,
+            "v_peak_v": V_PEAK,
+            "tload_nm": TLOAD_NM,
+            "initial_theta_rad": INITIAL_THETA,
+        },
+        "motor": {
+            "rs": params.rs, "rr": params.rr, "ls": params.ls, "lr": params.lr,
+            "lm": params.lm, "j": params.j, "npp": params.npp, "ts": params.ts,
+        },
+        "metrics": {
+            "nrmse_i_alpha": nrmse_i_alpha,
+            "nrmse_i_beta": nrmse_i_beta,
+            "mae_flux_alpha_wb": mae_flux_alpha,
+            "mae_flux_beta_wb": mae_flux_beta,
+            "mae_speed_rad_s": mae_speed,
+        },
+    }
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    METRICS_PATH.write_text(json.dumps(metrics, indent=2))
+
+    dut._log.info(f"Pure sine {FREQUENCY_HZ} Hz, {V_PEAK} V peak — {SIM_STEPS * params.ts * 1e6:.1f} µs window")
     dut._log.info(f"  NRMSE i_alpha = {nrmse_i_alpha:.6f}")
     dut._log.info(f"  NRMSE i_beta  = {nrmse_i_beta:.6f}")
     dut._log.info(f"  MAE flux_alpha = {mae_flux_alpha:.2e} Wb")
     dut._log.info(f"  MAE flux_beta  = {mae_flux_beta:.2e} Wb")
     dut._log.info(f"  MAE speed_mech = {mae_speed:.6f} rad/s")
+    dut._log.info(f"Metrics saved: {METRICS_PATH}")
 
     assert nrmse_i_alpha < 0.10, f"i_alpha NRMSE={nrmse_i_alpha:.4f}"
     assert nrmse_i_beta  < 0.10, f"i_beta  NRMSE={nrmse_i_beta:.4f}"

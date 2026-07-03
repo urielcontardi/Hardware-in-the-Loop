@@ -110,3 +110,5 @@ apps/hil-go/runs/live_session.bin
 
 verification/cocotb/reports/hilbin
 verification/cocotb/reports/hilbin_pngs
+verification/cocotb/reports
+verification/*

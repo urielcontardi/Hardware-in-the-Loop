@@ -354,3 +354,263 @@ async def test_full_chain_motor_outputs(dut):
         f"Full chain test PASSED — i_rms={i_rms:.4f} A  flux_mag={flux_mag:.4f} Wb  "
         f"speed={speed_real:.4f} rad/s"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  TEST 6: L3 diagnostic export — Top_HIL PWM replay vs C model
+# ═══════════════════════════════════════════════════════════════════════
+@cocotb.test()
+async def test_top_hil_pwm_replay_l3(dut):
+    """Export a short Top_HIL integrated run and compare it to the C model.
+
+    This is an L3 diagnostic: the C model is fed with voltages decoded from the
+    simulated Top_HIL PWM path. That removes carrier phase uncertainty and checks
+    the integrated NPC->voltage->TIM path before moving to full-stack C PWM.
+    """
+    import csv
+    import json
+    import os
+    import sys
+    import time
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from models.im_reference_model import IMPhysicalParams, InductionMotorReferenceModel
+
+    def env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        return default if raw in (None, "") else int(raw)
+
+    def env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        return default if raw in (None, "") else float(raw)
+
+    def env_path(name: str, default: Path) -> Path:
+        raw = os.environ.get(name)
+        return default if raw in (None, "") else Path(raw)
+
+    def sig_fp(signal) -> float:
+        raw = signal.value
+        try:
+            signed = raw.to_signed()
+        except ValueError as exc:
+            raise AssertionError(f"Signal {signal._name} unresolved: {raw.binstr}") from exc
+        return signed / float(1 << FP_FRACTION_BITS)
+
+    def rms(values: list[float]) -> float:
+        return math.sqrt(sum(v * v for v in values) / len(values)) if values else 0.0
+
+    clock_hz = env_int("IM_CLOCK_FREQUENCY", 200_000_000)
+    pwm_hz = env_int("HIL_PWM_FREQUENCY", 1_000)
+    step_cycles = env_int("IM_SOLVER_STEP_CYCLES", 26)
+    sample_steps = env_int("HIL_L3_STEPS", 2000)
+    warmup_steps = env_int("HIL_L3_WARMUP_STEPS", 100)
+    record_interval = env_int("HIL_L3_RECORD_INTERVAL", 1)
+    vdc_bus_volts = env_float("HIL_L3_VDC", 1240.0)
+    modulation = env_float("HIL_L3_MODULATION", 0.70)
+    ref_mode = os.environ.get("HIL_L3_REF_MODE", "fixed")
+    ref_freq_hz = env_float("HIL_L3_REF_FREQ_HZ", 60.0)
+    vf_base_hz = env_float("HIL_L3_VF_BASE_HZ", 60.0)
+    vf_acc_hz_s = env_float("HIL_L3_VF_ACC_HZ_S", 60.0)
+    theta0 = env_float("HIL_L3_INITIAL_THETA_RAD", math.pi / 4)
+    tload_nm = env_float("HIL_L3_TLOAD_NM", 0.0)
+    out_dir = env_path(
+        "HIL_L3_OUT_DIR",
+        Path(__file__).resolve().parents[2]
+        / "results" / "2026-06-29_campaign_01" / "S0_tacc1s_load000" / "l3_top_pwm_replay_smoke",
+    )
+    csv_path = out_dir / "top_pwm_replay_vs_c.csv"
+    metrics_path = out_dir / "metrics.json"
+
+    clk_period_ps = int(round(1e12 / clock_hz))
+    clock = Clock(dut.clk_i, clk_period_ps, unit="ps")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    sm = create_serial_driver(dut)
+    await sm.set_vdc_bus(real_to_fp(vdc_bus_volts))
+    await ClockCycles(dut.clk_i, 20)
+    await sm.set_torque_load(real_to_fp(tload_nm))
+    await ClockCycles(dut.clk_i, 20)
+
+    carrier_max = clock_hz // pwm_hz // 2
+
+    def drive_refs(t_s: float) -> dict[str, float]:
+        if ref_mode == "sine":
+            f_now = ref_freq_hz
+            theta = theta0 + 2.0 * math.pi * ref_freq_hz * t_s
+            amp = modulation
+            va_ref = int(carrier_max * amp * math.sin(theta))
+            vb_ref = int(carrier_max * amp * math.sin(theta - 2.0 * math.pi / 3.0))
+            vc_ref = int(carrier_max * amp * math.sin(theta + 2.0 * math.pi / 3.0))
+        elif ref_mode == "vf":
+            t_acc = vf_base_hz / vf_acc_hz_s if vf_acc_hz_s > 0 else 0.0
+            if t_acc > 0 and t_s < t_acc:
+                f_now = vf_acc_hz_s * t_s
+                theta = theta0 + 2.0 * math.pi * 0.5 * vf_acc_hz_s * t_s * t_s
+            else:
+                f_now = vf_base_hz
+                theta_acc = 2.0 * math.pi * 0.5 * vf_acc_hz_s * t_acc * t_acc if t_acc > 0 else 0.0
+                theta = theta0 + theta_acc + 2.0 * math.pi * vf_base_hz * max(0.0, t_s - t_acc)
+            amp = modulation * min(max(f_now / vf_base_hz, 0.0), 1.0) if vf_base_hz > 0 else 0.0
+            va_ref = int(carrier_max * amp * math.sin(theta))
+            vb_ref = int(carrier_max * amp * math.sin(theta - 2.0 * math.pi / 3.0))
+            vc_ref = int(carrier_max * amp * math.sin(theta + 2.0 * math.pi / 3.0))
+        else:
+            f_now = ref_freq_hz
+            theta = theta0
+            amp = modulation
+            ref = int(carrier_max * modulation)
+            va_ref = ref
+            vb_ref = -(ref // 2)
+            vc_ref = -(ref // 2)
+        dut.va_ref_i.value = signed_to_slv(va_ref, NPC_DATA_WIDTH)
+        dut.vb_ref_i.value = signed_to_slv(vb_ref, NPC_DATA_WIDTH)
+        dut.vc_ref_i.value = signed_to_slv(vc_ref, NPC_DATA_WIDTH)
+        return {
+            "cmd_theta_rad": theta,
+            "cmd_freq_hz": f_now,
+            "cmd_amp_pu": amp,
+            "cmd_va_ref": va_ref,
+            "cmd_vb_ref": vb_ref,
+            "cmd_vc_ref": vc_ref,
+        }
+
+    drive_refs(0.0)
+    dut.pwm_enb_i.value = 1
+    dut.pwm_clear_i.value = 0
+
+    # Wait for NPC gate drivers to become active.
+    for _ in range(clock_hz // 200):  # up to 5 ms
+        await RisingEdge(dut.clk_i)
+        if int(dut.pwm_on_o.value) == 1:
+            break
+    assert int(dut.pwm_on_o.value) == 1, "Top_HIL PWM did not become active"
+
+    params = IMPhysicalParams.defaults()
+    ref_model = InductionMotorReferenceModel(params=params, backend="auto")
+    dut._log.info(
+        f"L3 Top_HIL PWM replay: steps={sample_steps} warmup={warmup_steps} "
+        f"clock={clock_hz}Hz pwm={pwm_hz}Hz step_cycles={step_cycles} "
+        f"tload={tload_nm:g}Nm backend={ref_model.backend_name}"
+    )
+
+    rows: list[dict] = []
+    n_metrics = 0
+    se_ia = se_ib = 0.0
+    ref2_ia = ref2_ib = 0.0
+    sae_fa = sae_fb = sae_wm = 0.0
+    progress_every = max(1, sample_steps // 100)
+    t_wall_start = time.monotonic()
+
+    for step in range(sample_steps):
+        cmd_state = drive_refs(step * params.ts)
+        va = sig_fp(dut.va_motor)
+        vb = sig_fp(dut.vb_motor)
+        vc = sig_fp(dut.vc_motor)
+        c_state = ref_model.step(va, vb, vc, tload_nm)
+
+        await ClockCycles(dut.clk_i, step_cycles)
+
+        vhdl_ia = sig_fp(dut.ialpha_int)
+        vhdl_ib = sig_fp(dut.ibeta_int)
+        vhdl_fa = sig_fp(dut.flux_rotor_alpha_int)
+        vhdl_fb = sig_fp(dut.flux_rotor_beta_int)
+        vhdl_wm = sig_fp(dut.speed_mech_int)
+        t_s = step * params.ts
+
+        if step >= warmup_steps:
+            e_ia = vhdl_ia - c_state.i_alpha
+            e_ib = vhdl_ib - c_state.i_beta
+            e_fa = vhdl_fa - c_state.flux_alpha
+            e_fb = vhdl_fb - c_state.flux_beta
+            e_wm = vhdl_wm - c_state.speed_mech
+            n_metrics += 1
+            se_ia += e_ia * e_ia
+            se_ib += e_ib * e_ib
+            ref2_ia += c_state.i_alpha * c_state.i_alpha
+            ref2_ib += c_state.i_beta * c_state.i_beta
+            sae_fa += abs(e_fa)
+            sae_fb += abs(e_fb)
+            sae_wm += abs(e_wm)
+            if ((step - warmup_steps) % record_interval == 0) or step == sample_steps - 1:
+                rows.append({
+                "step": step,
+                "t_s": t_s,
+                "va": va,
+                "vb": vb,
+                "vc": vc,
+                "pwm_a": int(dut.pwm_a_o.value),
+                "pwm_b": int(dut.pwm_b_o.value),
+                "pwm_c": int(dut.pwm_c_o.value),
+                "vhdl_i_alpha": vhdl_ia,
+                "vhdl_i_beta": vhdl_ib,
+                "vhdl_flux_alpha": vhdl_fa,
+                "vhdl_flux_beta": vhdl_fb,
+                "vhdl_speed": vhdl_wm,
+                "ref_i_alpha": c_state.i_alpha,
+                "ref_i_beta": c_state.i_beta,
+                "ref_flux_alpha": c_state.flux_alpha,
+                "ref_flux_beta": c_state.flux_beta,
+                "ref_speed": c_state.speed_mech,
+                **cmd_state,
+                })
+
+        if step % progress_every == 0 and step > 0:
+            elapsed = time.monotonic() - t_wall_start
+            rate = step / elapsed if elapsed > 0 else 0.0
+            eta_s = (sample_steps - step) / rate if rate > 0 else float("inf")
+            print(
+                f"[L3 {100.0 * step / sample_steps:5.1f}%] "
+                f"t={step * params.ts:7.4f}s rows={len(rows):7d} "
+                f"elapsed={elapsed/60:6.1f}min ETA={eta_s/60:6.1f}min",
+                flush=True,
+            )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    metrics = {
+        "level": "L3",
+        "test": "top_hil_pwm_replay",
+        "status": "diagnostic_smoke",
+        "method_note": "C reference is fed with va/vb/vc sampled from Top_HIL internal PWM voltage path at the solver-step boundary approximation.",
+        "clock_frequency_hz": clock_hz,
+        "pwm_frequency_hz": pwm_hz,
+        "solver_step_cycles": step_cycles,
+        "sample_steps": sample_steps,
+        "warmup_steps": warmup_steps,
+        "record_interval": record_interval,
+        "csv_rows": len(rows),
+        "metrics_samples": n_metrics,
+        "duration_s": sample_steps * params.ts,
+        "vdc_v": vdc_bus_volts,
+        "modulation": modulation,
+        "ref_mode": ref_mode,
+        "ref_freq_hz": ref_freq_hz,
+        "vf_base_hz": vf_base_hz,
+        "vf_acc_hz_s": vf_acc_hz_s,
+        "initial_theta_rad": theta0,
+        "tload_nm": tload_nm,
+        "motor": {
+            "rs": params.rs, "rr": params.rr, "ls": params.ls, "lr": params.lr,
+            "lm": params.lm, "j": params.j, "npp": params.npp, "ts": params.ts,
+        },
+        "metrics": {
+            "nrmse_i_alpha": math.sqrt(se_ia / max(n_metrics, 1)) / max(math.sqrt(ref2_ia / max(n_metrics, 1)), 1e-9),
+            "nrmse_i_beta": math.sqrt(se_ib / max(n_metrics, 1)) / max(math.sqrt(ref2_ib / max(n_metrics, 1)), 1e-9),
+            "mae_flux_alpha_wb": sae_fa / max(n_metrics, 1),
+            "mae_flux_beta_wb": sae_fb / max(n_metrics, 1),
+            "mae_speed_rad_s": sae_wm / max(n_metrics, 1),
+        },
+        "artifacts": {
+            "csv": str(csv_path),
+            "metrics": str(metrics_path),
+        },
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2))
+    dut._log.info(f"L3 CSV saved: {csv_path} ({len(rows)} rows)")
+    dut._log.info(f"L3 metrics saved: {metrics_path}")
