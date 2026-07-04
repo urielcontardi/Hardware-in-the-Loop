@@ -72,6 +72,7 @@ __pycache__/
 *.pyo
 .venv/
 *.egg-info/
+.pytest_cache/
 
 # OS
 .DS_Store
@@ -111,4 +112,8 @@ apps/hil-go/runs/live_session.bin
 verification/cocotb/reports/hilbin
 verification/cocotb/reports/hilbin_pngs
 verification/cocotb/reports
-verification/*
+
+# Campaign results/output — never committed, kept local only (see manifest.json
+# in each campaign dir for the actual data). Tooling code under
+# verification/cocotb/scripts/ and verification/cocotb/campaigns/ IS tracked.
+verification/results/
