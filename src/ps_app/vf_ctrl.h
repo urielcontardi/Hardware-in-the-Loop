@@ -4,15 +4,16 @@
 #include <stdint.h>
 
 /*
- * Taxa de atualização da referência V/F [Hz]. DEVE ser bem maior que a
- * portadora PWM (1 kHz, definida por PWM_FREQ no HIL_AXI_Top sintetizado),
- * porque o NPCModulator amostra a referência uma vez por período da portadora
- * (no vale). Em 1:1 com a portadora, os dois relógios de 1 kHz (carrier da FPGA
- * e timer do PS) batem (beating) e produzem pulsos de PWM irregulares/alargados.
- * Com 10x de oversampling a referência amostrada no vale tem <=100 us de idade.
+ * Taxa de atualização da referência V/F [Hz]. Igual a 2x a portadora PWM
+ * (1 kHz, definida por PWM_FREQ no HIL_AXI_Top sintetizado), porque a
+ * referência agora é escrita a cada interrupção real da portadora — pico E
+ * vale (LOAD_BOTH_EDGES, ver docs/superpowers/specs/2026-07-04-vf-pwm-irq-sync-design.md),
+ * disparada por src/ps_app/vf_irq.c. Antes deste trabalho, o tick rodava
+ * livre por software (clock_nanosleep) a 1 kHz, sem travamento de fase com
+ * a portadora — daí o histórico de jitter documentado na dissertação.
  * vf_ctrl.c deriva o passo de integração TS = 1/VF_TICK_HZ.
  */
-#define VF_TICK_HZ  1000u
+#define VF_TICK_HZ  2000u
 
 /*
  * V/F open-loop controller — linear puro, sem boost de baixa frequência.
