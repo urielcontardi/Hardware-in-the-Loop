@@ -62,7 +62,7 @@ Architecture behavior of tb_TIMSolver is
     constant ls                  : real    := 3.1364e-3;    -- Stator inductance
     constant lr                  : real    := 6.3264e-3;    -- Rotor inductance
     constant lm                  : real    := 109.9442e-3;  -- Mutual inductance
-    constant j                   : real    := 0.192;        -- Moment of inertia
+    constant j                   : real    := 0.4;           -- Moment of inertia (motor "LVP 760V"; rs acima é 0.0 propositalmente para este cenário)
     constant npp                 : real    := 2.0;          -- Number of poles
 
     --------------------------------------------------------------------------

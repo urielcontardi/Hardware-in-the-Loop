@@ -38,7 +38,13 @@ class IMPhysicalParams:
         """Return motor parameters, overridable for campaign runs.
 
         Environment overrides keep the C reference and VHDL generic overrides
-        in lockstep when running cocotb scenarios, e.g. `IM_RS=0.435 IM_J=0.192`.
+        in lockstep when running cocotb scenarios, e.g. `IM_RS=0.4396 IM_J=0.4`.
+
+        Defaults match the real reference motor ("LVP 760V", ~22 kW) in
+        extras/induction-motor-model/psim/1_modelValidation/paramSim.txt, and
+        TIM_Solver.vhd / Top_HIL.vhd generics. Corrected 2026-07-04: previous
+        defaults (rs=0.435, j=0.192) diverged from that motor; see
+        verification/results/2026-07-04_campaign_02/manifest.json.
         """
 
         def env_float(name: str, default: float) -> float:
@@ -49,12 +55,12 @@ class IMPhysicalParams:
         step_cycles = env_float("IM_SOLVER_STEP_CYCLES", 26.0)
         default_ts = step_cycles / clock_hz
         return cls(
-            rs=env_float("IM_RS", 0.435),
+            rs=env_float("IM_RS", 0.4396),
             rr=env_float("IM_RR", 0.2826),
             lm=env_float("IM_LM", 109.9442e-3),
             ls=env_float("IM_LS", 3.1364e-3),
             lr=env_float("IM_LR", 6.3264e-3),
-            j=env_float("IM_J", 0.192),
+            j=env_float("IM_J", 0.4),
             npp=env_float("IM_NPP", 2.0),
             ts=env_float("IM_TS", default_ts),
         )

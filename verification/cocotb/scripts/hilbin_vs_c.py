@@ -43,12 +43,12 @@ RUNS_DIR = Path(__file__).resolve().parents[3] / "apps" / "hil-go" / "runs"
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports" / "hilbin"
 
 FIRMWARE_DEFAULT_PARAMS = IMPhysicalParams(
-    rs=0.435,
+    rs=0.4396,
     rr=0.2826,
     lm=109.9442e-3,
     ls=3.1364e-3,
     lr=6.3264e-3,
-    j=0.192,
+    j=0.4,
     npp=2.0,
     ts=26.0 / 200_000_000,
 )

@@ -304,16 +304,16 @@ y = produto bilinear (acoplamento eletromagnético)
 
 **Timing:** 40 ciclos × (1/150 MHz) ≈ 266 ns/passo → taxa máxima ~3.75 MHz
 
-**Parâmetros do motor (0.75 kW, 4 polos):**
+**Parâmetros do motor ("LVP 760V", ~22 kW, 4 polos — extras/induction-motor-model/psim/1_modelValidation/paramSim.txt):**
 
 | Parâmetro | Símbolo | Valor         |
 |-----------|---------|---------------|
-| Resistência stator  | Rs  | 0.435 Ω       |
+| Resistência stator  | Rs  | 0.4396 Ω      |
 | Resistência rotor   | Rr  | 0.2826 Ω      |
 | Indutância stator   | Ls  | 3.1364 mH     |
 | Indutância rotor    | Lr  | 6.3264 mH     |
 | Indutância mútua    | Lm  | 109.9442 mH   |
-| Inércia             | J   | 0.192 kg·m²   |
+| Inércia             | J   | 0.4 kg·m²     |
 | Pares de polos      | Npp | 2             |
 
 ---

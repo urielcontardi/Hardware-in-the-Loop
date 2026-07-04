@@ -67,13 +67,18 @@ Entity HIL_AXI_Top is
         -- TIM Solver
         TIM_DW           : natural := 42;
 
-        -- Parâmetros do motor (indução 4-polos, 0.75 kW ref)
-        MOTOR_RS         : real := 0.435;
+        -- Parâmetros do motor (indução 4-polos, ~22 kW / 760 V — "LVP 760V" do
+        -- PSIM de referência em extras/induction-motor-model/psim/1_modelValidation/
+        -- paramSim.txt). Idênticos aos defaults de TIM_Solver.vhd e Top_HIL.vhd.
+        -- Corrigido em 2026-07-04: valores anteriores (Rs=0.435, J=0.192) vinham
+        -- de um rótulo incorreto ("0.75 kW ref") mantido por engano neste arquivo;
+        -- ver verification/results/2026-07-04_campaign_02/manifest.json.
+        MOTOR_RS         : real := 0.4396;
         MOTOR_RR         : real := 0.2826;
         MOTOR_LS         : real := 3.1364e-3;
         MOTOR_LR         : real := 6.3264e-3;
         MOTOR_LM         : real := 109.9442e-3;
-        MOTOR_J          : real := 0.192;
+        MOTOR_J          : real := 0.4;
         MOTOR_NPP        : real := 2.0
     );
     Port (

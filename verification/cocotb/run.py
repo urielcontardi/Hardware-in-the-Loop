@@ -220,12 +220,12 @@ Examples:
             "CLK_FREQUENCY": env_int("IM_CLOCK_FREQUENCY", 200_000_000),
             "PWM_FREQUENCY": env_int("HIL_PWM_FREQUENCY", 1_000),
             "SOLVER_STEP_CYCLES": env_int("IM_SOLVER_STEP_CYCLES", 26),
-            "MOTOR_RS": env_float("IM_RS", 0.435),
+            "MOTOR_RS": env_float("IM_RS", 0.4396),
             "MOTOR_RR": env_float("IM_RR", 0.2826),
             "MOTOR_LS": env_float("IM_LS", 3.1364e-3),
             "MOTOR_LR": env_float("IM_LR", 6.3264e-3),
             "MOTOR_LM": env_float("IM_LM", 109.9442e-3),
-            "MOTOR_J": env_float("IM_J", 0.192),
+            "MOTOR_J": env_float("IM_J", 0.4),
             "MOTOR_NPP": env_float("IM_NPP", 2.0),
             "BAUD_RATE": env_int("HIL_UART_BAUD", 1_000_000),
         }
@@ -252,12 +252,12 @@ Examples:
         sim_parameters = {
             "CLOCK_FREQUENCY": env_int("IM_CLOCK_FREQUENCY", 200_000_000),
             "SOLVER_STEP_CYCLES": env_int("IM_SOLVER_STEP_CYCLES", 26),
-            "rs": env_float("IM_RS", 0.435),
+            "rs": env_float("IM_RS", 0.4396),
             "rr": env_float("IM_RR", 0.2826),
             "ls": env_float("IM_LS", 3.1364e-3),
             "lr": env_float("IM_LR", 6.3264e-3),
             "lm": env_float("IM_LM", 109.9442e-3),
-            "j": env_float("IM_J", 0.192),
+            "j": env_float("IM_J", 0.4),
             "npp": env_float("IM_NPP", 2.0),
         }
 
