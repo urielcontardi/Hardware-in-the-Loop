@@ -510,7 +510,21 @@ async def test_top_hil_pwm_replay_l3(dut):
             "cmd_vc_ref": vc_ref,
         }
 
-    drive_refs(0.0)
+    tick_hz = 2 * pwm_hz  # LOAD_BOTH_EDGES: pico+vale
+    latest_cmd_state: dict[str, float] = drive_refs(0.0)  # "queimada de partida", espelha main.c:117
+
+    async def vf_irq_driver():
+        """Mimetiza o PS real (src/ps_app/vf_irq.c, Task 5): so escreve uma
+        nova referencia quando a IRQ real (sample_tick_o, pico+vale) dispara,
+        nao em intervalo fixo de software."""
+        nonlocal latest_cmd_state
+        tick_count = 0
+        while True:
+            await RisingEdge(dut.sample_tick_o)
+            tick_count += 1
+            latest_cmd_state = drive_refs(tick_count / tick_hz)
+
+    cocotb.start_soon(vf_irq_driver())
     dut.pwm_enb_i.value = 1
     dut.pwm_clear_i.value = 0
 
@@ -538,7 +552,7 @@ async def test_top_hil_pwm_replay_l3(dut):
     t_wall_start = time.monotonic()
 
     for step in range(sample_steps):
-        cmd_state = drive_refs(step * params.ts)
+        cmd_state = latest_cmd_state
         va = sig_fp(dut.va_motor)
         vb = sig_fp(dut.vb_motor)
         vc = sig_fp(dut.vc_motor)
