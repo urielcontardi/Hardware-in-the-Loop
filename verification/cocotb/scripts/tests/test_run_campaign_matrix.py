@@ -114,3 +114,143 @@ def test_update_manifest_case_marks_blocked_on_failure():
     rcm.update_manifest_case(manifest, "A2", "l2", "vf_500ms_realts",
                               "A2_tacc0p5s_load100/l2_vf_500ms_realts", ok=False)
     assert manifest["cases"][0]["status"] == "blocked"
+
+
+from unittest.mock import patch
+
+
+def _fake_manifest(ids):
+    return {"cases": [{"id": i, "status": "pending", "l2_results": {}, "l3_results": {}} for i in ids]}
+
+
+def test_run_one_cocotb_writes_run_log_and_returns_ok(tmp_path):
+    case_root = tmp_path / "campaign"
+    exp = {
+        "id": "A1_l2", "case_id": "A1", "result_key": "vf_500ms_realts",
+        "level": "l2", "runner": "cocotb", "test_mode": "vf",
+        "duration_s": 0.5, "record_interval": 481, "vf_acc_hz_s": 120.0, "tload_nm": 0.0,
+        "output_dir": "A1_tacc0p5s_load000/l2_vf_500ms_realts",
+    }
+    config = {"defaults": _defaults(), "case_root": str(case_root)}
+
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build"):
+        out_dir = case_root / exp_["output_dir"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "metrics.json").write_text(json.dumps({
+            "metrics": {"nrmse_i_alpha": 0.01, "nrmse_i_beta": 0.01,
+                        "mae_flux_alpha_wb": 0.01, "mae_flux_beta_wb": 0.01,
+                        "mae_speed_rad_s": 0.01},
+            "duration_s": 0.5, "csv_rows": 100,
+        }))
+        return 0
+
+    with patch.object(rcm, "run_cocotb", side_effect=fake_run_cocotb):
+        result = rcm.run_one_cocotb(config, exp, case_root)
+    assert result["ok"] is True
+    assert result["id"] == "A1_l2"
+    log_path = case_root / exp["output_dir"] / "run.log"
+    assert log_path.exists()
+
+
+def test_run_one_cocotb_reports_failure_without_raising(tmp_path):
+    case_root = tmp_path / "campaign"
+    exp = {
+        "id": "A7_l2", "case_id": "A7", "result_key": "vf_2s_realts",
+        "level": "l2", "runner": "cocotb", "test_mode": "vf",
+        "duration_s": 2.0, "record_interval": 1923, "vf_acc_hz_s": 30.0, "tload_nm": 128.38,
+        "output_dir": "A7_tacc2s_load110/l2_vf_2s_realts",
+    }
+    config = {"defaults": _defaults(), "case_root": str(case_root)}
+
+    with patch.object(rcm, "run_cocotb", return_value=1):
+        result = rcm.run_one_cocotb(config, exp, case_root)
+    assert result["ok"] is False
+    assert result["id"] == "A7_l2"
+
+
+def test_main_continues_after_one_case_fails(tmp_path, monkeypatch):
+    case_root = tmp_path / "campaign"
+    manifest_path = tmp_path / "manifest.json"
+    summary_path = tmp_path / "summary.csv"
+    config_path = tmp_path / "matrix.json"
+
+    manifest_path.write_text(json.dumps(_fake_manifest(["A1", "A2"])))
+    config_path.write_text(json.dumps({
+        "case_root": str(case_root),
+        "defaults": _defaults(),
+        "experiments": [
+            {"id": "A1_l2", "case_id": "A1", "result_key": "vf_500ms_realts",
+             "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": True,
+             "duration_s": 0.5, "record_interval": 481, "vf_acc_hz_s": 120.0, "tload_nm": 0.0,
+             "output_dir": "A1_tacc0p5s_load000/l2_vf_500ms_realts"},
+            {"id": "A2_l2", "case_id": "A2", "result_key": "vf_500ms_realts",
+             "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": True,
+             "duration_s": 0.5, "record_interval": 481, "vf_acc_hz_s": 120.0, "tload_nm": 116.71,
+             "output_dir": "A2_tacc0p5s_load100/l2_vf_500ms_realts"},
+        ],
+    }))
+
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build"):
+        out_dir = case_root / exp_["output_dir"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if exp_["id"] == "A2_l2":
+            return 1  # simula falha
+        (out_dir / "metrics.json").write_text(json.dumps({
+            "metrics": {"nrmse_i_alpha": 0.01, "nrmse_i_beta": 0.01,
+                        "mae_flux_alpha_wb": 0.01, "mae_flux_beta_wb": 0.01,
+                        "mae_speed_rad_s": 0.01},
+            "duration_s": 0.5, "csv_rows": 100,
+        }))
+        return 0
+
+    monkeypatch.setattr(rcm, "run_cocotb", fake_run_cocotb)
+    monkeypatch.setattr(rcm, "generate_l3_overlay", lambda *a, **k: None)
+    monkeypatch.setattr(rcm, "write_readme", lambda *a, **k: None)
+    monkeypatch.setattr(rcm, "_regenerate_dashboard", lambda *a, **k: None)
+
+    rc = rcm.main([
+        "--config", str(config_path), "--manifest", str(manifest_path),
+        "--summary", str(summary_path), "--max-parallel", "2",
+    ])
+
+    assert rc == 1  # sinaliza que houve falha, mas nao interrompeu o outro caso
+    manifest = json.loads(manifest_path.read_text())
+    by_id = {c["id"]: c for c in manifest["cases"]}
+    assert "generated" in by_id["A1"]["status"]
+    assert by_id["A2"]["status"] == "blocked"
+
+
+def test_main_skips_cases_already_ok_on_resume(tmp_path, monkeypatch):
+    case_root = tmp_path / "campaign"
+    manifest_path = tmp_path / "manifest.json"
+    summary_path = tmp_path / "summary.csv"
+    config_path = tmp_path / "matrix.json"
+
+    manifest = _fake_manifest(["A1"])
+    manifest["cases"][0]["l2_results"] = {"vf_500ms_realts": "A1_tacc0p5s_load000/l2_vf_500ms_realts"}
+    manifest["cases"][0]["status"] = "l2_l3_generated"
+    manifest_path.write_text(json.dumps(manifest))
+    config_path.write_text(json.dumps({
+        "case_root": str(case_root),
+        "defaults": _defaults(),
+        "experiments": [
+            {"id": "A1_l2", "case_id": "A1", "result_key": "vf_500ms_realts",
+             "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": True,
+             "duration_s": 0.5, "record_interval": 481, "vf_acc_hz_s": 120.0, "tload_nm": 0.0,
+             "output_dir": "A1_tacc0p5s_load000/l2_vf_500ms_realts"},
+        ],
+    }))
+
+    calls = []
+
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build"):
+        calls.append(exp_["id"])
+        return 0
+
+    monkeypatch.setattr(rcm, "run_cocotb", fake_run_cocotb)
+    monkeypatch.setattr(rcm, "_regenerate_dashboard", lambda *a, **k: None)
+
+    rcm.main(["--config", str(config_path), "--manifest", str(manifest_path),
+              "--summary", str(summary_path), "--max-parallel", "1"])
+
+    assert calls == [], "caso ja marcado como generated no manifest nao deveria rodar de novo"
