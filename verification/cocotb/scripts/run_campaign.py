@@ -85,7 +85,8 @@ def build_l3_env(config: dict[str, Any], exp: dict[str, Any], out_dir: Path) -> 
     return env
 
 
-def run_cocotb(exp: dict[str, Any], env: dict[str, str], build_dir: str = "sim_build") -> int:
+def run_cocotb(exp: dict[str, Any], env: dict[str, str], build_dir: str = "sim_build",
+               log_file: Any = None) -> int:
     cmd = [
         "uv", "run", "python", "run.py",
         "--sim", str(exp.get("sim", "nvc")),
@@ -98,8 +99,12 @@ def run_cocotb(exp: dict[str, Any], env: dict[str, str], build_dir: str = "sim_b
     testcase = exp.get("testcase")
     if testcase:
         cmd.extend(["-k", str(testcase)])
-    print("[campaign] running:", " ".join(cmd), flush=True)
-    proc = subprocess.run(cmd, cwd=cocotb_root(), env=env)
+    if log_file is not None:
+        print("[campaign] running:", " ".join(cmd), file=log_file, flush=True)
+        proc = subprocess.run(cmd, cwd=cocotb_root(), env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    else:
+        print("[campaign] running:", " ".join(cmd), flush=True)
+        proc = subprocess.run(cmd, cwd=cocotb_root(), env=env)
     return proc.returncode
 
 

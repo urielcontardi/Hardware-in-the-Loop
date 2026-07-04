@@ -1,5 +1,6 @@
 """Testes para as mudancas em run_campaign.py: isolamento de --build-dir,
 --test para L2, e a variavel HIL_L3_TLOAD_NM que faltava em build_l3_env."""
+import io
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -62,3 +63,14 @@ def test_run_cocotb_defaults_build_dir_to_sim_build():
         rc.run_cocotb(exp, {})
     args = mock_run.call_args[0][0]
     assert args[args.index("--build-dir") + 1] == "sim_build"
+
+
+def test_run_cocotb_redirects_to_log_file_when_given():
+    exp = {"top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3"}
+    fake_log = io.StringIO()
+    with patch.object(rc.subprocess, "run") as mock_run:
+        mock_run.return_value.returncode = 0
+        rc.run_cocotb(exp, {}, build_dir="sim_build/x", log_file=fake_log)
+    _, kwargs = mock_run.call_args
+    assert kwargs.get("stdout") is fake_log
+    assert kwargs.get("stderr") == rc.subprocess.STDOUT

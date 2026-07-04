@@ -133,7 +133,7 @@ def test_run_one_cocotb_writes_run_log_and_returns_ok(tmp_path):
     }
     config = {"defaults": _defaults(), "case_root": str(case_root)}
 
-    def fake_run_cocotb(exp_, env_, build_dir="sim_build"):
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build", **kwargs):
         out_dir = case_root / exp_["output_dir"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "metrics.json").write_text(json.dumps({
@@ -190,7 +190,7 @@ def test_main_continues_after_one_case_fails(tmp_path, monkeypatch):
         ],
     }))
 
-    def fake_run_cocotb(exp_, env_, build_dir="sim_build"):
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build", **kwargs):
         out_dir = case_root / exp_["output_dir"]
         out_dir.mkdir(parents=True, exist_ok=True)
         if exp_["id"] == "A2_l2":
@@ -243,7 +243,7 @@ def test_main_skips_cases_already_ok_on_resume(tmp_path, monkeypatch):
 
     calls = []
 
-    def fake_run_cocotb(exp_, env_, build_dir="sim_build"):
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build", **kwargs):
         calls.append(exp_["id"])
         return 0
 

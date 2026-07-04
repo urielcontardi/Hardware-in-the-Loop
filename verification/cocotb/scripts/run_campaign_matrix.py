@@ -161,12 +161,7 @@ def run_one_cocotb(config: dict[str, Any], exp: dict[str, Any], case_root: Path)
     build_dir = f"sim_build/{exp['id']}"
     t0 = time.monotonic()
     with log_path.open("w") as logf:
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-        sys.stdout = sys.stderr = logf
-        try:
-            rc = run_cocotb(exp, env, build_dir=build_dir)
-        finally:
-            sys.stdout, sys.stderr = old_stdout, old_stderr
+        rc = run_cocotb(exp, env, build_dir=build_dir, log_file=logf)
     wall_s = time.monotonic() - t0
 
     metrics_path = out_dir / "metrics.json"
