@@ -232,7 +232,7 @@ Begin
         CLK_FREQ         => CLK_FREQUENCY,
         PWM_FREQ         => PWM_FREQUENCY,
         DATA_WIDTH       => NPC_DATA_WIDTH,
-        LOAD_BOTH_EDGES  => false,
+        LOAD_BOTH_EDGES  => true,           -- era false
         OUTPUT_REG       => true,
         MIN_PULSE_WIDTH  => MIN_PULSE_WIDTH,
         DEAD_TIME        => DEAD_TIME,

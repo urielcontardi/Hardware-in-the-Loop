@@ -357,6 +357,40 @@ async def test_full_chain_motor_outputs(dut):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  TEST: sample_tick_o pulsa em pico E vale (LOAD_BOTH_EDGES)
+# ═══════════════════════════════════════════════════════════════════════
+@cocotb.test()
+async def test_top_hil_carrier_dual_edge(dut):
+    """LOAD_BOTH_EDGES=true deve fazer sample_tick_o pulsar 2x por periodo da
+    portadora (pico e vale), nao 1x. Guarda de regressao para a mudanca em
+    docs/superpowers/specs/2026-07-04-vf-pwm-irq-sync-design.md."""
+    clock = Clock(dut.clk_i, CLK_PERIOD_NS, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    dut.pwm_enb_i.value = 1
+
+    carrier_period_cycles = CLK_FREQ // PWM_FREQ  # 5000 ciclos a 100MHz/20kHz
+    n_periods = 10
+
+    tick_count = 0
+
+    async def counter():
+        nonlocal tick_count
+        while True:
+            await RisingEdge(dut.sample_tick_o)
+            tick_count += 1
+
+    cocotb.start_soon(counter())
+    await ClockCycles(dut.clk_i, carrier_period_cycles * n_periods)
+
+    assert tick_count == 2 * n_periods, (
+        f"esperava {2 * n_periods} pulsos de sample_tick_o em {n_periods} "
+        f"periodos da portadora (pico+vale), contei {tick_count}"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  TEST 6: L3 diagnostic export — Top_HIL PWM replay vs C model
 # ═══════════════════════════════════════════════════════════════════════
 @cocotb.test()
