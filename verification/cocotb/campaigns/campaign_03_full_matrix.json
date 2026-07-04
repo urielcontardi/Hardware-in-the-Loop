@@ -1,0 +1,184 @@
+{
+  "campaign_id": "2026-07-04_campaign_03",
+  "case_root": "verification/results/2026-07-04_campaign_03",
+  "defaults": {
+    "im_clock_frequency": 200000000,
+    "im_solver_step_cycles": 26,
+    "hil_pwm_frequency": 1000,
+    "hil_uart_baud": 1000000,
+    "motor": {
+      "rs": 0.4396, "rr": 0.2826, "ls": 0.0031364, "lr": 0.0063264,
+      "lm": 0.1099442, "j": 0.4, "npp": 2.0
+    },
+    "vdc": 1240.0,
+    "v_peak": 620.0,
+    "initial_theta_rad": 0.7853981633974483,
+    "warmup_steps": 400
+  },
+  "experiments": [
+    {
+      "id": "S0_l2_sine_60hz_realts", "case_id": "S0", "result_key": "sine_60hz_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "sine", "enabled": true,
+      "description": "Seno trifasico ideal 60 Hz, 620 V pico de fase, sem carga.",
+      "duration_s": 0.20, "record_interval": 192, "sine_freq_hz": 60.0, "tload_nm": 0.0,
+      "output_dir": "S0_tacc1s_load000/l2_sine_60hz_realts"
+    },
+    {
+      "id": "S0_l2_vf_50ms_realts", "case_id": "S0", "result_key": "vf_50ms_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "Rampa V/f 60 Hz/s, janela 0-50 ms, sem carga.",
+      "duration_s": 0.05, "record_interval": 48, "vf_base_hz": 60.0, "vf_acc_hz_s": 60.0, "tload_nm": 0.0,
+      "output_dir": "S0_tacc1s_load000/l2_vf_50ms_realts"
+    },
+    {
+      "id": "S0_l2_vf_2s_realts", "case_id": "S0", "result_key": "vf_2s_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "Rampa V/f completa 0-2 s (0-60 Hz em 1 s, regime ate 2 s), sem carga.",
+      "duration_s": 2.00, "record_interval": 1923, "vf_base_hz": 60.0, "vf_acc_hz_s": 60.0, "tload_nm": 0.0,
+      "output_dir": "S0_tacc1s_load000/l2_vf_2s_realts"
+    },
+    {
+      "id": "S0_l3_pwm_replay_sine_6ms", "case_id": "S0", "result_key": "pwm_replay_sine_6ms",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "Top_HIL com referencia externa senoidal 60 Hz, PWM replay, carga nula.",
+      "duration_s": 0.006, "record_interval": 6, "ref_mode": "fixed", "ref_freq_hz": 60.0,
+      "modulation": 1.0, "tload_nm": 0.0,
+      "output_dir": "S0_tacc1s_load000/l3_top_pwm_replay_sine_6ms"
+    },
+    {
+      "id": "S0_l3_pwm_replay_vf_50ms", "case_id": "S0", "result_key": "pwm_replay_vf_50ms",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "Top_HIL com rampa V/F 60 Hz/s, janela 0-50 ms, PWM replay, carga nula.",
+      "duration_s": 0.05, "record_interval": 48, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 60.0,
+      "modulation": 1.0, "tload_nm": 0.0,
+      "output_dir": "S0_tacc1s_load000/l3_top_pwm_replay_vf_50ms"
+    },
+    {
+      "id": "S0_l3_pwm_replay_vf_2s", "case_id": "S0", "result_key": "pwm_replay_vf_2s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "Top_HIL com rampa V/F 60 Hz/s, 0-2 s, PWM replay, carga nula.",
+      "duration_s": 2.00, "record_interval": 1923, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 60.0,
+      "modulation": 1.0, "tload_nm": 0.0,
+      "output_dir": "S0_tacc1s_load000/l3_top_pwm_replay_vf_2s"
+    },
+    {
+      "id": "S0_l3_fullstack_vf_50ms", "case_id": "S0", "result_key": "fullstack_mock_vf_50ms",
+      "level": "l3", "runner": "fullstack_mock", "enabled": true,
+      "description": "Mock full-stack C independente (V/f+portadora+gate driver) sobre o CSV do PWM replay vf_50ms.",
+      "depends_on": "S0_l3_pwm_replay_vf_50ms", "warmup_s": 0.001, "record_interval": 1, "skip_s": 0.0,
+      "output_dir": "S0_tacc1s_load000/l3_fullstack_mock_vf_50ms"
+    },
+    {
+      "id": "S0_l3_fullstack_vf_2s", "case_id": "S0", "result_key": "fullstack_mock_vf_2s",
+      "level": "l3", "runner": "fullstack_mock", "enabled": true,
+      "description": "Mock full-stack C independente sobre o CSV do PWM replay vf_2s.",
+      "depends_on": "S0_l3_pwm_replay_vf_2s", "warmup_s": 0.001, "record_interval": 1, "skip_s": 0.0,
+      "output_dir": "S0_tacc1s_load000/l3_fullstack_mock_vf_2s"
+    },
+    {
+      "id": "A1_l2", "case_id": "A1", "result_key": "vf_500ms_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A1: rampa 0.5 s, 0 Tn — corrente de partida e fluxo a vazio.",
+      "duration_s": 0.5, "record_interval": 481, "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0, "tload_nm": 0.0,
+      "output_dir": "A1_tacc0p5s_load000/l2_vf_500ms_realts"
+    },
+    {
+      "id": "A1_l3", "case_id": "A1", "result_key": "pwm_replay_vf_500ms",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A1 L3: mesma janela do A1 L2, PWM replay.",
+      "duration_s": 0.5, "record_interval": 481, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "modulation": 1.0, "tload_nm": 0.0,
+      "output_dir": "A1_tacc0p5s_load000/l3_top_pwm_replay_vf_500ms"
+    },
+    {
+      "id": "A2_l2", "case_id": "A2", "result_key": "vf_500ms_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A2: rampa 0.5 s, 1.0 Tn — pior caso de corrente com rampa rapida.",
+      "duration_s": 0.5, "record_interval": 481, "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0, "tload_nm": 116.7136249340566,
+      "output_dir": "A2_tacc0p5s_load100/l2_vf_500ms_realts"
+    },
+    {
+      "id": "A2_l3", "case_id": "A2", "result_key": "pwm_replay_vf_500ms",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A2 L3: mesma janela do A2 L2, PWM replay.",
+      "duration_s": 0.5, "record_interval": 481, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "modulation": 1.0, "tload_nm": 116.7136249340566,
+      "output_dir": "A2_tacc0p5s_load100/l3_top_pwm_replay_vf_500ms"
+    },
+    {
+      "id": "A3_l2", "case_id": "A3", "result_key": "vf_1s_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A3: rampa 1.0 s, 0.5 Tn — caso base do HIL.",
+      "duration_s": 1.0, "record_interval": 962, "vf_base_hz": 60.0, "vf_acc_hz_s": 60.0, "tload_nm": 58.3568124670283,
+      "output_dir": "A3_tacc1s_load050/l2_vf_1s_realts"
+    },
+    {
+      "id": "A3_l3", "case_id": "A3", "result_key": "pwm_replay_vf_1s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A3 L3: mesma janela do A3 L2, PWM replay.",
+      "duration_s": 1.0, "record_interval": 962, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 60.0,
+      "modulation": 1.0, "tload_nm": 58.3568124670283,
+      "output_dir": "A3_tacc1s_load050/l3_top_pwm_replay_vf_1s"
+    },
+    {
+      "id": "A4_l2", "case_id": "A4", "result_key": "vf_2s_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A4: rampa 2.0 s, 1.0 Tn — partida suave sob carga nominal.",
+      "duration_s": 2.0, "record_interval": 1923, "vf_base_hz": 60.0, "vf_acc_hz_s": 30.0, "tload_nm": 116.7136249340566,
+      "output_dir": "A4_tacc2s_load100/l2_vf_2s_realts"
+    },
+    {
+      "id": "A4_l3", "case_id": "A4", "result_key": "pwm_replay_vf_2s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A4 L3: mesma janela do A4 L2, PWM replay.",
+      "duration_s": 2.0, "record_interval": 1923, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 30.0,
+      "modulation": 1.0, "tload_nm": 116.7136249340566,
+      "output_dir": "A4_tacc2s_load100/l3_top_pwm_replay_vf_2s"
+    },
+    {
+      "id": "A5_l2", "case_id": "A5", "result_key": "vf_5s_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A5: rampa 5.0 s, 0 Tn — erro acumulado e estabilidade.",
+      "duration_s": 5.0, "record_interval": 4808, "vf_base_hz": 60.0, "vf_acc_hz_s": 12.0, "tload_nm": 0.0,
+      "output_dir": "A5_tacc5s_load000/l2_vf_5s_realts"
+    },
+    {
+      "id": "A5_l3", "case_id": "A5", "result_key": "pwm_replay_vf_5s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A5 L3: mesma janela do A5 L2, PWM replay.",
+      "duration_s": 5.0, "record_interval": 4808, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 12.0,
+      "modulation": 1.0, "tload_nm": 0.0,
+      "output_dir": "A5_tacc5s_load000/l3_top_pwm_replay_vf_5s"
+    },
+    {
+      "id": "A6_l2", "case_id": "A6", "result_key": "vf_5s_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A6: rampa 5.0 s, 1.0 Tn — torque com baixa aceleracao.",
+      "duration_s": 5.0, "record_interval": 4808, "vf_base_hz": 60.0, "vf_acc_hz_s": 12.0, "tload_nm": 116.7136249340566,
+      "output_dir": "A6_tacc5s_load100/l2_vf_5s_realts"
+    },
+    {
+      "id": "A6_l3", "case_id": "A6", "result_key": "pwm_replay_vf_5s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A6 L3: mesma janela do A6 L2, PWM replay.",
+      "duration_s": 5.0, "record_interval": 4808, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 12.0,
+      "modulation": 1.0, "tload_nm": 116.7136249340566,
+      "output_dir": "A6_tacc5s_load100/l3_top_pwm_replay_vf_5s"
+    },
+    {
+      "id": "A7_l2", "case_id": "A7", "result_key": "vf_2s_realts",
+      "level": "l2", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "A7: rampa 2.0 s, 1.1 Tn — sobrecarga curta e margem numerica.",
+      "duration_s": 2.0, "record_interval": 1923, "vf_base_hz": 60.0, "vf_acc_hz_s": 30.0, "tload_nm": 128.38498742746228,
+      "output_dir": "A7_tacc2s_load110/l2_vf_2s_realts"
+    },
+    {
+      "id": "A7_l3", "case_id": "A7", "result_key": "pwm_replay_vf_2s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "A7 L3: mesma janela do A7 L2, PWM replay.",
+      "duration_s": 2.0, "record_interval": 1923, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 30.0,
+      "modulation": 1.0, "tload_nm": 128.38498742746228,
+      "output_dir": "A7_tacc2s_load110/l3_top_pwm_replay_vf_2s"
+    }
+  ]
+}
