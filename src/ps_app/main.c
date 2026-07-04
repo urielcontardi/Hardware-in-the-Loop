@@ -35,12 +35,12 @@ typedef struct {
 } motor_params_t;
 
 static motor_params_t motor_params = {
-    .rs = 0.435f,
+    .rs = 0.4396f,
     .rr = 0.2826f,
     .ls = 3.1364e-3f,
     .lr = 6.3264e-3f,
     .lm = 109.9442e-3f,
-    .j = 0.192f,
+    .j = 0.4f,
     .npp = 2.0f,
 };
 
