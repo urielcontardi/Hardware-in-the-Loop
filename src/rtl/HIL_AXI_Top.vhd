@@ -188,6 +188,7 @@ Architecture rtl of HIL_AXI_Top is
     signal pwm_b         : std_logic_vector(3 downto 0);
     signal pwm_c         : std_logic_vector(3 downto 0);
     signal carrier_tick_s : std_logic;
+    signal vf_irq_tick_s  : std_logic;  -- pico+vale (LOAD_BOTH_EDGES); alimenta a IRQ real
 
     --------------------------------------------------------------------------
     -- Tensões de fase para o solver (42 bits)
@@ -426,7 +427,7 @@ Begin
     Solver_CLKFB_BUFG : BUFG port map (I => solver_clk_fb, O => solver_clk_fb_buf);
     Solver_CLK_BUFG   : BUFG port map (I => solver_clk_mmcm, O => solver_clk_200);
 
-    carrier_tick_o <= carrier_tick_s;
+    carrier_tick_o <= vf_irq_tick_s;  -- era carrier_tick_s; contador de diagnostico continua em carrier_tick_s (inalterado)
 
     --------------------------------------------------------------------------
     -- Desempacotamento do controle PWM
@@ -461,7 +462,7 @@ Begin
         CLK_FREQ        => CLK_FREQ,
         PWM_FREQ        => PWM_FREQ,
         DATA_WIDTH      => NPC_DW,
-        LOAD_BOTH_EDGES => false,   -- trava apenas no valley (sincroniza com IRQ)
+        LOAD_BOTH_EDGES => true,   -- era false; agora IRQ real dispara em pico+vale
         OUTPUT_REG      => true,
         WAIT_STATE_CNT  => CLK_FREQ / 1000  -- 1 ms de wait state na inicialização
     )
@@ -476,7 +477,7 @@ Begin
         vc_ref_i        => vc_ref_i,
         -- Tick de portadora → IRQ para o PS
         carrier_tick_o  => carrier_tick_s,
-        sample_tick_o   => open,
+        sample_tick_o   => vf_irq_tick_s,   -- era "open"
         -- Estados de gate (4 bits por fase)
         pwm_a_o         => pwm_a,
         pwm_b_o         => pwm_b,
