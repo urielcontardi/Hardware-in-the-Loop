@@ -73,15 +73,20 @@ static void pwm_init(MockPWM *p, int phase, int cmax) {
 }
 
 static int pwm_step(MockPWM *p, int cmax) {
-    int valley = 0;
+    int valley = 0, ref_edge = 0;
     if (p->dir) {
-        if (p->carrier >= cmax - 1) p->dir = 0;
+        if (p->carrier >= cmax - 1) { p->dir = 0; ref_edge = 1; }  /* pico */
         else p->carrier++;
     } else {
-        if (p->carrier == 0) { p->dir = 1; valley = 1; }
+        if (p->carrier == 0) { p->dir = 1; valley = 1; ref_edge = 1; }  /* vale */
         else p->carrier--;
     }
-    if (valley) {
+    /* LOAD_BOTH_EDGES: trava a referencia em pico E vale (2x/periodo), como
+       o NPCManager/vf_irq_driver real faz desde o sincronismo por IRQ real.
+       "valley" continua so-no-vale e sem mudanca, pois e o sinal de sync
+       usado por gate_step() para o enable do gate driver, que e uma
+       preocupacao separada do carregamento da referencia. */
+    if (ref_edge) {
         p->va_lat = p->va_ref;
         p->vb_lat = p->vb_ref;
         p->vc_lat = p->vc_ref;
