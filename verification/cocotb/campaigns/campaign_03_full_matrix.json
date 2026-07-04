@@ -20,7 +20,7 @@
       "id": "S0_l2_sine_60hz_realts", "case_id": "S0", "result_key": "sine_60hz_realts",
       "level": "l2", "top": "tim_solver", "runner": "cocotb", "test_mode": "sine", "enabled": true,
       "description": "Seno trifasico ideal 60 Hz, 620 V pico de fase, sem carga.",
-      "duration_s": 0.20, "record_interval": 192, "sine_freq_hz": 60.0, "tload_nm": 0.0,
+      "duration_s": 0.05, "sine_freq_hz": 60.0, "tload_nm": 0.0,
       "output_dir": "S0_tacc1s_load000/l2_sine_60hz_realts"
     },
     {

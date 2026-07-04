@@ -40,11 +40,16 @@ def test_cocotb_experiments_have_required_fields():
             continue
         assert "level" in exp
         assert "duration_s" in exp
-        assert "record_interval" in exp
         if exp["level"] == "l2":
             assert exp["test_mode"] in ("vf", "sine")
+            # test_tim_solver_sine.py has no CSV decimation support (unlike
+            # the vf test's HIL_VF_RECORD_INTERVAL), so record_interval would
+            # be dead config for sine — only required for vf.
+            if exp["test_mode"] == "vf":
+                assert "record_interval" in exp
         if exp["level"] == "l3":
             assert exp["ref_mode"] in ("vf", "fixed")
+            assert "record_interval" in exp
 
 
 def test_fullstack_mock_experiments_depend_on_existing_cocotb_case():
