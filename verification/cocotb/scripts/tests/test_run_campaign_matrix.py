@@ -119,6 +119,28 @@ def test_update_manifest_case_marks_blocked_on_failure():
 from unittest.mock import patch
 
 
+def test_cocotb_run_passed_true_when_zero_failures(tmp_path):
+    log = tmp_path / "run.log"
+    log.write_text("some noise\n** TESTS=3 PASS=3 FAIL=0 SKIP=0    123.45   1.00   123.45 **\nmore noise\n")
+    assert rcm._cocotb_run_passed(log) is True
+
+
+def test_cocotb_run_passed_false_when_any_failure(tmp_path):
+    log = tmp_path / "run.log"
+    log.write_text("** TESTS=1 PASS=0 FAIL=1 SKIP=0    5160310.00   53.23   96942.41 **\n")
+    assert rcm._cocotb_run_passed(log) is False
+
+
+def test_cocotb_run_passed_false_when_no_summary_line(tmp_path):
+    log = tmp_path / "run.log"
+    log.write_text("Traceback (most recent call last):\n  crashed before summary\n")
+    assert rcm._cocotb_run_passed(log) is False
+
+
+def test_cocotb_run_passed_false_when_log_missing(tmp_path):
+    assert rcm._cocotb_run_passed(tmp_path / "does_not_exist.log") is False
+
+
 def _fake_manifest(ids):
     return {"cases": [{"id": i, "status": "pending", "l2_results": {}, "l3_results": {}} for i in ids]}
 
@@ -133,7 +155,7 @@ def test_run_one_cocotb_writes_run_log_and_returns_ok(tmp_path):
     }
     config = {"defaults": _defaults(), "case_root": str(case_root)}
 
-    def fake_run_cocotb(exp_, env_, build_dir="sim_build", **kwargs):
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build", log_file=None, **kwargs):
         out_dir = case_root / exp_["output_dir"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "metrics.json").write_text(json.dumps({
@@ -142,6 +164,8 @@ def test_run_one_cocotb_writes_run_log_and_returns_ok(tmp_path):
                         "mae_speed_rad_s": 0.01},
             "duration_s": 0.5, "csv_rows": 100,
         }))
+        if log_file is not None:
+            log_file.write("** TESTS=1 PASS=1 FAIL=0 SKIP=0    123.45   1.00   123.45 **\n")
         return 0
 
     with patch.object(rcm, "run_cocotb", side_effect=fake_run_cocotb):
@@ -190,10 +214,12 @@ def test_main_continues_after_one_case_fails(tmp_path, monkeypatch):
         ],
     }))
 
-    def fake_run_cocotb(exp_, env_, build_dir="sim_build", **kwargs):
+    def fake_run_cocotb(exp_, env_, build_dir="sim_build", log_file=None, **kwargs):
         out_dir = case_root / exp_["output_dir"]
         out_dir.mkdir(parents=True, exist_ok=True)
         if exp_["id"] == "A2_l2":
+            if log_file is not None:
+                log_file.write("** TESTS=1 PASS=0 FAIL=1 SKIP=0    123.45   1.00   123.45 **\n")
             return 1  # simula falha
         (out_dir / "metrics.json").write_text(json.dumps({
             "metrics": {"nrmse_i_alpha": 0.01, "nrmse_i_beta": 0.01,
@@ -201,6 +227,8 @@ def test_main_continues_after_one_case_fails(tmp_path, monkeypatch):
                         "mae_speed_rad_s": 0.01},
             "duration_s": 0.5, "csv_rows": 100,
         }))
+        if log_file is not None:
+            log_file.write("** TESTS=1 PASS=1 FAIL=0 SKIP=0    123.45   1.00   123.45 **\n")
         return 0
 
     monkeypatch.setattr(rcm, "run_cocotb", fake_run_cocotb)

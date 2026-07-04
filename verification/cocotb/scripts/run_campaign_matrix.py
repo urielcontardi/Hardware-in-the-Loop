@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import subprocess
 import sys
 import time
@@ -38,6 +39,31 @@ SUMMARY_FIELDS = [
     "csv_rows", "nrmse_i_alpha", "nrmse_i_beta", "mae_flux_alpha_wb",
     "mae_flux_beta_wb", "mae_speed_rad_s", "overlay", "note",
 ]
+
+_COCOTB_SUMMARY_RE = re.compile(r"\*\*\s*TESTS=(\d+)\s+PASS=(\d+)\s+FAIL=(\d+)\s+SKIP=(\d+)")
+
+
+def _cocotb_run_passed(log_path: Path) -> bool:
+    """True only if the cocotb regression summary line shows zero failures.
+
+    run.py's cocotb wrapper exits 0 regardless of internal test pass/fail
+    (confirmed empirically during Task 8's smoke test), so subprocess return
+    code alone cannot be trusted as a success signal. This parses the final
+    summary line cocotb always prints, e.g. "** TESTS=1 PASS=1 FAIL=0 SKIP=0 ... **".
+    Returns False if the log has no such line at all (e.g. a crash before
+    the regression manager ran).
+    """
+    if not log_path.exists():
+        return False
+    match = None
+    for line in log_path.read_text(errors="replace").splitlines():
+        m = _COCOTB_SUMMARY_RE.search(line)
+        if m:
+            match = m
+    if match is None:
+        return False
+    fail_count = int(match.group(3))
+    return fail_count == 0
 
 
 # ── Env builders ──────────────────────────────────────────────────────────────
@@ -166,7 +192,9 @@ def run_one_cocotb(config: dict[str, Any], exp: dict[str, Any], case_root: Path)
 
     metrics_path = out_dir / "metrics.json"
     metrics = load_json(metrics_path) if metrics_path.exists() else None
-    return {"id": exp["id"], "ok": rc == 0, "wall_s": wall_s, "metrics": metrics, "out_dir": out_dir}
+    cocotb_ok = _cocotb_run_passed(log_path)
+    ok = (rc == 0) and cocotb_ok
+    return {"id": exp["id"], "ok": ok, "wall_s": wall_s, "metrics": metrics, "out_dir": out_dir}
 
 
 def run_one_fullstack_mock(config: dict[str, Any], exp: dict[str, Any], case_root: Path) -> dict[str, Any]:
