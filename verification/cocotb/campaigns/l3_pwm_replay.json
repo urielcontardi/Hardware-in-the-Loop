@@ -1,0 +1,38 @@
+{
+  "campaign_id": "2026-07-04_campaign_02",
+  "case_root": "verification/results/2026-07-04_campaign_02/S0_tacc1s_load000",
+  "defaults": {
+    "im_clock_frequency": 200000000,
+    "im_solver_step_cycles": 26,
+    "hil_pwm_frequency": 1000,
+    "hil_uart_baud": 1000000,
+    "motor": {
+      "rs": 0.4396,
+      "rr": 0.2826,
+      "ls": 0.0031364,
+      "lr": 0.0063264,
+      "lm": 0.1099442,
+      "j": 0.4,
+      "npp": 2.0
+    },
+    "vdc": 1240.0,
+    "initial_theta_rad": 0.7853981633974483
+  },
+  "experiments": [
+    {
+      "id": "l3_top_pwm_replay_vf_2s",
+      "enabled": true,
+      "description": "Top_HIL L3 PWM replay, V/F 0-2 s, same physical window as L2 V/F 2 s.",
+      "top": "top_hil",
+      "testcase": "test_top_hil_pwm_replay_l3",
+      "duration_s": 2.0,
+      "warmup_steps": 400,
+      "record_interval": 800,
+      "ref_mode": "vf",
+      "vf_base_hz": 60.0,
+      "vf_acc_hz_s": 60.0,
+      "modulation": 1.0,
+      "output_dir": "l3_top_pwm_replay_vf_2s"
+    }
+  ]
+}

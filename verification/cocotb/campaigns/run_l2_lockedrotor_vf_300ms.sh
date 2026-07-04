@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+IM_CLOCK_FREQUENCY=200000000 IM_SOLVER_STEP_CYCLES=26 IM_RS=0.4396 IM_RR=0.2826 IM_LS=0.0031364 IM_LR=0.0063264 IM_LM=0.1099442 IM_J=1000000 IM_NPP=2.0 HIL_VF_DURATION_S=0.3 HIL_VF_RECORD_INTERVAL=240 HIL_VF_WARMUP_STEPS=400 HIL_VF_F_NOMINAL_HZ=60 HIL_VF_V_PEAK_NOMINAL=620 HIL_VF_ACC_RAMP_HZ_S=60 HIL_VF_TLOAD_NM=0 HIL_VF_INITIAL_THETA_RAD=0.7853981633974483 HIL_VF_CSV=/home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop/verification/results/2026-07-04_campaign_02/S0_tacc1s_load000/l2_vf_300ms_lockedrotor_j1e6/vf_vhdl_vs_c.csv HIL_VF_METRICS=/home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop/verification/results/2026-07-04_campaign_02/S0_tacc1s_load000/l2_vf_300ms_lockedrotor_j1e6/metrics.json uv run python run.py --sim nvc --top tim_solver --test vf -k test_tim_solver_vf_stimulus
