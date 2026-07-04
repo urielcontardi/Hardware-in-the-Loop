@@ -82,7 +82,7 @@ async def test_top_hil_carrier_dual_edge(dut):
 
 ```bash
 cd verification/cocotb
-uv run python run.py --sim nvc --top top_hil --test top_hil -k test_top_hil_carrier_dual_edge
+IM_CLOCK_FREQUENCY=100000000 HIL_PWM_FREQUENCY=20000 uv run python run.py --sim nvc --top top_hil -k test_top_hil_carrier_dual_edge
 ```
 
 Esperado: FAIL, `tick_count == 10` (só o vale pulsa hoje), não `20`.
@@ -100,7 +100,7 @@ Em `src/rtl/Top_HIL.vhd`, linha 235 (dentro do `generic map` do
 
 ```bash
 cd verification/cocotb
-uv run python run.py --sim nvc --top top_hil --test top_hil -k test_top_hil_carrier_dual_edge
+IM_CLOCK_FREQUENCY=100000000 HIL_PWM_FREQUENCY=20000 uv run python run.py --sim nvc --top top_hil -k test_top_hil_carrier_dual_edge
 ```
 
 Esperado: PASS, `tick_count == 20`.
@@ -359,7 +359,10 @@ int main(void)
         theta += omega * ts;
         ticks++;
     }
-    int expected_ticks = (int)((float)VF_TICK_HZ / freq_hz + 0.5f);
+    /* O loop de acumulacao sempre "estoura" para o proximo inteiro (para na
+     * primeira vez que theta >= 2*pi), entao o numero de ticks esperado e'
+     * o teto da divisao exata, nao o arredondamento pro mais proximo. */
+    int expected_ticks = (int)ceilf((float)VF_TICK_HZ / freq_hz);
     printf("VF_TICK_HZ=%u ticks_por_volta=%d esperado=%d\n",
            VF_TICK_HZ, ticks, expected_ticks);
     if (ticks != expected_ticks) {
@@ -504,7 +507,7 @@ static int find_uio_device(char *out_name, size_t out_len)
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (strncmp(ent->d_name, "uio", 3) != 0) continue;
-        char name_path[256];
+        char name_path[512];
         snprintf(name_path, sizeof(name_path), "%s/%s/name", UIO_CLASS_DIR, ent->d_name);
         FILE *f = fopen(name_path, "r");
         if (!f) continue;
@@ -550,10 +553,10 @@ static void *uio_irq_thread(void *arg)
 
 int vf_irq_start(void)
 {
-    char dev_name[64];
+    char dev_name[300];
     if (find_uio_device(dev_name, sizeof(dev_name)) != 0) return -1;
 
-    char dev_path[128];
+    char dev_path[320];
     snprintf(dev_path, sizeof(dev_path), UIO_DEV_FMT, dev_name);
     uio_fd = open(dev_path, O_RDWR);
     if (uio_fd < 0) {
