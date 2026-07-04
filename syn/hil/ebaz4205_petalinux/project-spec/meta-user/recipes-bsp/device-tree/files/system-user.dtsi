@@ -10,4 +10,17 @@
             no-map;
         };
     };
+
+    /* IRQ_F2P[0] = carrier_tick_o (pico+vale, LOAD_BOTH_EDGES) — consumida
+     * por src/ps_app/vf_irq.c via /dev/uioX. Numero de IRQ (29 = SPI 61-32,
+     * convencao Zynq-7000 para F2P[0]) precisa ser confirmado contra o
+     * bloco de IP real na primeira sintese apos este trabalho — nao usar
+     * as cegas se o endereco/numero divergir do relatorio do Vivado. */
+    vf_irq: vf_irq@0 {
+        compatible = "generic-uio";
+        interrupt-parent = <&intc>;
+        interrupts = <0 29 4>;
+        interrupt-names = "vf_irq";
+        label = "vf_irq";
+    };
 };
