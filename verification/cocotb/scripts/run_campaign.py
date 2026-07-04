@@ -79,17 +79,22 @@ def build_l3_env(config: dict[str, Any], exp: dict[str, Any], out_dir: Path) -> 
         "HIL_L3_VF_BASE_HZ": env_number(exp.get("vf_base_hz", 60.0)),
         "HIL_L3_VF_ACC_HZ_S": env_number(exp.get("vf_acc_hz_s", 60.0)),
         "HIL_L3_INITIAL_THETA_RAD": env_number(exp.get("initial_theta_rad", defaults.get("initial_theta_rad", math.pi / 4))),
+        "HIL_L3_TLOAD_NM": env_number(exp.get("tload_nm", defaults.get("tload_nm", 0.0))),
         "HIL_L3_OUT_DIR": str(out_dir.resolve()),
     })
     return env
 
 
-def run_cocotb(exp: dict[str, Any], env: dict[str, str]) -> int:
+def run_cocotb(exp: dict[str, Any], env: dict[str, str], build_dir: str = "sim_build") -> int:
     cmd = [
         "uv", "run", "python", "run.py",
         "--sim", str(exp.get("sim", "nvc")),
         "--top", str(exp.get("top", "top_hil")),
+        "--build-dir", build_dir,
     ]
+    test_mode = exp.get("test_mode")
+    if test_mode:
+        cmd.extend(["--test", str(test_mode)])
     testcase = exp.get("testcase")
     if testcase:
         cmd.extend(["-k", str(testcase)])
@@ -244,8 +249,9 @@ def run_experiment(config: dict[str, Any], exp: dict[str, Any]) -> int:
     }
     (out_dir / "run_config_resolved.json").write_text(json.dumps(effective, indent=2))
 
+    build_dir = exp.get("build_dir", f"sim_build/{exp['id']}")
     t0 = time.monotonic()
-    rc = run_cocotb(exp, env)
+    rc = run_cocotb(exp, env, build_dir=build_dir)
     wall_s = time.monotonic() - t0
 
     metrics_path = out_dir / "metrics.json"
