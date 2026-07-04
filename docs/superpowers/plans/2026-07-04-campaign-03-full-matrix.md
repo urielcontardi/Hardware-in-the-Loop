@@ -183,14 +183,12 @@ print('OK:', sorted(manifest_ids))
 
 Expected: `OK: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'S0']`
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: No commit — these files stay untracked**
 
-```bash
-cd /home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop
-git add verification/results/2026-07-04_campaign_03/manifest.json \
-        verification/results/2026-07-04_campaign_03/campaign_story.json
-git commit -m "feat(validation): esqueleto da campaign_03 (manifest + narrativa do dashboard)"
-```
+`verification/*` in `.gitignore` intentionally excludes `verification/results/`
+(campaign output is never versioned — `campaign_01`/`campaign_02` weren't
+either). Do not `git add` or `git commit` the two files created in Step 2;
+leave them on disk only. Skip straight to Task 2.
 
 ---
 
@@ -1482,14 +1480,13 @@ uv run python scripts/run_campaign_matrix.py \
 
 Expected: `22`
 
-- [ ] **Step 3: Commit (se algum ajuste foi necessário na matriz ou no manifest)**
+- [ ] **Step 3: Commit se algum ajuste foi necessário na matriz (não no manifest — este fica untracked)**
 
 ```bash
 cd /home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop
-git status --short verification/cocotb/campaigns/campaign_03_full_matrix.json \
-                    verification/results/2026-07-04_campaign_03/manifest.json
-# Se houve mudanca:
-git add -u
+git status --short verification/cocotb/campaigns/campaign_03_full_matrix.json
+# Se houve mudanca (o manifest.json em verification/results/ NAO entra — fica untracked):
+git add verification/cocotb/campaigns/campaign_03_full_matrix.json
 git commit -m "fix(validation): ajustes na matriz da campaign_03 apos dry-run"
 ```
 
@@ -1541,13 +1538,13 @@ uv run python scripts/build_campaign_dashboard.py \
 
 Expected: `Dashboard gerado em .../2026-07-04_campaign_03/index.html`; abrir o arquivo mostra o caso S0 com 2 dos 8 sub-resultados já presentes.
 
-- [ ] **Step 4: Commit dos artefatos do smoke test**
+- [ ] **Step 4: No commit — smoke test artifacts stay on disk only**
 
-```bash
-cd /home/urielcontardi/Desktop/Projects/Hardware-in-the-Loop
-git add verification/results/2026-07-04_campaign_03/
-git commit -m "test(validation): smoke test end-to-end da campaign_03 (2 casos reais rapidos)"
-```
+`verification/results/` is gitignored on purpose (campaign output is never
+versioned). Do not `git add`/`git commit` anything under
+`verification/results/2026-07-04_campaign_03/`. The artifacts (metrics.json,
+CSVs, overlay.html, index.html) remain as local evidence that the pipeline
+works; there is nothing to commit for this step.
 
 - [ ] **Step 5: Só depois de tudo acima passar — rodar a matriz completa em background**
 
