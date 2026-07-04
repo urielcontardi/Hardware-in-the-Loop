@@ -1,5 +1,6 @@
 #include "gpio.h"
 #include "vf_ctrl.h"
+#include "vf_irq.h"
 #include "telemetry.h"
 #include "dma_telem.h"
 #include "pwm_events.h"
@@ -77,26 +78,9 @@ static char                  telem_dst_ip[INET_ADDRSTRLEN] = {0};
 
 static int program_motor_coeffs(const motor_params_t *m);
 
-/* ── V/F reference clock on a dedicated thread ──────────────────────────── */
-static pthread_t vf_clock_tid;
-static volatile int vf_clock_active = 0;
-
-static void *vf_clock_thread(void *arg)
-{
-    (void)arg;
-    struct timespec next;
-    clock_gettime(CLOCK_MONOTONIC, &next);
-    while (running && vf_clock_active) {
-        next.tv_nsec += 1000000000L / VF_TICK_HZ;
-        if (next.tv_nsec >= 1000000000L) {
-            next.tv_sec++;
-            next.tv_nsec -= 1000000000L;
-        }
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
-        if (vf_clock_active) vf_tick();
-    }
-    return NULL;
-}
+/* ── V/F reference clock: consome a IRQ real da portadora via UIO ────────
+ * Ver src/ps_app/vf_irq.c e docs/superpowers/specs/2026-07-04-vf-pwm-irq-sync-design.md.
+ * Substitui a antiga thread de clock_nanosleep livre. */
 
 static void set_udp_reuse(int sock)
 {
@@ -113,22 +97,14 @@ static void set_udp_reuse(int sock)
 
 static int setup_vf_timer(void)
 {
-    /* Release any clear/reset state left by boot or test_fpga. */
-    vf_tick();
-    vf_clock_active = 1;
-    if (pthread_create(&vf_clock_tid, NULL, vf_clock_thread, NULL) != 0) {
-        vf_clock_active = 0;
-        perror("pthread_create vf_clock");
-        return -1;
-    }
-    return 0;
+    /* vf_irq_start() ja' faz a "queimada de partida" (vf_tick() antes de
+     * armar) e sobe a thread que consome /dev/uioX. */
+    return vf_irq_start();
 }
 
 static void cancel_timer(void)
 {
-    if (!vf_clock_active) return;
-    vf_clock_active = 0;
-    pthread_join(vf_clock_tid, NULL);
+    vf_irq_stop();
 }
 
 /* ── Telemetry thread — reads solver monitors, pushes UDP bursts ────────── */
