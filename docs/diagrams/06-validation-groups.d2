@@ -1,0 +1,20 @@
+# =============================================================================
+# Figura 06 - Sequencia dos grupos de ensaio da campanha (S0 -> Grupo A -> Grupo B).
+# Nao detalha parametros internos (ver tabela da matriz de parametros no capitulo).
+# =============================================================================
+
+vars: {d2-config: {layout-engine: elk; pad: 40}}
+direction: right
+
+classes: {
+  box:     {style: {fill: white; stroke: black; stroke-width: 2; border-radius: 0; font-color: black; bold: false}}
+  pending: {style: {fill: white; stroke: black; stroke-width: 2; stroke-dash: 4; border-radius: 0; font-color: black; bold: false}}
+  arrow:   {style: {stroke: black; stroke-width: 2; font-color: black; bold: false}}
+}
+
+s0: "S0 - Sanity\nvalida o pipeline L2/L3" {class: box}
+grupo_a: "Grupo A - Partida e Aceleracao\n7 casos (A1-A7)\nexecutado" {class: box}
+grupo_b: "Grupo B - Degrau de Carga\ncodigo pronto\nnao executado" {class: pending}
+
+s0 -> grupo_a: "pipeline validado" {class: arrow}
+grupo_a -> grupo_b: "planejado" {class: arrow}

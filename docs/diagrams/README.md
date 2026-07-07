@@ -22,6 +22,18 @@ do geral ao específico, sem nenhum bloco detalhado em dois lugares.
 
 ![Mapa do sistema](img/00-system.png)
 
+## Figura adicional — campanha experimental
+
+Fora da sequência de arquitetura acima (00-05, cada uma detalhando um
+subsistema do outro): `06-validation-groups.d2` documenta a sequência dos
+grupos de ensaio da campanha de validação (S0 → Grupo A → Grupo B), com
+status de execução — não parâmetros internos, que ficam na tabela da matriz
+de parâmetros do capítulo de resultados (`docs/results-chapter/`).
+
+| Arquivo | Figura | Mostra |
+|---|---|---|
+| `06-validation-groups.d2` | Sequência de validação experimental | S0 → Grupo A → Grupo B, com status de execução |
+
 **Regra de fronteira:** cada conceito transversal é detalhado só no seu dono —
 cadeia de taxas → 00; clocks/CDC/decimador → 01; Q14.28/passo → 02; regimes
 temporais → 03; decimação de display → 04.
