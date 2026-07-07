@@ -8,8 +8,8 @@ FPGA-based Hardware-in-the-Loop simulation of a three-phase induction motor usin
 
 | Phase | Status | Notes |
 |---|---|---|
-| VHDL TIM_Solver (simulation) | **Done** | NRMSE currents < 3%, speed MAE < 0.7 rad/s |
-| Flux error | **Pending fix** | MAE ~5.5 mWb, tolerance < 1 mWb |
+| VHDL TIM_Solver (simulation) | **Done** | NRMSE currents e speed MAE dentro da tolerância — ver tabela abaixo |
+| Flux error | **Em validação ativa** | Campanha em andamento, tolerância < 1 mWb — ver `verification/cocotb/reports/` |
 | BilinearSolverUnit_DSP validation | **Pending** | Confirm stub == Xilinx IP behavior |
 | Vivado project (EBAZ4205 base) | **Done** | PS7 + Ethernet EMIO + LEDs, Vivado 2025.1 |
 | Linux boot (PetaLinux 2025.1) | **Done** | Kernel 6.12.10, SD card, UART console |
@@ -39,16 +39,22 @@ Hardware-in-the-Loop/
 │   ├── induction-motor-model/   # C reference model + PSIM files
 │   └── longovinicius-hil/       # Legacy reference project
 │
-├── scripts/                     # Host PC scripts
-│   └── setup/
-│       └── install_petalinux_deps.sh  # PetaLinux dependencies
+├── scripts/                     # Host PC scripts (ver scripts/README.md)
+│   ├── setup/                   # Instalação de dependências (PetaLinux, etc.)
+│   ├── build/                   # Scripts de build Vivado/PetaLinux
+│   ├── vivado/                  # Scripts auxiliares de Vivado
+│   └── test/                    # Scripts de teste/validação (host)
 │
 ├── src/                         # Source code
 │   ├── rtl/                     # Hardware (VHDL)
+│   │   ├── HIL_AXI_Top.vhd      # Top REAL de hardware (HIL_Regs_AXI + NPCManager + TIM_Solver + DMA)
+│   │   ├── HIL_Regs_AXI.vhd     # Registradores AXI4-Lite (controle PS→PL)
 │   │   ├── TIM_Solver.vhd       # Induction motor model
-│   │   ├── SerialManager.vhd    # UART protocol handler
-│   │   ├── Top_HIL.vhd          # Top-level (used in cocotb simulation)
-│   │   └── vf_control/          # V/F controller modules
+│   │   ├── Top_HIL.vhd          # Top-level de simulação (cocotb, usa SerialManager)
+│   │   ├── SerialManager.vhd    # Protocolo UART — só usado por Top_HIL.vhd
+│   │   ├── IIRFilter.vhd        # Presente no repo, não instanciado hoje
+│   │   └── vf_control/          # V/F em hardware — não instanciado (V/F real roda em software, ver docs/architecture.md)
+│   ├── ps_app/                  # Aplicação Linux do PS (main.c, vf_irq.c, dma_telem.c)
 │   └── tb/                      # VHDL testbenches
 │
 ├── syn/                         # Synthesis and implementation
@@ -177,13 +183,16 @@ Geral:
 
 ## Resultados de Validação (cocotb V/F ramp)
 
-| Métrica | Resultado | Tolerância | Status |
-|---|---|---|---|
-| NRMSE I_alpha | 2.85% | < 10% | OK |
-| NRMSE I_beta | 2.89% | < 10% | OK |
-| MAE flux_alpha | 5.49 mWb | < 1 mWb | **Pendente** |
-| MAE flux_beta | 5.70 mWb | < 1 mWb | **Pendente** |
-| MAE speed | 0.70 rad/s | < 2.0 rad/s | OK |
+| Métrica | Tolerância | Status |
+|---|---|---|
+| NRMSE I_alpha | < 10% | OK |
+| NRMSE I_beta | < 10% | OK |
+| MAE flux_alpha | < 1 mWb | **Em validação ativa** |
+| MAE flux_beta | < 1 mWb | **Em validação ativa** |
+| MAE speed | < 2.0 rad/s | OK |
+
+> Valores numéricos mudam a cada rodada da campanha em andamento — ver
+> `verification/cocotb/reports/sim_benchmark.json` para o resultado mais recente.
 
 ---
 
