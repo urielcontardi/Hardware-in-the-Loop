@@ -8,6 +8,8 @@ dependencies = [
     "plotly>=5.0",
     "numpy>=1.26",
     "matplotlib>=3.11.0",
+    "streamlit>=1.59.0",
+    "pandas>=3.0.3",
 ]
 
 [tool.uv]
