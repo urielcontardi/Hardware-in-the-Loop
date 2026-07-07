@@ -39,7 +39,8 @@ esperado no diretório do caso. Um caso sem o arquivo é tratado como ausente
 
 1. **Metodologia**
    - Diagrama D2 da sequência S0 → Grupo A → Grupo B (com status por cor:
-     feito/verde, pendente/vermelho tracejado).
+     feito/borda sólida, pendente/borda tracejada — mesma convenção
+     monocromática dos diagramas existentes, não cores).
    - Tabela da matriz de parâmetros do Grupo A (t_acc × carga → A1-A7),
      gerada pelo script a partir do `manifest.json` (não hardcoded).
    - Definição de NRMSE/MAE conforme usadas em L2/L3, com nota de rodapé
@@ -80,8 +81,12 @@ Novo arquivo `docs/diagrams/06-validation-groups.d2`, seguindo a convenção
 já estabelecida em `docs/diagrams/README.md` (fonte `.d2` versionada, saída
 `img/06-validation-groups.{svg,png}` via `build.sh`, estilo monocromático
 acadêmico, `direction: right`). Conteúdo: três blocos (S0, Grupo A, Grupo B)
-em sequência, coloridos por status (verde = executado, vermelho tracejado =
-pendente), sem detalhar parâmetros internos (isso fica na tabela).
+em sequência, seguindo as classes já definidas em `00-system.d2`: `box`
+(borda sólida preta = executado) para S0 e Grupo A, e uma classe nova
+`pending` (borda tracejada, mesmo padrão de `cdc`/`grp`, com o rótulo
+"não executado" no texto do bloco) para Grupo B — sem cor, mantendo o
+monocromático preto/branco/cinza do resto da pasta. Sem detalhar parâmetros
+internos (isso fica na tabela).
 `docs/diagrams/README.md` ganha uma linha na tabela de figuras.
 
 ## 3. Scripts geradores
@@ -95,9 +100,20 @@ Módulo compartilhado, sem CLI própria. Responsabilidades:
 
 - `load_campaign(campaign_dir: Path) -> CampaignData`: lê `manifest.json`,
   monta uma lista de casos com `id`, `t_acc_s`, `load_tn`, `group`.
-- Para cada caso, resolve os caminhos esperados de `l2_.../metrics.json` e
-  `l3_.../metrics.json` a partir das chaves `l2_results`/`l3_results` do
-  próprio manifest (que já apontam para os subdiretórios reais).
+- Para cada caso, resolve o diretório L2 e L3 por **glob no diretório do
+  caso**, não pelas chaves `l2_results`/`l3_results` do manifest: foi
+  confirmado que o manifest real da `campaign_03` tem `l2_results: {}`
+  (vazio) para A2, A3, A4, A6 e A7, mesmo com `metrics.json` de L2 presente
+  em disco — o manifest nunca foi atualizado após essas rodadas. Padrão de
+  busca dentro de `campaign_dir / case["dir"]`:
+  `glob("l2_vf_*_realts")` e `glob("l3_top_pwm_replay_vf_*")`. Cada caso do
+  Grupo A tem no máximo uma pasta por nível (confirmado inspecionando
+  `verification/results/2026-07-04_campaign_03/`); se o glob encontrar mais
+  de uma (caso de S0, que tem várias janelas), usa a primeira em ordem
+  alfabética e registra um aviso — S0 não entra nas tabelas/figuras do
+  Grupo A, então isso não afeta o capítulo, só evita quebrar o script se
+  rodado sobre S0 no futuro. Zero pastas encontradas: caso tratado como
+  ausente nesse nível.
 - `load_metrics(path: Path) -> dict | None`: retorna `None` se o arquivo não
   existir (nunca lança exceção por ausência).
 - `load_case_table(campaign_dir) -> list[CaseRow]`: uma linha por
