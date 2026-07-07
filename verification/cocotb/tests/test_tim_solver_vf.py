@@ -25,6 +25,7 @@ from cocotb.triggers import ClockCycles, RisingEdge, Timer
 
 from models.im_reference_model import IMPhysicalParams, InductionMotorReferenceModel
 from models.sim_benchmark import save_benchmark
+from models.transient_metrics import compute_transient_metrics
 from models.vf_control import VFControl
 
 
@@ -45,6 +46,11 @@ def _env_int(name: str, default: int) -> int:
 def _env_path(name: str, default: Path) -> Path:
     raw = os.environ.get(name)
     return default if raw in (None, "") else Path(raw)
+
+
+def _env_float_opt(name: str) -> float | None:
+    raw = os.environ.get(name)
+    return None if raw in (None, "") else float(raw)
 
 
 # ── Simulation extent ─────────────────────────────────────────────────────────
@@ -68,6 +74,8 @@ F_NOMINAL_HZ    = _env_float("HIL_VF_F_NOMINAL_HZ", 60.0)
 V_PEAK_NOMINAL  = _env_float("HIL_VF_V_PEAK_NOMINAL", 620.0)
 ACC_RAMP_HZ_S   = _env_float("HIL_VF_ACC_RAMP_HZ_S", 60.0)
 TLOAD_NM        = _env_float("HIL_VF_TLOAD_NM", 0.0)
+TLOAD_STEP_NM       = _env_float_opt("HIL_VF_TLOAD_STEP_NM")
+TLOAD_STEP_TIME_S   = _env_float_opt("HIL_VF_TLOAD_STEP_TIME_S")
 INITIAL_THETA   = _env_float("HIL_VF_INITIAL_THETA_RAD", INITIAL_THETA)
 
 # ── Recording / progress ──────────────────────────────────────────────────────
@@ -260,6 +268,12 @@ async def test_tim_solver_vf_stimulus(dut):
             vf.step()
         va, vb, vc = vf.step()          # midpoint sample
         tload = vf.tload
+        if (
+            TLOAD_STEP_NM is not None
+            and TLOAD_STEP_TIME_S is not None
+            and step * TS_S >= TLOAD_STEP_TIME_S
+        ):
+            tload = TLOAD_STEP_NM
         for _ in range(RECORD_INTERVAL - half - 1):
             vf.step()                   # advance to batch end
 
@@ -391,6 +405,20 @@ async def test_tim_solver_vf_stimulus(dut):
             "mae_speed_rpm": _rpm(mae_speed),
         },
     }
+    if TLOAD_STEP_TIME_S is not None:
+        t_arr = [r["t_us"] / 1e6 for r in rows]
+        metrics["transient"] = {
+            "vhdl": compute_transient_metrics(
+                t_arr, [r["vhdl_speed"] for r in rows],
+                [r["vhdl_i_alpha"] for r in rows], [r["vhdl_i_beta"] for r in rows],
+                TLOAD_STEP_TIME_S,
+            ),
+            "c": compute_transient_metrics(
+                t_arr, [r["ref_speed"] for r in rows],
+                [r["ref_i_alpha"] for r in rows], [r["ref_i_beta"] for r in rows],
+                TLOAD_STEP_TIME_S,
+            ),
+        }
     METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
     METRICS_PATH.write_text(json.dumps(metrics, indent=2))
 
