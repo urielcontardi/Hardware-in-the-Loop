@@ -570,7 +570,16 @@ async def test_top_hil_pwm_replay_l3(dut):
             and t_s_now >= tload_step_time_s
         ):
             tload_nm = tload_step_nm
-            await sm.set_torque_load(real_to_fp(tload_nm))
+            # Fire-and-forget: awaiting this would block the main loop for
+            # ~80us of real simulated time (Timer-based UART bit timing, not
+            # gated by the DUT clock), silently desyncing every subsequent
+            # t_s = step*params.ts label from the DUT's true elapsed time and
+            # corrupting the transient-response timing this task measures.
+            # The DUT's torque_load register updates asynchronously a short,
+            # bounded, and realistic serial-write delay after this fires --
+            # that residual delay is a genuine hardware characteristic, not a
+            # bug, and is intentionally not modeled further here.
+            cocotb.start_soon(sm.set_torque_load(real_to_fp(tload_nm)))
             tload_step_applied = True
         va = sig_fp(dut.va_motor)
         vb = sig_fp(dut.vb_motor)
@@ -678,7 +687,7 @@ async def test_top_hil_pwm_replay_l3(dut):
             "metrics": str(metrics_path),
         },
     }
-    if tload_step_time_s is not None:
+    if tload_step_nm is not None and tload_step_time_s is not None:
         t_arr = [r["t_s"] for r in rows]
         metrics["transient"] = {
             "vhdl": compute_transient_metrics(
