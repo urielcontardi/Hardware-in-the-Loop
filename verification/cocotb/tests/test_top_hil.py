@@ -17,6 +17,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer, ClockCycles
 
+from models.transient_metrics import compute_transient_metrics
 from drivers.serial_manager_driver import (
     SerialManagerDriver,
     RegAddr,
@@ -448,6 +449,14 @@ async def test_top_hil_pwm_replay_l3(dut):
     vf_acc_hz_s = env_float("HIL_L3_VF_ACC_HZ_S", 60.0)
     theta0 = env_float("HIL_L3_INITIAL_THETA_RAD", math.pi / 4)
     tload_nm = env_float("HIL_L3_TLOAD_NM", 0.0)
+
+    def env_float_opt(name: str) -> float | None:
+        raw = os.environ.get(name)
+        return None if raw in (None, "") else float(raw)
+
+    tload_step_nm = env_float_opt("HIL_L3_TLOAD_STEP_NM")
+    tload_step_time_s = env_float_opt("HIL_L3_TLOAD_STEP_TIME_S")
+    tload_step_applied = False
     out_dir = env_path(
         "HIL_L3_OUT_DIR",
         Path(__file__).resolve().parents[2]
@@ -553,6 +562,16 @@ async def test_top_hil_pwm_replay_l3(dut):
 
     for step in range(sample_steps):
         cmd_state = latest_cmd_state
+        t_s_now = step * params.ts
+        if (
+            tload_step_nm is not None
+            and tload_step_time_s is not None
+            and not tload_step_applied
+            and t_s_now >= tload_step_time_s
+        ):
+            tload_nm = tload_step_nm
+            await sm.set_torque_load(real_to_fp(tload_nm))
+            tload_step_applied = True
         va = sig_fp(dut.va_motor)
         vb = sig_fp(dut.vb_motor)
         vc = sig_fp(dut.vc_motor)
@@ -659,6 +678,20 @@ async def test_top_hil_pwm_replay_l3(dut):
             "metrics": str(metrics_path),
         },
     }
+    if tload_step_time_s is not None:
+        t_arr = [r["t_s"] for r in rows]
+        metrics["transient"] = {
+            "vhdl": compute_transient_metrics(
+                t_arr, [r["vhdl_speed"] for r in rows],
+                [r["vhdl_i_alpha"] for r in rows], [r["vhdl_i_beta"] for r in rows],
+                tload_step_time_s,
+            ),
+            "c": compute_transient_metrics(
+                t_arr, [r["ref_speed"] for r in rows],
+                [r["ref_i_alpha"] for r in rows], [r["ref_i_beta"] for r in rows],
+                tload_step_time_s,
+            ),
+        }
     metrics_path.write_text(json.dumps(metrics, indent=2))
     dut._log.info(f"L3 CSV saved: {csv_path} ({len(rows)} rows)")
     dut._log.info(f"L3 metrics saved: {metrics_path}")
