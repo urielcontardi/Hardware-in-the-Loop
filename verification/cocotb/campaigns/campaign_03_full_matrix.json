@@ -179,6 +179,54 @@
       "duration_s": 2.0, "record_interval": 1923, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 30.0,
       "modulation": 1.0, "tload_nm": 128.38498742746228,
       "output_dir": "A7_tacc2s_load110/l3_top_pwm_replay_vf_2s"
+    },
+    {
+      "id": "B1_l2", "case_id": "B1", "result_key": "step_1s",
+      "level": "l2", "top": "tim_solver", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "B1: degrau de carga 0.25Tn->0.75Tn em regime (60Hz), t_step=0.6s.",
+      "duration_s": 1.0, "record_interval": 962, "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "tload_nm": 29.17840623351415, "tload_step_nm": 87.53521870054244, "tload_step_time_s": 0.6,
+      "output_dir": "B1_step025_to075/l2_step_1s"
+    },
+    {
+      "id": "B1_l3", "case_id": "B1", "result_key": "pwm_replay_step_1s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "B1 L3: mesmo degrau do B1 L2, PWM replay.",
+      "duration_s": 1.0, "record_interval": 962, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "modulation": 1.0, "tload_nm": 29.17840623351415, "tload_step_nm": 87.53521870054244, "tload_step_time_s": 0.6,
+      "output_dir": "B1_step025_to075/l3_top_pwm_replay_step_1s"
+    },
+    {
+      "id": "B2_l2", "case_id": "B2", "result_key": "step_1s",
+      "level": "l2", "top": "tim_solver", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "B2: degrau de carga 0.50Tn->1.00Tn em regime (60Hz), t_step=0.6s.",
+      "duration_s": 1.0, "record_interval": 962, "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "tload_nm": 58.3568124670283, "tload_step_nm": 116.7136249340566, "tload_step_time_s": 0.6,
+      "output_dir": "B2_step050_to100/l2_step_1s"
+    },
+    {
+      "id": "B2_l3", "case_id": "B2", "result_key": "pwm_replay_step_1s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "B2 L3: mesmo degrau do B2 L2, PWM replay.",
+      "duration_s": 1.0, "record_interval": 962, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "modulation": 1.0, "tload_nm": 58.3568124670283, "tload_step_nm": 116.7136249340566, "tload_step_time_s": 0.6,
+      "output_dir": "B2_step050_to100/l3_top_pwm_replay_step_1s"
+    },
+    {
+      "id": "B3_l2", "case_id": "B3", "result_key": "step_1s",
+      "level": "l2", "top": "tim_solver", "runner": "cocotb", "test_mode": "vf", "enabled": true,
+      "description": "B3: degrau de carga 0.75Tn->0.25Tn em regime (60Hz), t_step=0.6s.",
+      "duration_s": 1.0, "record_interval": 962, "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "tload_nm": 87.53521870054244, "tload_step_nm": 29.17840623351415, "tload_step_time_s": 0.6,
+      "output_dir": "B3_step075_to025/l2_step_1s"
+    },
+    {
+      "id": "B3_l3", "case_id": "B3", "result_key": "pwm_replay_step_1s",
+      "level": "l3", "runner": "cocotb", "top": "top_hil", "testcase": "test_top_hil_pwm_replay_l3", "enabled": true,
+      "description": "B3 L3: mesmo degrau do B3 L2, PWM replay.",
+      "duration_s": 1.0, "record_interval": 962, "ref_mode": "vf", "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0,
+      "modulation": 1.0, "tload_nm": 87.53521870054244, "tload_step_nm": 29.17840623351415, "tload_step_time_s": 0.6,
+      "output_dir": "B3_step075_to025/l3_top_pwm_replay_step_1s"
     }
   ]
 }

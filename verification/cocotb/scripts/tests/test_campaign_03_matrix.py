@@ -1,4 +1,4 @@
-"""Valida a matriz de 22 experimentos da campaign_03 (arquivo de dados puro,
+"""Valida a matriz de 28 experimentos da campaign_03 (arquivo de dados puro,
 sem depender de simulador)."""
 import json
 import sys
@@ -16,9 +16,9 @@ def _load():
     return json.loads(MATRIX_PATH.read_text())
 
 
-def test_matrix_has_22_experiments():
+def test_matrix_has_28_experiments():
     config = _load()
-    assert len(config["experiments"]) == 22
+    assert len(config["experiments"]) == 28
 
 
 def test_all_experiment_ids_are_unique():
@@ -50,6 +50,10 @@ def test_cocotb_experiments_have_required_fields():
         if exp["level"] == "l3":
             assert exp["ref_mode"] in ("vf", "fixed")
             assert "record_interval" in exp
+        if "tload_step_nm" in exp or "tload_step_time_s" in exp:
+            assert "tload_step_nm" in exp and "tload_step_time_s" in exp, (
+                f"{exp['id']}: tload_step_nm e tload_step_time_s devem vir juntos"
+            )
 
 
 def test_fullstack_mock_experiments_depend_on_existing_cocotb_case():
