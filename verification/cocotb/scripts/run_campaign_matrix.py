@@ -109,6 +109,9 @@ def build_l2_env(config: dict[str, Any], exp: dict[str, Any], out_dir: Path) -> 
             "HIL_VF_CSV": str((out_dir / "vf_vhdl_vs_c.csv").resolve()),
             "HIL_VF_METRICS": str((out_dir / "metrics.json").resolve()),
         })
+        if "tload_step_nm" in exp and "tload_step_time_s" in exp:
+            env["HIL_VF_TLOAD_STEP_NM"] = env_number(exp["tload_step_nm"])
+            env["HIL_VF_TLOAD_STEP_TIME_S"] = env_number(exp["tload_step_time_s"])
     elif test_mode == "sine":
         steps = int(exp["steps"]) if "steps" in exp else round(float(exp["duration_s"]) / ts)
         env.update({

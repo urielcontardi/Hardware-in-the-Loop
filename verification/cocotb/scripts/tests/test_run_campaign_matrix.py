@@ -282,3 +282,26 @@ def test_main_skips_cases_already_ok_on_resume(tmp_path, monkeypatch):
               "--summary", str(summary_path), "--max-parallel", "1"])
 
     assert calls == [], "caso ja marcado como generated no manifest nao deveria rodar de novo"
+
+
+def test_build_l2_env_vf_mode_includes_load_step_when_present(tmp_path):
+    config = {"defaults": _defaults()}
+    exp = {
+        "test_mode": "vf", "duration_s": 1.0, "record_interval": 962,
+        "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0, "tload_nm": 29.17840623351415,
+        "tload_step_nm": 87.53521870054244, "tload_step_time_s": 0.6,
+    }
+    env = rcm.build_l2_env(config, exp, tmp_path)
+    assert env["HIL_VF_TLOAD_STEP_NM"] == "87.53521870054244"
+    assert env["HIL_VF_TLOAD_STEP_TIME_S"] == "0.6"
+
+
+def test_build_l2_env_vf_mode_omits_load_step_when_absent(tmp_path):
+    config = {"defaults": _defaults()}
+    exp = {
+        "test_mode": "vf", "duration_s": 0.5, "record_interval": 481,
+        "vf_base_hz": 60.0, "vf_acc_hz_s": 120.0, "tload_nm": 0.0,
+    }
+    env = rcm.build_l2_env(config, exp, tmp_path)
+    assert "HIL_VF_TLOAD_STEP_NM" not in env
+    assert "HIL_VF_TLOAD_STEP_TIME_S" not in env

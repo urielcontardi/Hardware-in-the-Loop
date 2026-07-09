@@ -74,3 +74,20 @@ def test_run_cocotb_redirects_to_log_file_when_given():
     _, kwargs = mock_run.call_args
     assert kwargs.get("stdout") is fake_log
     assert kwargs.get("stderr") == rc.subprocess.STDOUT
+
+
+def test_build_l3_env_includes_load_step_when_present(tmp_path):
+    exp = {
+        "id": "x", "duration_s": 1.0, "tload_nm": 29.17840623351415,
+        "tload_step_nm": 87.53521870054244, "tload_step_time_s": 0.6,
+    }
+    env = rc.build_l3_env(_base_config(), exp, tmp_path)
+    assert env["HIL_L3_TLOAD_STEP_NM"] == "87.53521870054244"
+    assert env["HIL_L3_TLOAD_STEP_TIME_S"] == "0.6"
+
+
+def test_build_l3_env_omits_load_step_when_absent(tmp_path):
+    exp = {"id": "x", "duration_s": 0.5, "tload_nm": 0.0}
+    env = rc.build_l3_env(_base_config(), exp, tmp_path)
+    assert "HIL_L3_TLOAD_STEP_NM" not in env
+    assert "HIL_L3_TLOAD_STEP_TIME_S" not in env

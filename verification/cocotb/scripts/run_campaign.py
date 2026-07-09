@@ -82,6 +82,9 @@ def build_l3_env(config: dict[str, Any], exp: dict[str, Any], out_dir: Path) -> 
         "HIL_L3_TLOAD_NM": env_number(exp.get("tload_nm", defaults.get("tload_nm", 0.0))),
         "HIL_L3_OUT_DIR": str(out_dir.resolve()),
     })
+    if "tload_step_nm" in exp and "tload_step_time_s" in exp:
+        env["HIL_L3_TLOAD_STEP_NM"] = env_number(exp["tload_step_nm"])
+        env["HIL_L3_TLOAD_STEP_TIME_S"] = env_number(exp["tload_step_time_s"])
     return env
 
 
