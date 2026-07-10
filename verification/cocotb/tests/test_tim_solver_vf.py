@@ -405,7 +405,7 @@ async def test_tim_solver_vf_stimulus(dut):
             "mae_speed_rpm": _rpm(mae_speed),
         },
     }
-    if TLOAD_STEP_TIME_S is not None:
+    if TLOAD_STEP_NM is not None and TLOAD_STEP_TIME_S is not None:
         t_arr = [r["t_us"] / 1e6 for r in rows]
         metrics["transient"] = {
             "vhdl": compute_transient_metrics(
