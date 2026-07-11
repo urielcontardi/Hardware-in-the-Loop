@@ -169,6 +169,16 @@ static int restart_controller(void)
     return start_controller();
 }
 
+static void install_sigchld_reaper(void)
+{
+    struct sigaction sa;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = SA_NOCLDWAIT;
+    sigaction(SIGCHLD, &sa, NULL);
+}
+
 static void set_udp_reuse(int sock)
 {
     int yes = 1;
@@ -183,6 +193,7 @@ int main(void)
 
     setbuf(stdout, NULL);
     started_at = time(NULL);
+    install_sigchld_reaper();
 
     sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) {
@@ -204,6 +215,10 @@ int main(void)
 
     printf("HIL supervisor listening on UDP port %d\n", SUPERVISOR_PORT);
     printf("Commands: ping / status / start-controller / stop-controller / restart-controller / reboot-board\n");
+    if (start_controller() == 0)
+        printf("hil_controller autostart requested\n");
+    else
+        perror("hil_controller autostart");
 
     for (;;) {
         struct sockaddr_in cli;

@@ -1,0 +1,45 @@
+#!/bin/sh
+
+DAEMON=/home/petalinux/hil_supervisor
+LOG=/home/petalinux/hil_supervisor.log
+PIDFILE=/var/run/hil_supervisor.pid
+
+case "$1" in
+    start)
+        if [ ! -x "$DAEMON" ]; then
+            echo "hil-supervisor: missing $DAEMON"
+            exit 1
+        fi
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "hil-supervisor already running"
+            exit 0
+        fi
+        mkdir -p /home/petalinux /var/run
+        echo "Starting hil-supervisor"
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x "$DAEMON" -- >>"$LOG" 2>&1
+        ;;
+    stop)
+        echo "Stopping hil-supervisor"
+        start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
+        rm -f "$PIDFILE"
+        ;;
+    restart)
+        "$0" stop
+        sleep 1
+        "$0" start
+        ;;
+    status)
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "hil-supervisor running"
+            exit 0
+        fi
+        echo "hil-supervisor stopped"
+        exit 3
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0

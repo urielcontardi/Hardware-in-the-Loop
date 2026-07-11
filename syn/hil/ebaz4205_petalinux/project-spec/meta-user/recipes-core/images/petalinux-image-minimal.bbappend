@@ -15,3 +15,5 @@ do_create_runtime_spdx[network] = "1"
 do_rm_work[network] = "1"
 do_populate_lic_deploy[network] = "1"
 do_build[network] = "1"
+
+IMAGE_INSTALL:append = " hil-controller"

@@ -189,6 +189,9 @@ Architecture rtl of HIL_AXI_Top is
     signal pwm_c         : std_logic_vector(3 downto 0);
     signal carrier_tick_s : std_logic;
     signal vf_irq_tick_s  : std_logic;  -- pico+vale (LOAD_BOTH_EDGES); alimenta a IRQ real
+    constant IRQ_STRETCH_CYCLES : natural := CLK_FREQ / 1_000_000; -- ~1 us para IRQ_F2P/GIC
+    signal vf_irq_stretched_s : std_logic := '0';
+    signal vf_irq_stretch_cnt : natural range 0 to IRQ_STRETCH_CYCLES := 0;
 
     --------------------------------------------------------------------------
     -- Tensões de fase para o solver (42 bits)
@@ -427,7 +430,25 @@ Begin
     Solver_CLKFB_BUFG : BUFG port map (I => solver_clk_fb, O => solver_clk_fb_buf);
     Solver_CLK_BUFG   : BUFG port map (I => solver_clk_mmcm, O => solver_clk_200);
 
-    carrier_tick_o <= vf_irq_tick_s;  -- era carrier_tick_s; contador de diagnostico continua em carrier_tick_s (inalterado)
+    irq_stretch_proc : process(clk, rst_n)
+    begin
+        if rst_n = '0' then
+            vf_irq_stretched_s <= '0';
+            vf_irq_stretch_cnt <= 0;
+        elsif rising_edge(clk) then
+            if vf_irq_tick_s = '1' then
+                vf_irq_stretched_s <= '1';
+                vf_irq_stretch_cnt <= IRQ_STRETCH_CYCLES;
+            elsif vf_irq_stretch_cnt /= 0 then
+                vf_irq_stretched_s <= '1';
+                vf_irq_stretch_cnt <= vf_irq_stretch_cnt - 1;
+            else
+                vf_irq_stretched_s <= '0';
+            end if;
+        end if;
+    end process;
+
+    carrier_tick_o <= vf_irq_stretched_s;  -- IRQ_F2P recebe pulso estendido; diagnostico continua em carrier_tick_s
 
     --------------------------------------------------------------------------
     -- Desempacotamento do controle PWM

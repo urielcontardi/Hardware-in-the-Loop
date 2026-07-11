@@ -18,12 +18,13 @@ def _write_metrics(path: Path, nrmse_a: float) -> None:
 
 def _write_csv(path: Path, time_col: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    header = [time_col, "vhdl_i_alpha", "ref_i_alpha", "vhdl_i_beta", "ref_i_beta",
+    header = [time_col, "vhdl_i_alpha", "vhdl_i_beta", "ref_i_alpha", "ref_i_beta",
+              "vhdl_flux_alpha", "vhdl_flux_beta", "ref_flux_alpha", "ref_flux_beta",
               "vhdl_speed", "ref_speed"]
     rows = [
-        [0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [1, 0.5, 0.4, 0.3, 0.25, 1.0, 0.9],
-        [2, 1.0, 0.9, 0.6, 0.55, 2.0, 1.9],
+        [0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [1, 0.5, 0.3, 0.4, 0.25, 0.01, 0.02, 0.011, 0.019, 1.0, 0.9],
+        [2, 1.0, 0.6, 0.9, 0.55, 0.02, 0.03, 0.021, 0.029, 2.0, 1.9],
     ]
     lines = [",".join(header)] + [",".join(str(v) for v in row) for row in rows]
     path.write_text("\n".join(lines) + "\n")

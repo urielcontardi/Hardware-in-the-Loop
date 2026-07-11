@@ -105,6 +105,27 @@ def get_vhdl_sources(top: str) -> list[Path]:
             project_root / "src" / "rtl" / "TIM_Solver.vhd",
         ]
 
+    elif top == "hil_axi_top":
+        # Real synthesized/deployed top-level (never simulated before this test —
+        # Task 2 of docs/superpowers/plans/2026-07-04-vf-pwm-irq-sync.md only ran
+        # a Vivado check_syntax, not a functional sim). Uses real BUFG/MMCME2_BASE
+        # unisim primitives (compiled via compile_unisim_nvc.sh into libs/nvc/unisim
+        # -- must pass -L libs/nvc as an NVC build_arg for this top).
+        sources = [
+            common / "bilinear_solver" / "src" / "BilinearSolverPkg.vhd",
+            common / "bilinear_solver" / "src" / "BilienarSolverUnit_DSP.vhd",
+            common / "edge_detector"   / "src" / "EdgeDetector.vhd",
+            tb_hdl / "ClarkeMultiplier_DSP.vhd",
+            common / "clarke_transform"/ "src" / "ClarkeTransform.vhd",
+            common / "bilinear_solver" / "src" / "BilinearSolverUnit.vhd",
+            common / "bilinear_solver" / "src" / "BilinearSolverHandler.vhd",
+            common / "npc_modulator"   / "src" / "NPCModulator.vhd",
+            common / "npc_modulator"   / "src" / "NPCGateDriver.vhd",
+            common / "npc_modulator"   / "src" / "NPCManager.vhd",
+            project_root / "src" / "rtl" / "TIM_Solver.vhd",
+            project_root / "src" / "rtl" / "HIL_AXI_Top.vhd",
+        ]
+
     else:
         raise ValueError(f"Unsupported top-level: {top!r}")
 
@@ -148,7 +169,7 @@ Examples:
         "--top",
         type=str,
         default="top_hil",
-        choices=["top_hil", "tim_solver", "clarke_transform", "bilinear_solver"],
+        choices=["top_hil", "tim_solver", "clarke_transform", "bilinear_solver", "hil_axi_top"],
         help="Top-level DUT (default: top_hil)",
     )
     parser.add_argument(
@@ -192,6 +213,7 @@ Examples:
         "tim_solver":       "tim_solver",
         "clarke_transform": "clarketransform",
         "bilinear_solver":  "bilinearsolverunittb",
+        "hil_axi_top":      "hil_axi_top",
     }
     entity = ENTITY_NAME[args.top]
     sources = get_vhdl_sources(args.top)
@@ -228,6 +250,14 @@ Examples:
             "MOTOR_J": env_float("IM_J", 0.4),
             "MOTOR_NPP": env_float("IM_NPP", 2.0),
             "BAUD_RATE": env_int("HIL_UART_BAUD", 1_000_000),
+        }
+
+    elif args.top == "hil_axi_top":
+        test_module = "tests.test_hil_axi_top"
+        sim_parameters = {
+            "CLK_FREQ": 100_000_000,
+            "SOLVER_CLK_FREQ": 200_000_000,
+            "PWM_FREQ": 1_000,
         }
 
     else:  # tim_solver
@@ -272,15 +302,30 @@ Examples:
         print(f"Waveform → {wave_path}")
 
     # ── Build ────────────────────────────────────────────────────────────
+    build_args = list(BUILD_ARGS[sim])
+    if args.top == "hil_axi_top":
+        # HIL_AXI_Top uses real BUFG/MMCME2_BASE unisim primitives (compiled
+        # via compile_unisim_nvc.sh into libs/nvc/unisim) instead of the
+        # behavioral stubs the other tops get away without.
+        if sim != "nvc":
+            print("ERROR: hil_axi_top currently only supports --sim nvc "
+                  "(unisim BUFG/MMCME2_BASE only compiled for nvc)", file=sys.stderr)
+            sys.exit(1)
+        build_args += ["-L", str(tb_dir / "libs" / "nvc")]
+
     runner.build(
         sources=[str(s) for s in sources],
         hdl_toplevel=entity,
         build_dir=args.build_dir,
-        build_args=BUILD_ARGS[sim],
+        build_args=build_args,
         always=True,
     )
 
     # ── Run ─────────────────────────────────────────────────────────────
+    # NVC's runner reuses self._build_args (set above) for the elaborate+run
+    # command too, in the correct global-option position (before "-e") --
+    # no separate elab_args needed here, and "-L" is NOT a valid elaboration
+    # sub-option (must come before the command).
     runner.test(
         hdl_toplevel=entity,
         test_module=test_module,

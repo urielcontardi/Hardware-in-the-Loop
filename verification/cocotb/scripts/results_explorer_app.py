@@ -37,15 +37,15 @@ def _build_figure(
     for i, pair in enumerate(pairs, start=1):
         fig.add_trace(
             go.Scattergl(x=time, y=df[pair.ref_col], name=f"ref ({pair.suffix})",
-                         line=dict(color="gray", dash="dash")),
+                         line=dict(color="#1f77b4")),
             row=i, col=1,
         )
         fig.add_trace(
             go.Scattergl(x=time, y=df[pair.vhdl_col], name=f"vhdl ({pair.suffix})",
-                         line=dict(color="black")),
+                         line=dict(color="#d62728")),
             row=i, col=1,
         )
-    fig.update_layout(height=280 * len(pairs), showlegend=True)
+    fig.update_layout(height=280 * len(pairs), showlegend=True, template="plotly_white")
     fig.update_xaxes(title_text="Tempo (s)", row=len(pairs), col=1)
     return fig
 

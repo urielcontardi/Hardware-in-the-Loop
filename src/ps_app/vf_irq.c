@@ -10,7 +10,8 @@
 #include <dirent.h>
 #include <pthread.h>
 
-#define UIO_LABEL       "vf_irq"
+#define UIO_LABEL_PRIMARY   "vf-irq"
+#define UIO_LABEL_LEGACY    "vf_irq"
 #define UIO_CLASS_DIR   "/sys/class/uio"
 #define UIO_DEV_FMT     "/dev/%s"
 
@@ -41,14 +42,14 @@ static int find_uio_device(char *out_name, size_t out_len)
             label[strcspn(label, "\n")] = '\0';
         }
         fclose(f);
-        if (strcmp(label, UIO_LABEL) == 0) {
+        if (strcmp(label, UIO_LABEL_PRIMARY) == 0 || strcmp(label, UIO_LABEL_LEGACY) == 0) {
             snprintf(out_name, out_len, "%s", ent->d_name);
             closedir(d);
             return 0;
         }
     }
     closedir(d);
-    fprintf(stderr, "vf_irq: nenhum /sys/class/uio/uioN com label \"%s\"\n", UIO_LABEL);
+    fprintf(stderr, "vf_irq: nenhum /sys/class/uio/uioN com label \"%s\" ou \"%s\"\n", UIO_LABEL_PRIMARY, UIO_LABEL_LEGACY);
     return -1;
 }
 
@@ -90,6 +91,22 @@ int vf_irq_start(void)
     }
 
     vf_tick();  /* "queimada de partida", mesma logica que setup_vf_timer() tinha */
+
+    /* uio_pdrv_genirq pode nascer com a IRQ ja mascarada e um evento pendente
+     * (ex: um glitch no boot, antes deste processo abrir o fd) -- o reader
+     * so' desbloqueia em read() quando a contagem passa do valor que tinha
+     * no open(), entao sem este write inicial a thread abaixo fica presa
+     * pra sempre no primeiro read(), esperando uma contagem que nunca vem
+     * porque ninguem jamais desmascarou a IRQ no GIC. Confirmado no board:
+     * ISENABLER1 bit29=0 (IRQ 61 mascarada) com ICPENDR1 bit29=1 (pendente)
+     * enquanto a portadora ja pulsava continuamente no hardware. */
+    {
+        uint32_t reenable = 1;
+        if (write(uio_fd, &reenable, sizeof(reenable)) != (ssize_t)sizeof(reenable)) {
+            fprintf(stderr, "vf_irq: write inicial de reenable falhou: %s\n", strerror(errno));
+        }
+    }
+
     uio_active = 1;
     if (pthread_create(&uio_tid, NULL, uio_irq_thread, NULL) != 0) {
         perror("vf_irq: pthread_create");

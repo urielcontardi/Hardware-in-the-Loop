@@ -311,6 +311,16 @@ static void apply_run(void)
     vf_get_params(&p);
     p.enable = 1;
     vf_set_params(&p);
+
+    /* Bootstrap do primeiro ciclo: com a IRQ real (vf_irq.c), vf_tick() so'
+     * roda quando a portadora dispara uma interrupcao - mas a portadora so'
+     * dispara se pwm_ctrl.enable ja' estiver setado em hardware, o que so'
+     * acontece dentro do proprio vf_tick(). Sem essa chamada explicita aqui,
+     * "run" fica preso: enable nunca sai do papel para o registrador, logo a
+     * portadora nunca liga, logo a IRQ nunca dispara para chamar vf_tick().
+     * Mesma logica da "queimada de partida" que vf_irq_start() ja faz no
+     * boot (l'a para o estado inicial desligado; aqui, para o enable=1). */
+    vf_tick();
     hil_state = HIL_RUNNING;
 }
 

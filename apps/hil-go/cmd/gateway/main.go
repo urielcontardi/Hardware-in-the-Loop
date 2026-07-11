@@ -901,12 +901,12 @@ func (s *server) captureMetadata(ip string, status *hiludp.HilStatus) map[string
 	return map[string]any{
 		"controller": controller,
 		"motor": map[string]any{
-			"rs":  ptrValue(motor.Rs, 0.435),
+			"rs":  ptrValue(motor.Rs, 0.4396),
 			"rr":  ptrValue(motor.Rr, 0.2826),
 			"ls":  ptrValue(motor.Ls, 3.1364e-3),
 			"lr":  ptrValue(motor.Lr, 6.3264e-3),
 			"lm":  ptrValue(motor.Lm, 109.9442e-3),
-			"j":   ptrValue(motor.J, 0.192),
+			"j":   ptrValue(motor.J, 0.4),
 			"npp": ptrValue(motor.Npp, 2.0),
 		},
 	}

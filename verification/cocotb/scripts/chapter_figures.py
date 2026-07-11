@@ -36,6 +36,16 @@ TREND_GROUPS = {
 }
 
 
+def inverse_clarke(i_alpha: list[float], i_beta: list[float]) -> tuple[list[float], list[float], list[float]]:
+    """Reconstroi as tres correntes de fase (ia, ib, ic) a partir de i_alpha/i_beta,
+    assumindo sistema trifasico equilibrado (ia + ib + ic = 0)."""
+    sqrt3_2 = 3 ** 0.5 / 2
+    ia = list(i_alpha)
+    ib = [-0.5 * a + sqrt3_2 * b for a, b in zip(i_alpha, i_beta)]
+    ic = [-0.5 * a - sqrt3_2 * b for a, b in zip(i_alpha, i_beta)]
+    return ia, ib, ic
+
+
 def plot_forma_onda(case: cc.CaseMetrics, out_path: Path) -> bool:
     if case.l3_csv is not None:
         csv_path, time_col, time_scale = case.l3_csv, "t_s", 1.0
@@ -45,22 +55,41 @@ def plot_forma_onda(case: cc.CaseMetrics, out_path: Path) -> bool:
         print(f"[aviso] {case.case_id}: sem CSV (L2 nem L3), figura pulada", file=sys.stderr)
         return False
 
-    cols = [time_col, "vhdl_i_alpha", "ref_i_alpha", "vhdl_i_beta", "ref_i_beta",
+    cols = [time_col, "vhdl_i_alpha", "vhdl_i_beta", "ref_i_alpha", "ref_i_beta",
+            "vhdl_flux_alpha", "vhdl_flux_beta", "ref_flux_alpha", "ref_flux_beta",
             "vhdl_speed", "ref_speed"]
     data = cc.load_csv_columns(csv_path, cols)
     t = [x * time_scale for x in data[time_col]]
 
-    fig, axes = plt.subplots(3, 1, figsize=(6, 6), sharex=True)
-    pairs = [
-        ("vhdl_i_alpha", "ref_i_alpha", "$i_\\alpha$ [A]"),
-        ("vhdl_i_beta", "ref_i_beta", "$i_\\beta$ [A]"),
-        ("vhdl_speed", "ref_speed", "$\\omega$ [rad/s]"),
+    vhdl_ia, vhdl_ib, vhdl_ic = inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
+    ref_ia, ref_ib, ref_ic = inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
+
+    fig, axes = plt.subplots(5, 1, figsize=(6, 10), sharex=True)
+
+    phase_series = [
+        (vhdl_ia, ref_ia, "$i_a$ [A]"),
+        (vhdl_ib, ref_ib, "$i_b$ [A]"),
+        (vhdl_ic, ref_ic, "$i_c$ [A]"),
     ]
-    for ax, (vhdl_k, ref_k, ylabel) in zip(axes, pairs):
-        ax.plot(t, data[ref_k], color="0.5", linestyle="--", label="Referência C/C++")
-        ax.plot(t, data[vhdl_k], color="black", linestyle="-", label="VHDL")
+    for ax, (vhdl_series, ref_series, ylabel) in zip(axes[:3], phase_series):
+        ax.plot(t, ref_series, color="0.5", linestyle="--", label="Referência C/C++")
+        ax.plot(t, vhdl_series, color="black", linestyle="-", label="VHDL")
         ax.set_ylabel(ylabel)
     axes[0].legend(loc="upper right", fontsize=8)
+
+    ref_flux_mag = [(a * a + b * b) ** 0.5
+                    for a, b in zip(data["ref_flux_alpha"], data["ref_flux_beta"])]
+    vhdl_flux_mag = [(a * a + b * b) ** 0.5
+                     for a, b in zip(data["vhdl_flux_alpha"], data["vhdl_flux_beta"])]
+    ax_flux = axes[3]
+    ax_flux.plot(t, ref_flux_mag, color="0.5", linestyle="--", label="Referência C/C++")
+    ax_flux.plot(t, vhdl_flux_mag, color="black", linestyle="-", label="VHDL")
+    ax_flux.set_ylabel("$|\\phi|$ [Wb]")
+
+    ax_speed = axes[4]
+    ax_speed.plot(t, data["ref_speed"], color="0.5", linestyle="--")
+    ax_speed.plot(t, data["vhdl_speed"], color="black", linestyle="-")
+    ax_speed.set_ylabel("$\\omega$ [rad/s]")
     axes[-1].set_xlabel("Tempo [s]")
     fig.suptitle(f"Caso {case.case_id}")
     fig.tight_layout()

@@ -16,10 +16,10 @@
      * convencao Zynq-7000 para F2P[0]) precisa ser confirmado contra o
      * bloco de IP real na primeira sintese apos este trabalho — nao usar
      * as cegas se o endereco/numero divergir do relatorio do Vivado. */
-    vf_irq: vf_irq@0 {
+    vf_irq: vf-irq {
         compatible = "generic-uio";
         interrupt-parent = <&intc>;
-        interrupts = <0 29 4>;
+        interrupts = <0 29 1>;
         interrupt-names = "vf_irq";
         label = "vf_irq";
     };
