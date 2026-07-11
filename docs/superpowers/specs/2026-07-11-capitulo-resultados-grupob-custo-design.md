@@ -33,6 +33,36 @@ custo computacional cobrindo Grupo A e Grupo B. **Não** cobre Grupo C (sem
 dados), L4 real, ou unificação da fórmula de NRMSE entre níveis — essas
 lacunas continuam documentadas como limitação/trabalho futuro.
 
+### Correção de rota: duas pipelines divergentes, só uma está viva
+
+Verificação feita durante o planejamento de implementação: os `\includegraphics`
+de `4-Resultados.tex` (`HIL_GrupoA03_A1_CorrenteFluxoVelocidade.pdf`,
+`..._A7_...`, `..._Sintese_...`) **não** vêm do
+`verification/cocotb/scripts/chapter_figures.py` descrito no spec de
+2026-07-07 — vêm de um script separado,
+`Mestrado_latex/Mestrado/scripts/gerar_figuras_resultados_hil.py`, que lê os
+mesmos dados de `campaign_03` só que direto do repo HIL (path absoluto) e
+grava direto em `Mestrado/figuras/`, com um layout melhor (grade 5×2:
+sobreposição + coluna de erro, decimação da série para ~4500 pontos,
+métricas embutidas no subtítulo da figura). A saída de `chapter_figures.py`
+(`forma_onda_A1.pdf`, `resumo_l2_vs_l3.pdf`, `resumo_tendencia.pdf` em
+`docs/results-chapter/figures/`) não é referenciada em lugar nenhum da
+dissertação — ficou órfã.
+
+As **tabelas** não têm esse problema: `metricas_grupo_a.tex`/
+`parametros_grupo_a.tex` (gerados por `chapter_tables.py`) são a fonte dos
+números que foram manualmente retranscritos (com vírgula decimal) para o
+`\quadro` do capítulo — servem como referência confiável, mesmo sem
+`\input` direto.
+
+Decisão: as **figuras** novas de Grupo B e custo computacional entram em
+`gerar_figuras_resultados_hil.py` (Mestrado_latex), não em
+`chapter_figures.py` (HIL). As **tabelas** novas continuam em
+`chapter_tables.py`/`chapter_common.py` (HIL), como descrito abaixo — esse
+pipeline funciona e é a fonte usada. O `chapter_figures.py` original do
+Grupo A não é alterado nem removido por este spec (fora de escopo; fica
+como código órfão documentado, não uma regressão introduzida aqui).
+
 ## Regra de ouro (herdada do spec anterior)
 
 Os scripts continuam nunca confiando em `status`/`l2_results`/`l3_results`
@@ -76,29 +106,32 @@ Saída em `docs/results-chapter/tables/`, mesma convenção (booktabs,
 
 Todos os três casos do Grupo B recebem figura (não apenas um "caso
 representativo" como A1/A7 no Grupo A — aqui os três degraus são
-qualitativamente diferentes entre si: magnitude e sentido):
+qualitativamente diferentes entre si: magnitude e sentido). Implementado em
+`Mestrado_latex/Mestrado/scripts/gerar_figuras_resultados_hil.py`, reaproveitando
+`plot_case`/`decimate`/`read_csv`/`read_metrics` já existentes nesse
+script (grade 5×2, sobreposição + coluna de erro, decimação a ~4500
+pontos, métricas no subtítulo — mesmo estilo do Grupo A):
 
-- `forma_onda_B1.pdf`, `forma_onda_B2.pdf`, `forma_onda_B3.pdf`: mesmo
-  formato do Grupo A (3 sub-eixos empilhados: iα, iβ, velocidade; VHDL vs
-  referência C), janela completa de 1 s. Reaproveita a função de plot já
-  usada para `forma_onda_A1`/`forma_onda_A7`, apenas apontando para o
-  diretório L3 do caso B correspondente (preferindo L3 sobre L2, mesma
-  regra do Grupo A, por incluir o PWM).
-- `zoom_degrau_B1.pdf`, `zoom_degrau_B2.pdf`, `zoom_degrau_B3.pdf`: zoom na
-  corrente (iα, iβ) em torno do instante do degrau (`t_step=0,6s`, janela
-  0,45-0,75 s — 150 ms antes/depois), no mesmo estilo `zoom_multipanel` já
-  usado nas figuras L1 (regime transiente/permanente). Esse recorte é o que
-  efetivamente mostra a resposta dinâmica ao degrau; a janela cheia de 1 s
-  comprime demais o instante de interesse.
-- `resumo_l2_vs_l3_grupob.pdf`: barras agrupadas (NRMSE iα, iβ) por caso
-  B1-B3, uma cor por nível — mesmo padrão de `resumo_l2_vs_l3.pdf`, arquivo
-  separado para não alterar o que o capítulo já referencia para o Grupo A.
-- `resumo_tendencia_grupob.pdf`: NRMSE/MAE em função da magnitude do degrau
+- `HIL_GrupoB_B1_CorrenteFluxoVelocidade.pdf`, `..._B2_...`, `..._B3_...`:
+  chamando `plot_case` com um novo dicionário `CASES_B` (mesma estrutura de
+  `CASES`, apontando para `B{1,2,3}_step*/l3_top_pwm_replay_step_1s`),
+  janela completa de 1 s.
+- `HIL_GrupoB_B1_ZoomDegrau.pdf`, `..._B2_...`, `..._B3_...`: nova função
+  `plot_zoom_degrau`, recorte da corrente (iα, iβ) em torno do instante do
+  degrau (`t_step=0,6s`, janela 0,45-0,75s — 150 ms antes/depois). Esse
+  recorte é o que efetivamente mostra a resposta dinâmica ao degrau; a
+  janela cheia de 1 s comprime demais o instante de interesse.
+- `HIL_GrupoB_Sintese.pdf`: nova função `plot_summary_b`, barras agrupadas
+  (NRMSE iα, iβ) por caso B1-B3, L2 vs L3 — mesmo padrão de
+  `plot_summary` (Grupo A), caso B tem grade de comparação própria (não
+  reaproveita o gráfico existente, que é hardcoded para os 7 casos A).
+- `HIL_GrupoB_Tendencia.pdf`: NRMSE/MAE em função da magnitude do degrau
   (|carga final − carga inicial|) e do sentido (subida: B1, B2; descida:
   B3), evidenciando se a direção do degrau afeta o erro.
 
-Saída em `docs/results-chapter/figures/`, PDF vetorial (`matplotlib`,
-backend `Agg`), mesma paleta preto/cinza já usada nas figuras existentes.
+Saída direto em `Mestrado_latex/Mestrado/figuras/`, PDF vetorial
+(`matplotlib`, backend `Agg`), mesmo estilo/paleta preto-e-cinza do script
+existente. `chapter_figures.py` (HIL repo) não é tocado por este spec.
 
 ## 2. Custo computacional (novo)
 
@@ -127,20 +160,27 @@ próxima em tempo absoluto, registra aviso no stderr.
 - `match_benchmark(entries, target_mtime, tolerance_s=300) -> BenchmarkEntry | None`:
   implementa o casamento por proximidade de timestamp descrito acima.
 
-### `chapter_tables.py`
+### `chapter_tables.py` (HIL repo)
 
 - `tempo_simulacao.tex`: uma linha por caso×nível (S0, A1-A7, B1-B3 × L2/L3
   — todos os grupos já cobertos, não só o novo), colunas: tempo de motor
   simulado (s), tempo de parede (s), fator de desaceleração
   (`wall_time_s / sim_duration_s`). Célula "—" onde não houver casamento de
-  benchmark.
+  benchmark. Saída em `docs/results-chapter/tables/`, mesma convenção das
+  tabelas existentes.
 
-### `chapter_figures.py`
+### `gerar_figuras_resultados_hil.py` (Mestrado_latex, não HIL repo)
 
-- `custo_computacional.pdf`: barras do fator de desaceleração por caso,
-  L2 vs L3, eixo Y em escala logarítmica (a ordem de grandeza observada é
-  de milhares×). Cobre todos os casos com dado de custo disponível, Grupo A
-  e B juntos.
+- `HIL_CustoComputacional.pdf`: nova função `plot_custo_computacional`,
+  barras do fator de desaceleração por caso, L2 vs L3, eixo Y em escala
+  logarítmica (a ordem de grandeza observada é de milhares×). Cobre todos
+  os casos com dado de custo disponível, Grupo A e B juntos. Este script já
+  lê `campaign_03` direto (path absoluto `HIL_ROOT`), então lê também
+  `HIL_ROOT / "verification/cocotb/reports/sim_benchmark.json"` e repete,
+  de forma independente/self-contained (mesmo padrão do resto do script,
+  que não importa `chapter_common`), a lógica de casamento por timestamp
+  descrita acima — não importa `chapter_common.match_benchmark` do outro
+  repo. Saída direto em `Mestrado/figuras/`.
 
 ### Uso no capítulo
 
@@ -152,25 +192,30 @@ qualquer operação em tempo real — papel que só a FPGA cumpre.
 
 ## 3. Organização de diretórios
 
-Nenhuma pasta nova; os arquivos entram nas pastas já versionadas:
+Nenhuma pasta nova; os arquivos entram nas pastas já versionadas, só que em
+dois repositórios diferentes (tabelas no HIL, figuras no Mestrado_latex —
+ver correção de rota acima):
 
 ```text
+# repo Hardware-in-the-Loop
 docs/results-chapter/
-  figures/
-    forma_onda_B1.pdf
-    forma_onda_B2.pdf
-    forma_onda_B3.pdf
-    zoom_degrau_B1.pdf
-    zoom_degrau_B2.pdf
-    zoom_degrau_B3.pdf
-    resumo_l2_vs_l3_grupob.pdf
-    resumo_tendencia_grupob.pdf
-    custo_computacional.pdf
   tables/
     parametros_grupo_b.tex
     metricas_grupo_b.tex
     tempo_simulacao.tex
   gaps.md   (atualizado, agora cobre Grupo B também)
+
+# repo Mestrado_latex
+Mestrado/figuras/
+  HIL_GrupoB_B1_CorrenteFluxoVelocidade.pdf
+  HIL_GrupoB_B2_CorrenteFluxoVelocidade.pdf
+  HIL_GrupoB_B3_CorrenteFluxoVelocidade.pdf
+  HIL_GrupoB_B1_ZoomDegrau.pdf
+  HIL_GrupoB_B2_ZoomDegrau.pdf
+  HIL_GrupoB_B3_ZoomDegrau.pdf
+  HIL_GrupoB_Sintese.pdf
+  HIL_GrupoB_Tendencia.pdf
+  HIL_CustoComputacional.pdf
 ```
 
 ## 4. Testes
@@ -186,9 +231,11 @@ docs/results-chapter/
 - `chapter_tables` gerando `parametros_grupo_b.tex`/`metricas_grupo_b.tex`/
   `tempo_simulacao.tex` a partir das fixtures acima, conferindo célula
   vazia ("—") nos campos sem dado.
-- Sem teste automatizado de conteúdo visual para `chapter_figures` (mesma
-  decisão do spec anterior) — só "roda sem exceção sobre a fixture e
-  produz PDF não vazio" para cada figura nova.
+- Sem teste automatizado de conteúdo visual para as novas funções de
+  `gerar_figuras_resultados_hil.py` (mesma decisão do spec anterior para
+  `chapter_figures.py`; esse script já não tem nenhum teste hoje) — a
+  verificação é rodar o script contra `campaign_03` de verdade e conferir
+  visualmente que os PDFs abrem e fazem sentido.
 
 ## Fora de escopo
 
