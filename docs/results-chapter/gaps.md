@@ -1,3 +1,3 @@
-# Lacunas de dados — Grupo A
+# Lacunas de dados
 
 Nenhuma lacuna encontrada.
