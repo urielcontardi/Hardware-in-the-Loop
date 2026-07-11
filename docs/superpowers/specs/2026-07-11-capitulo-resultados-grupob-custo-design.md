@@ -17,15 +17,13 @@ script/tabela/figura foi gerado a partir deles — a lacuna descrita aqui.
 
 Além disso, nenhum documento até agora consolidou o **custo computacional**
 das simulações (tempo de parede necessário para rodar cada cenário L2/L3).
-Esse dado existe, mas espalhado: em texto solto no
-`verification/results/2026-06-29_campaign_01/README.md` e, de forma
-estruturada, em `verification/cocotb/reports/sim_benchmark.json` — um log
-único, append-only, alimentado por `models/sim_benchmark.py` a cada execução
-de teste cocotb (campo `wall_time_s`, `sim_duration_s`, `test_name`, `date`,
-sem referência direta ao caso/campanha). Esse dado é o argumento mais direto
-de "valor do trabalho": a verificação por cossimulação RTL leva milhares de
-vezes mais tempo de parede do que o tempo de motor simulado, o que motiva a
-necessidade de execução em FPGA real (L4) para qualquer uso em tempo real.
+Esse dado existe, mas espalhado em texto solto no
+`verification/results/2026-06-29_campaign_01/README.md`; a fonte estruturada
+usada aqui é o resumo nativo que o próprio cocotb grava ao final de cada
+`run.log` (ver seção 2). Esse dado é o argumento mais direto de "valor do
+trabalho": a verificação por cossimulação RTL leva milhares de vezes mais
+tempo de parede do que o tempo de motor simulado, o que motiva a necessidade
+de execução em FPGA real (L4) para qualquer uso em tempo real.
 
 Este spec cobre duas extensões independentes ao pipeline existente: (1)
 Grupo B nas tabelas/figuras do capítulo, e (2) uma tabela/figura nova de
@@ -98,6 +96,19 @@ tabela, figura pulada com aviso), nunca como erro fatal.
 - `metricas_grupo_b.tex`: mesmo layout de `metricas_grupo_a.tex` (uma linha
   por caso, colunas L2 e L3 lado a lado: NRMSE iα/iβ, MAE fluxo α/β, MAE
   velocidade), célula "—" onde faltar.
+- `transiente_grupo_b.tex` (novo, não existe equivalente no Grupo A):
+  os `metrics.json` do Grupo B já trazem um bloco `transient` (chaves
+  `speed_before_step_rad_s`, `speed_peak_deviation_rad_s`,
+  `current_peak_a`, `recovery_time_s`, para VHDL e C separadamente —
+  confirmado em `B1_step025_to075/l2_step_1s/metrics.json`, produzido pela
+  função `compute_transient_metrics` adicionada com o próprio Grupo B).
+  Isso é mais informativo que NRMSE global para um ensaio de degrau: mostra
+  o desvio de velocidade após o degrau e o tempo de recuperação,
+  comparando VHDL e C lado a lado. Tabela: uma linha por caso×nível,
+  colunas `desvio pico velocidade VHDL/C (rad/s)` e
+  `tempo de recuperação VHDL/C (s)`. Célula "—" onde o bloco `transient`
+  não existir no `metrics.json` (ex.: se um caso futuro não computar essa
+  métrica).
 
 Saída em `docs/results-chapter/tables/`, mesma convenção (booktabs,
 `\input`-ável).
@@ -135,52 +146,63 @@ existente. `chapter_figures.py` (HIL repo) não é tocado por este spec.
 
 ## 2. Custo computacional (novo)
 
-### Fonte de dados e problema de correlação
+### Fonte de dados: `run.log`, não `sim_benchmark.json`
 
-`verification/cocotb/reports/sim_benchmark.json` é um log único (todas as
-execuções de teste cocotb já rodadas, de qualquer campanha), sem campo de
-caso/campanha — só `test_name`, `sim_duration_s`, `wall_time_s`,
-`msteps_per_s`, `date`. `sim_duration_s` sozinho não desambigua (ex.: A1 e
-A2 têm a mesma duração de janela, 0,5 s, mas são execuções e casos
-diferentes).
+Investigado durante o planejamento: `verification/cocotb/reports/sim_benchmark.json`
+só é alimentado por `test_tim_solver_vf.py` (import confirmado só nesse
+arquivo e em `test_tim_solver_sine.py`/`test_tim_solver_reference.py`) — para
+a janela de execução da `campaign_03` (2026-07-04) existem apenas **3**
+entradas, cobrindo só alguns casos L2 de rampa V/f. Nenhum L3
+(`test_top_hil.py`) e nenhum caso do Grupo B tem entrada ali. Usar esse
+arquivo deixaria a tabela de custo computacional quase toda "—".
 
-Estratégia de casamento: para cada caso×nível da `campaign_03`, tomar o
-horário de modificação (`mtime`) do `metrics.json` em disco (já confiável,
-é a mesma regra de "arquivo em disco é fonte da verdade") e casar com a
-entrada de `sim_benchmark.json` cujo campo `date` esteja mais próxima
-(tolerância de 5 minutos). Se nenhuma entrada cair dentro da tolerância, o
-caso fica sem dado de custo computacional (célula "—"), sem interromper o
-script. Casos com mais de uma entrada dentro da tolerância: usa a mais
-próxima em tempo absoluto, registra aviso no stderr.
+Em vez disso: **todo** `run.log` de teste cocotb (L2 e L3, Grupo A e B)
+termina com o resumo nativo do cocotb, por exemplo (confirmado em
+`B1_step025_to075/l3_top_pwm_replay_step_1s/run.log`):
+
+```text
+** TEST                                           STATUS  SIM TIME (ns)  REAL TIME (s)  RATIO (ns/s) **
+** tests.test_top_hil.test_top_hil_pwm_replay_l3   PASS   1001001120.00       12037.30      83158.29  **
+** TESTS=1 PASS=1 FAIL=0 SKIP=0                           1001001120.00       12037.31      83158.22  **
+```
+
+Confirmado que 26 dos 28 `run.log` da `campaign_03` têm essa linha
+`TESTS=`; os 2 que não têm são os casos `l3_fullstack_mock_*` (mock C puro,
+não passa pelo cocotb, não tem "tempo de parede de simulação RTL" para
+reportar — exclusão correta, não uma lacuna). `SIM TIME (ns)` é o tempo de
+motor simulado; `REAL TIME (s)` é o tempo de parede — exatamente os dois
+números necessários, sem precisar casar nada por timestamp.
 
 ### Novo módulo `chapter_common.py`
 
-- `load_benchmark_log(path) -> list[BenchmarkEntry]`: lê
-  `sim_benchmark.json`, retorna lista vazia se o arquivo não existir.
-- `match_benchmark(entries, target_mtime, tolerance_s=300) -> BenchmarkEntry | None`:
-  implementa o casamento por proximidade de timestamp descrito acima.
+- `parse_run_log_timing(run_log_path: Path) -> tuple[float, float] | None`:
+  lê o `run.log` do caso, procura a linha que começa com `** TESTS=` via
+  regex, retorna `(sim_time_s, wall_time_s)` a partir dos campos
+  `SIM TIME (ns)` (convertido para segundos) e `REAL TIME (s)`. Retorna
+  `None` se o arquivo não existir ou a linha não for encontrada — nunca
+  lança exceção.
 
 ### `chapter_tables.py` (HIL repo)
 
 - `tempo_simulacao.tex`: uma linha por caso×nível (S0, A1-A7, B1-B3 × L2/L3
   — todos os grupos já cobertos, não só o novo), colunas: tempo de motor
   simulado (s), tempo de parede (s), fator de desaceleração
-  (`wall_time_s / sim_duration_s`). Célula "—" onde não houver casamento de
-  benchmark. Saída em `docs/results-chapter/tables/`, mesma convenção das
-  tabelas existentes.
+  (`wall_time_s / sim_time_s`), a partir de
+  `chapter_common.parse_run_log_timing`. Célula "—" onde o `run.log` não
+  existir ou não tiver a linha `TESTS=` (ex.: os casos `fullstack_mock`, que
+  não são cocotb). Saída em `docs/results-chapter/tables/`, mesma convenção
+  das tabelas existentes.
 
 ### `gerar_figuras_resultados_hil.py` (Mestrado_latex, não HIL repo)
 
 - `HIL_CustoComputacional.pdf`: nova função `plot_custo_computacional`,
   barras do fator de desaceleração por caso, L2 vs L3, eixo Y em escala
   logarítmica (a ordem de grandeza observada é de milhares×). Cobre todos
-  os casos com dado de custo disponível, Grupo A e B juntos. Este script já
-  lê `campaign_03` direto (path absoluto `HIL_ROOT`), então lê também
-  `HIL_ROOT / "verification/cocotb/reports/sim_benchmark.json"` e repete,
-  de forma independente/self-contained (mesmo padrão do resto do script,
-  que não importa `chapter_common`), a lógica de casamento por timestamp
-  descrita acima — não importa `chapter_common.match_benchmark` do outro
-  repo. Saída direto em `Mestrado/figuras/`.
+  os casos com `run.log` parseável, Grupo A e B juntos. Este script já lê
+  `campaign_03` direto (path absoluto `HIL_ROOT`), então repete a mesma
+  extração por regex do `run.log` descrita acima, de forma independente/
+  self-contained (mesmo padrão do resto do script, que não importa
+  `chapter_common` do outro repo). Saída direto em `Mestrado/figuras/`.
 
 ### Uso no capítulo
 
@@ -202,6 +224,7 @@ docs/results-chapter/
   tables/
     parametros_grupo_b.tex
     metricas_grupo_b.tex
+    transiente_grupo_b.tex
     tempo_simulacao.tex
   gaps.md   (atualizado, agora cobre Grupo B também)
 
@@ -224,10 +247,11 @@ Mestrado/figuras/
   com 2-3 casos B (um deles sem L3 em disco), confirmando resolução correta
   do padrão de glob `l2_step_*`/`l3_top_pwm_replay_step_*` e célula `None`
   quando ausente.
-- `chapter_common.match_benchmark` com uma lista de entradas sintéticas de
-  benchmark e um `target_mtime` de fixture: confirma que a entrada mais
-  próxima dentro da tolerância é escolhida, e que `None` retorna quando
-  nada cai dentro da tolerância.
+- `chapter_common.parse_run_log_timing` com um `run.log` de fixture contendo
+  a linha `TESTS=` real (copiada de um caso existente) confirma que
+  `(sim_time_s, wall_time_s)` é extraído corretamente; um `run.log` de
+  fixture sem essa linha (simulando `fullstack_mock`) confirma que retorna
+  `None`.
 - `chapter_tables` gerando `parametros_grupo_b.tex`/`metricas_grupo_b.tex`/
   `tempo_simulacao.tex` a partir das fixtures acima, conferindo célula
   vazia ("—") nos campos sem dado.
