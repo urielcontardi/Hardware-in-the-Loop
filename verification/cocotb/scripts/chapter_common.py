@@ -21,8 +21,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_ROOT = REPO_ROOT / "verification" / "results"
 
-GRUPO_A_IDS = ["A1", "A2", "A3", "A4", "A5", "A6", "A7"]
-GRUPO_B_IDS = ["B1", "B2", "B3"]
+# Restrito aos casos validos sob V/f em malha aberta (sem boost/compensacao de
+# escorregamento): A2/A4/A6/A7 e a carga inicial de B3 divergem para
+# velocidade negativa fora de escala fisica sob carga >= 0.75 Tn aplicada
+# desde o repouso -- achado documentado em
+# docs/superpowers/specs/2026-07-11-simplificacao-matriz-vf-design.md.
+GRUPO_A_IDS = ["A1", "A3", "A5"]
+GRUPO_B_IDS = ["B1", "B2"]
 
 L2_CSV_NAME = "vf_vhdl_vs_c.csv"
 L3_CSV_NAME = "top_pwm_replay_vs_c.csv"

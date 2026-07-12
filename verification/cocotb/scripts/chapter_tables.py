@@ -16,8 +16,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chapter_common as cc
 
-T_ACC_ROWS = [0.5, 1.0, 2.0, 5.0]
-LOAD_COLS = [0.0, 0.5, 1.0, 1.1]
+# Restrito aos pontos validos sob V/f em malha aberta (A1, A3, A5) -- ver
+# docs/superpowers/specs/2026-07-11-simplificacao-matriz-vf-design.md.
+T_ACC_ROWS = [0.5, 1.0, 5.0]
+LOAD_COLS = [0.0, 0.5]
 
 
 def fmt_pct(x: float | None) -> str:

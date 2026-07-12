@@ -12,14 +12,17 @@ def _case(case_id, t_acc, load, l2=None, l3=None):
 
 
 def test_render_parametros_grupo_a_places_cases_in_matrix():
-    cases = [_case("A1", 0.5, 0.0), _case("A2", 0.5, 1.0)]
+    cases = [_case("A1", 0.5, 0.0), _case("A3", 1.0, 0.5)]
 
     tex = ct.render_parametros_grupo_a(cases)
 
     row_05 = next(line for line in tex.splitlines() if line.startswith("0.5~s"))
     cells = [c.strip() for c in row_05.split("&")]
     assert cells[1] == "A1"   # carga = 0.0
-    assert cells[3] == "A2"   # carga = 1.0
+
+    row_10 = next(line for line in tex.splitlines() if line.startswith("1~s"))
+    cells_10 = [c.strip() for c in row_10.rstrip("\\").split("&")]
+    assert cells_10[2] == "A3"   # carga = 0.5
 
 
 def test_render_metricas_grupo_a_uses_dashes_for_missing_level():

@@ -24,7 +24,7 @@ def _manifest() -> dict:
         "cases": [
             {"id": "A1", "dir": "A1_tacc0p5s_load000", "t_acc_s": 0.5, "load_tn": 0.0,
              "l2_results": {}, "l3_results": {}},
-            {"id": "A2", "dir": "A2_tacc0p5s_load100", "t_acc_s": 0.5, "load_tn": 1.0,
+            {"id": "A3", "dir": "A3_tacc1s_load050", "t_acc_s": 1.0, "load_tn": 0.5,
              "l2_results": {}, "l3_results": {}},
         ]
     }
@@ -34,31 +34,31 @@ def test_load_grupo_a_finds_metrics_ignoring_manifest_results_dict(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps(_manifest()))
     _write_metrics(tmp_path / "A1_tacc0p5s_load000/l2_vf_500ms_realts/metrics.json", 0.03)
     _write_metrics(tmp_path / "A1_tacc0p5s_load000/l3_top_pwm_replay_vf_500ms/metrics.json", 0.031)
-    _write_metrics(tmp_path / "A2_tacc0p5s_load100/l2_vf_500ms_realts/metrics.json", 0.02)
-    # A2 has no l3 dir at all -- simulates L2 done, L3 still pending
+    _write_metrics(tmp_path / "A3_tacc1s_load050/l2_vf_1s_realts/metrics.json", 0.02)
+    # A3 has no l3 dir at all -- simulates L2 done, L3 still pending
 
     cases = cc.load_grupo_a(tmp_path)
 
-    assert [c.case_id for c in cases] == ["A1", "A2"]
-    a1, a2 = cases
+    assert [c.case_id for c in cases] == ["A1", "A3"]
+    a1, a3 = cases
     assert a1.l2["nrmse_i_alpha"] == 0.03
     assert a1.l3["nrmse_i_alpha"] == 0.031
-    assert a2.l2["nrmse_i_alpha"] == 0.02
-    assert a2.l3 is None
+    assert a3.l2["nrmse_i_alpha"] == 0.02
+    assert a3.l3 is None
 
 
 def test_write_gaps_report_lists_missing_levels(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps(_manifest()))
     _write_metrics(tmp_path / "A1_tacc0p5s_load000/l2_vf_500ms_realts/metrics.json", 0.03)
     _write_metrics(tmp_path / "A1_tacc0p5s_load000/l3_top_pwm_replay_vf_500ms/metrics.json", 0.031)
-    _write_metrics(tmp_path / "A2_tacc0p5s_load100/l2_vf_500ms_realts/metrics.json", 0.02)
+    _write_metrics(tmp_path / "A3_tacc1s_load050/l2_vf_1s_realts/metrics.json", 0.02)
 
     cases = cc.load_grupo_a(tmp_path)
     out_path = tmp_path / "gaps.md"
     cc.write_gaps_report(cases, out_path)
 
     text = out_path.read_text()
-    assert "A2: L3 ausente (metrics.json não encontrado)" in text
+    assert "A3: L3 ausente (metrics.json não encontrado)" in text
     assert "A1: L2 ausente" not in text
     assert "A1: L3 ausente" not in text
 
