@@ -1,7 +1,10 @@
 # =============================================================================
 # Figura 06 - Sequencia dos grupos de ensaio da campanha (S0 -> Grupo A -> Grupo
-# B -> Grupo C), com o status L2/L3 de cada grupo. Nao detalha parametros
-# internos (ver tabela da matriz de parametros no capitulo de resultados).
+# B -> L4), com o status L2/L3 de cada grupo. Grupo A/B usam matriz reduzida
+# (carga leve/nula) por limitacao do V/f em malha aberta sem boost/compensacao
+# de escorregamento -- diversidade de cenarios (Grupo C, cargas elevadas) fica
+# reservada ao L4. Nao detalha parametros internos (ver tabela da matriz de
+# parametros no capitulo de resultados).
 # =============================================================================
 
 vars: {d2-config: {layout-engine: elk; pad: 40}}
@@ -14,12 +17,10 @@ classes: {
 }
 
 s0: "S0 - Sanity\nvalida o pipeline L2/L3" {class: box}
-grupo_a: "Grupo A - Partida e Aceleracao\n7 casos (A1-A7)\nL2: 7/7 ok  L3: 7/7 ok" {class: box}
-grupo_b: "Grupo B - Degrau de Carga\nB1, B2: L2/L3 ok\nB3: regime nao atingido (reexecucao pendente)" {class: box}
-grupo_c: "Grupo C - Dinamica Adicional\nplanejado, nao iniciado" {class: pending}
-l4: "L4 - FPGA Real\npendente para todos os grupos" {class: pending}
+grupo_a: "Grupo A - Partida e Aceleracao\n3 casos, carga leve/nula (A1,A3,A5)\nL2: 3/3 ok  L3: 3/3 ok" {class: box}
+grupo_b: "Grupo B - Degrau de Carga\n2 casos, carga leve/nula (B1,B2)\nL2: 2/2 ok  L3: 2/2 ok" {class: box}
+l4: "L4 - FPGA Real\ndiversidade de cenarios (Grupo C,\ncargas elevadas): pendente" {class: pending}
 
 s0 -> grupo_a: "pipeline validado" {class: arrow}
 grupo_a -> grupo_b: "concluido" {class: arrow}
-grupo_b -> grupo_c: "planejado" {class: arrow}
-grupo_c -> l4: "planejado" {class: arrow}
+grupo_b -> l4: "planejado" {class: arrow}

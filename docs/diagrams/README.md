@@ -26,14 +26,16 @@ do geral ao específico, sem nenhum bloco detalhado em dois lugares.
 
 Fora da sequência de arquitetura acima (00-05, cada uma detalhando um
 subsistema do outro): `06-validation-groups.d2` documenta a sequência dos
-grupos de ensaio da campanha de validação (S0 → Grupo A → Grupo B → Grupo C →
-L4), com status de execução L2/L3 por grupo — não parâmetros internos, que
-ficam na tabela da matriz de parâmetros do capítulo de resultados
-(`docs/results-chapter/`).
+grupos de ensaio da campanha de validação (S0 → Grupo A → Grupo B → L4), com
+status de execução L2/L3 por grupo. Grupo A e Grupo B usam matriz reduzida
+(carga leve/nula) por limitação do V/f em malha aberta sem boost/compensação
+de escorregamento; a diversidade de cenários mais ampla (Grupo C, cargas
+elevadas) fica reservada ao L4 — não parâmetros internos, que ficam na tabela
+da matriz de parâmetros do capítulo de resultados (`docs/results-chapter/`).
 
 | Arquivo | Figura | Mostra |
 |---|---|---|
-| `06-validation-groups.d2` | Sequência de validação experimental | S0 → Grupo A → Grupo B → Grupo C → L4, com status L2/L3 por grupo |
+| `06-validation-groups.d2` | Sequência de validação experimental | S0 → Grupo A → Grupo B → L4, com status L2/L3 por grupo |
 
 **Regra de fronteira:** cada conceito transversal é detalhado só no seu dono —
 cadeia de taxas → 00; clocks/CDC/decimador → 01; Q14.28/passo → 02; regimes
