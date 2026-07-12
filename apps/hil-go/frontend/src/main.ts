@@ -1378,10 +1378,11 @@ elBtnBatchStop.addEventListener("click", () => {
 
 elBtnSaveRun.addEventListener("click", () => withButton(elBtnSaveRun, async () => {
   const name = `hil_run_${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}`;
+  const scenarioMeta = { scenario: { name: elScenarioName.value.trim() || "manual", events: readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value })), endTime: getScenarioEndTime() } };
   if (isWails) {
-    await triggerSave(name);
+    await triggerSave(name, scenarioMeta);
   } else {
-    await saveRunToServer(name, { scenario: { name: elScenarioName.value.trim() || "manual", events: readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value })), endTime: getScenarioEndTime() } });
+    await saveRunToServer(name, scenarioMeta);
     setStatus(`Saved: ${name}.hilbin`, "ok");
   }
 }));

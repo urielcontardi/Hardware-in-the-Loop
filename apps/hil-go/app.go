@@ -20,6 +20,12 @@ import (
 	hilUDP "hil.local/daemon/internal/udp"
 )
 
+// drainDelay gives in-flight UDP telemetry/PWM packets time to arrive before
+// a capture file is sealed. Mirrors cmd/gateway/main.go's handleStop/handleReset,
+// which rely on this same delay so the native app captures the same tail of
+// data the gateway does.
+const drainDelay = 80 * time.Millisecond
+
 type App struct {
 	ctx     context.Context
 	recv    *receiver.Receiver
@@ -38,8 +44,10 @@ type App struct {
 // Keep the native app on the same acquisition and display contract as the
 // gateway: about 100 ksample/s from DMA, reduced only for the UI.
 const (
-	transportDecim    = 77
-	gpioFallbackHz    = 10000
+	transportDecim = 77
+	gpioFallbackHz = 10000
+	telemetryPort  = 5006
+	pwmEventsPort  = 5007
 )
 
 func NewApp() *App {
@@ -57,7 +65,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.localIP = hilUDP.LocalIP()
 
-	recv := receiver.New(5006, a.ring)
+	recv := receiver.New(telemetryPort, a.ring)
 	if err := recv.Start(); err != nil {
 		runtime.LogErrorf(ctx, "receiver: %v", err)
 		return
@@ -68,7 +76,7 @@ func (a *App) startup(ctx context.Context) {
 		a.raw.Append(samples)
 	})
 
-	pwmRecv := pwmrecv.New(5007)
+	pwmRecv := pwmrecv.New(pwmEventsPort)
 	if err := pwmRecv.Start(); err != nil {
 		runtime.LogErrorf(ctx, "pwm receiver: %v", err)
 	} else {
@@ -161,12 +169,20 @@ func (a *App) SetParams(
 		sampleHz := uint32(gpioFallbackHz)
 		p.Decim = &decim
 		p.TelemHz = &sampleHz
+		if a.ring != nil {
+			a.ring.Clear()
+		}
+		a.raw.Reset()
+		a.punchTelemetry(ip)
 	}
 	status, err := hilUDP.Set(ip, p)
 	if err == nil {
 		a.stateMu.Lock()
 		a.lastSet[ip] = p
 		a.stateMu.Unlock()
+		if attachTelem {
+			a.punchTelemetry(ip)
+		}
 	}
 	return status, err
 }
@@ -183,14 +199,32 @@ func (a *App) GetStatus(ip string) (*hilUDP.HilStatus, error) {
 	return hilUDP.Get(ip)
 }
 
+// punchTelemetry sends a tiny outbound packet from both UDP receivers to the
+// board. Mirrors cmd/gateway/main.go's Punch calls: it keeps stateful
+// firewalls/NATs open for the reverse telemetry/PWM stream so the board's
+// unsolicited UDP packets are accepted back in.
+func (a *App) punchTelemetry(ip string) {
+	if a.recv != nil {
+		a.recv.Punch(ip, telemetryPort)
+	}
+	if a.pwmRecv != nil {
+		a.pwmRecv.Punch(ip, pwmEventsPort)
+	}
+}
+
 // Run enables the motor with the last-applied params.
 func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
+	if a.ring != nil {
+		a.ring.Clear()
+	}
 	a.raw.Reset()
+	a.punchTelemetry(ip)
 	if _, err := a.recorder.Start(""); err != nil {
 		return nil, err
 	}
 	status, err := hilUDP.Run(ip)
 	if err == nil {
+		a.punchTelemetry(ip)
 		return status, nil
 	}
 	if !strings.Contains(err.Error(), `command "run" was not retried`) {
@@ -218,6 +252,8 @@ func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
 	status, err = hilUDP.Run(ip)
 	if err != nil {
 		_ = a.recorder.Stop()
+	} else {
+		a.punchTelemetry(ip)
 	}
 	return status, err
 }
@@ -229,8 +265,19 @@ func (a *App) Pause(ip string) (*hilUDP.HilStatus, error) {
 
 // StopController disables the motor and resets params to safe defaults.
 // The PS daemon stays alive.
+//
+// Order mirrors cmd/gateway/main.go's handleStop: send Stop, then drain
+// in-flight UDP telemetry and punch the PWM receiver so the board flushes
+// its accumulated PWM FIFO, and only then seal the recorder. Sealing the
+// recorder before that drain (the previous behavior here) silently dropped
+// the last ~160ms of telemetry and the tail of PWM events on every stop.
 func (a *App) StopController(ip string) (*hilUDP.HilStatus, error) {
 	status, err := hilUDP.Stop(ip)
+	time.Sleep(drainDelay)
+	if a.pwmRecv != nil {
+		a.pwmRecv.Punch(ip, pwmEventsPort)
+	}
+	time.Sleep(drainDelay)
 	if stopErr := a.recorder.Stop(); err == nil && stopErr != nil {
 		err = stopErr
 	}
@@ -243,9 +290,20 @@ func (a *App) StopController(ip string) (*hilUDP.HilStatus, error) {
 
 // ResetSolver clears the FPGA TIM_Solver integrator states. Used between
 // runs when the previous experiment left the rotor flux/speed in a state
-// that masks the new excitation.
+// that masks the new excitation. Drains and seals the recorder the same way
+// StopController does (mirrors cmd/gateway/main.go's handleReset) since a
+// reset also ends the current capture.
 func (a *App) ResetSolver(ip string) (*hilUDP.HilStatus, error) {
-	return hilUDP.ResetSolver(ip)
+	status, err := hilUDP.ResetSolver(ip)
+	time.Sleep(drainDelay)
+	if a.pwmRecv != nil {
+		a.pwmRecv.Punch(ip, pwmEventsPort)
+	}
+	time.Sleep(drainDelay)
+	if stopErr := a.recorder.Stop(); err == nil && stopErr != nil {
+		err = stopErr
+	}
+	return status, err
 }
 
 // AttachTelemetry tells the board to push telemetry to this PC.
@@ -253,9 +311,16 @@ func (a *App) AttachTelemetry(ip string) (*hilUDP.HilStatus, error) {
 	if a.ring != nil {
 		a.ring.Clear()
 	}
+	a.raw.Reset()
+	a.punchTelemetry(ip)
 	decim := transportDecim
 	sampleHz := uint32(gpioFallbackHz)
-	return hilUDP.Set(ip, hilUDP.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: a.localIP})
+	status, err := hilUDP.Set(ip, hilUDP.SetParams{Decim: &decim, TelemHz: &sampleHz, TelemDst: a.localIP})
+	if err != nil {
+		return status, err
+	}
+	a.punchTelemetry(ip)
+	return status, err
 }
 
 // Ping is a quick health check.
