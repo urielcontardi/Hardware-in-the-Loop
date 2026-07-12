@@ -1,6 +1,7 @@
 # =============================================================================
-# Figura 06 - Sequencia dos grupos de ensaio da campanha (S0 -> Grupo A -> Grupo B).
-# Nao detalha parametros internos (ver tabela da matriz de parametros no capitulo).
+# Figura 06 - Sequencia dos grupos de ensaio da campanha (S0 -> Grupo A -> Grupo
+# B -> Grupo C), com o status L2/L3 de cada grupo. Nao detalha parametros
+# internos (ver tabela da matriz de parametros no capitulo de resultados).
 # =============================================================================
 
 vars: {d2-config: {layout-engine: elk; pad: 40}}
@@ -13,8 +14,12 @@ classes: {
 }
 
 s0: "S0 - Sanity\nvalida o pipeline L2/L3" {class: box}
-grupo_a: "Grupo A - Partida e Aceleracao\n7 casos (A1-A7)\nexecutado" {class: box}
-grupo_b: "Grupo B - Degrau de Carga\ncodigo pronto\nnao executado" {class: pending}
+grupo_a: "Grupo A - Partida e Aceleracao\n7 casos (A1-A7)\nL2: 7/7 ok  L3: 7/7 ok" {class: box}
+grupo_b: "Grupo B - Degrau de Carga\nB1, B2: L2/L3 ok\nB3: regime nao atingido (reexecucao pendente)" {class: box}
+grupo_c: "Grupo C - Dinamica Adicional\nplanejado, nao iniciado" {class: pending}
+l4: "L4 - FPGA Real\npendente para todos os grupos" {class: pending}
 
 s0 -> grupo_a: "pipeline validado" {class: arrow}
-grupo_a -> grupo_b: "planejado" {class: arrow}
+grupo_a -> grupo_b: "concluido" {class: arrow}
+grupo_b -> grupo_c: "planejado" {class: arrow}
+grupo_c -> l4: "planejado" {class: arrow}
