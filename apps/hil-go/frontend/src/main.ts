@@ -60,6 +60,11 @@ type HilApi = {
   GetLocalIP(): Promise<string>;
   SaveRun?(dataB64: string, name: string): Promise<void>;
   LoadRun?(): Promise<string>;
+  // Wails-only equivalents of the gateway's GET /api/view and GET /api/tiers,
+  // backing the historical viewport so a run of any length stays fully
+  // visible instead of sliding off the raw buffer's ~6s window.
+  GetHistoricalView?(from: number, to: number, width: number): Promise<string>;
+  GetTiersInfo?(): Promise<{ tLast?: number; sampleCount?: number }>;
 };
 
 const isWails = typeof window !== "undefined" && !!(window as any).go?.main?.App;
@@ -136,6 +141,8 @@ const api: HilApi = isWails ? {
   GetLocalIP: WailsApp.GetLocalIP as HilApi["GetLocalIP"],
   SaveRun: (WailsApp as any).SaveRun as HilApi["SaveRun"],
   LoadRun: (WailsApp as any).LoadRun as HilApi["LoadRun"],
+  GetHistoricalView: (WailsApp as any).GetHistoricalView as HilApi["GetHistoricalView"],
+  GetTiersInfo: (WailsApp as any).GetTiersInfo as HilApi["GetTiersInfo"],
 } : {
   onTelemetry(cb) {
     const events = getSharedEvents();
@@ -832,17 +839,29 @@ let streamGeneration = 0;
 const loadTimeline: StepPoint[] = [];
 
 async function fetchGatewayLoadSteps(): Promise<StepPoint[]> {
+  // The Wails app has no server-side load-step tracker (unlike the gateway's
+  // s.loadSteps) — the frontend already records every step locally via
+  // recordStep() as it happens, so the local timeline is already current.
+  if (isWails) return loadTimeline.slice();
   const res = await fetch(gatewayURL("/api/load-steps"), { cache: "no-store" });
   if (!res.ok) throw new Error(`load steps HTTP ${res.status}`);
   return await res.json() as StepPoint[];
 }
 
-const historicalViewport = new ViewportController<HistoricalPayload>(async (from, to, width) => {
-  const loadStepsPromise = fetchGatewayLoadSteps();
+async function fetchHistoricalView(from: number, to: number, width: number): Promise<{ source: string; view: TileData }> {
+  if (isWails) {
+    const b64 = await api.GetHistoricalView!(from, to, Math.round(width));
+    return { source: "app", view: decodeTile(base64ToArrayBuffer(b64)) };
+  }
   const res = await fetch(gatewayURL(`/api/view?from=${from}&to=${to}&width=${Math.round(width)}`), { cache: "no-store" });
   if (!res.ok) throw new Error(`viewport HTTP ${res.status}`);
-  const view = decodeTile(await res.arrayBuffer());
-  return { from, to, width, source: res.headers.get("X-HIL-Source") ?? "unknown", view, loadSteps: await loadStepsPromise };
+  return { source: res.headers.get("X-HIL-Source") ?? "unknown", view: decodeTile(await res.arrayBuffer()) };
+}
+
+const historicalViewport = new ViewportController<HistoricalPayload>(async (from, to, width) => {
+  const loadStepsPromise = fetchGatewayLoadSteps();
+  const { source, view } = await fetchHistoricalView(from, to, width);
+  return { from, to, width, source, view, loadSteps: await loadStepsPromise };
 }, 60, () => streamGeneration);
 historicalViewport.onData = (data) => {
   loadTimeline.splice(0, loadTimeline.length, ...data.loadSteps);
@@ -881,7 +900,7 @@ function viewToProjected(tile: TileData, from = -Infinity, to = Infinity): { xs:
 // Poll one complete viewport. No raw-tail/tile splicing is performed.
 let lastLiveHistoryRequestAt = 0;
 setInterval(() => {
-  if (isWails || plots.length === 0 || displayMode !== "abc" || !gatewayHistoryEnabled || !plotRunActive) return;
+  if (plots.length === 0 || displayMode !== "abc" || !gatewayHistoryEnabled || !plotRunActive) return;
   const viewEnd = viewEndSec;
   const viewStart = Math.max(0, viewEnd - windowSec);
   const historyStart = Math.max(historyFloorSec, viewStart);
@@ -902,16 +921,20 @@ setInterval(() => {
   historicalViewport.request(historyStart, viewEnd, plotWidth);
 }, 100);
 
-// The gateway session store is the authoritative run clock. The browser raw
-// buffer is bounded and may lag or be discarded, so it must not control live
-// viewport progress.
+// The session store (gateway's or the native app's own, see GetTiersInfo) is
+// the authoritative run clock. The browser raw buffer is bounded and may lag
+// or be discarded, so it must not control live viewport progress.
 setInterval(async () => {
-  if (isWails || !plotRunActive) return;
+  if (!plotRunActive) return;
   const generation = streamGeneration;
   try {
-    const res = await fetch(gatewayURL("/api/tiers"), { cache: "no-store" });
-    if (!res.ok) return;
-    const meta = await res.json() as { tLast?: number; sampleCount?: number };
+    const meta = isWails
+      ? await api.GetTiersInfo!()
+      : await (async () => {
+          const res = await fetch(gatewayURL("/api/tiers"), { cache: "no-store" });
+          if (!res.ok) throw new Error(`tiers HTTP ${res.status}`);
+          return await res.json() as { tLast?: number; sampleCount?: number };
+        })();
     if (generation !== streamGeneration) return;
     gatewaySessionLastSec = Math.max(0, Number(meta.tLast) || 0);
     gatewaySessionSampleCount = Math.max(0, Number(meta.sampleCount) || 0);
@@ -2438,7 +2461,7 @@ function renderFrame() {
     // glued to the most recent sample; while paused viewEndSec is whatever
     // the pause/pan left behind.
     if (!paused) {
-      if (!isWails && plotRunActive) viewEndSec = gatewaySessionLastSec;
+      if (plotRunActive) viewEndSec = gatewaySessionLastSec;
       else if (tBuf.length > 0) viewEndSec = tBuf[tBuf.length - 1];
     }
     viewEndSec = clampViewEndToTimeZero();

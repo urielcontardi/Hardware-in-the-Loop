@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -11,13 +14,18 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"hil.local/daemon/internal/appdir"
+	"hil.local/daemon/internal/derive"
 	"hil.local/daemon/internal/frame"
 	"hil.local/daemon/internal/pwmrecv"
+	"hil.local/daemon/internal/pyramid"
 	"hil.local/daemon/internal/rawbuf"
 	"hil.local/daemon/internal/receiver"
 	"hil.local/daemon/internal/record"
 	"hil.local/daemon/internal/ring"
+	"hil.local/daemon/internal/sampleclock"
+	"hil.local/daemon/internal/sessionstore"
 	hilUDP "hil.local/daemon/internal/udp"
+	"hil.local/daemon/internal/viewquery"
 )
 
 // drainDelay gives in-flight UDP telemetry/PWM packets time to arrive before
@@ -25,6 +33,8 @@ import (
 // which rely on this same delay so the native app captures the same tail of
 // data the gateway does.
 const drainDelay = 80 * time.Millisecond
+
+var errStoreUnavailable = errors.New("session store not available")
 
 type App struct {
 	ctx     context.Context
@@ -39,26 +49,46 @@ type App struct {
 	lastMotor map[string]hilUDP.MotorParams
 	recorder  *record.Recorder
 	raw       *rawbuf.Buffer
+
+	// runsDir, pyramid and store back the same historical-viewport contract
+	// the gateway's /api/view and /api/tiers serve (see internal/viewquery),
+	// so a run of any length stays fully visible instead of sliding off the
+	// ~6s raw buffer window.
+	runsDir  string
+	ingestMu sync.Mutex
+	clk      sampleclock.Clock
+	pyramid  *pyramid.Pyramid
+	store    *sessionstore.Store
+	motor    derive.Motor
 }
 
 // Keep the native app on the same acquisition and display contract as the
 // gateway: about 100 ksample/s from DMA, reduced only for the UI.
 const (
 	transportDecim = 77
+	solverClockHz  = 200_000_000
+	solverStep     = 26
+	dmaTelemetryHz = solverClockHz / solverStep / transportDecim
 	gpioFallbackHz = 10000
 	telemetryPort  = 5006
 	pwmEventsPort  = 5007
 )
 
 func NewApp() *App {
-	return &App{
+	runsDir := appdir.DefaultRunsDir()
+	a := &App{
 		ring:      ring.New(262144),
 		done:      make(chan struct{}),
 		lastSet:   make(map[string]hilUDP.SetParams),
 		lastMotor: make(map[string]hilUDP.MotorParams),
-		recorder:  record.New(appdir.DefaultRunsDir()),
+		recorder:  record.New(runsDir),
 		raw:       rawbuf.New(300_000),
+		runsDir:   runsDir,
+		pyramid:   pyramid.New(dmaTelemetryHz),
+		motor:     derive.DefaultMotor,
 	}
+	a.resetSession()
+	return a
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -74,6 +104,7 @@ func (a *App) startup(ctx context.Context) {
 	recv.SetSampleHandler(func(samples []frame.Sample) {
 		a.recorder.Submit(samples)
 		a.raw.Append(samples)
+		a.ingestSamples(samples)
 	})
 
 	pwmRecv := pwmrecv.New(pwmEventsPort)
@@ -98,6 +129,96 @@ func (a *App) shutdown(_ context.Context) {
 	if a.recorder != nil {
 		_ = a.recorder.Close()
 	}
+	a.ingestMu.Lock()
+	if a.store != nil {
+		_ = a.store.Close()
+	}
+	a.ingestMu.Unlock()
+}
+
+// ingestSamples feeds the pyramid+session store pair that backs
+// GetHistoricalView/GetTiersInfo, mirroring cmd/gateway/main.go's telemetry
+// SetSampleHandler. Runs on the receiver's single goroutine, same as the
+// gateway's ingestion path.
+func (a *App) ingestSamples(samples []frame.Sample) {
+	a.ingestMu.Lock()
+	defer a.ingestMu.Unlock()
+	if a.store == nil {
+		return
+	}
+	motor := a.motor
+	for _, smp := range samples {
+		if a.clk.HaveEpoch && smp.Epoch != a.clk.Epoch {
+			a.resetSessionLocked()
+		}
+		t, ok := a.clk.Seconds(smp.TCycles, smp.Epoch)
+		if !ok {
+			continue
+		}
+		a.store.Append(t, smp)
+		a.pyramid.Push(t, motor.Compute(smp).Values())
+	}
+}
+
+// resetSession closes the current full-rate session file and opens a fresh
+// one, mirroring cmd/gateway/main.go's resetSession (called on Attach/Run so
+// old samples never bleed into a new run's view).
+func (a *App) resetSession() {
+	a.ingestMu.Lock()
+	defer a.ingestMu.Unlock()
+	a.resetSessionLocked()
+}
+
+func (a *App) resetSessionLocked() {
+	if a.store != nil {
+		_ = a.store.Close()
+	}
+	st, err := sessionstore.Open(filepath.Join(a.runsDir, "live_session.bin"), 4096)
+	if err != nil {
+		log.Printf("session store reopen: %v", err)
+		return
+	}
+	st.SetMaxSamples(180_000_000)
+	a.store = st
+	if a.pyramid != nil {
+		a.pyramid.Reset()
+	}
+	a.clk = sampleclock.Clock{}
+}
+
+func (a *App) setMotor(m derive.Motor) {
+	a.ingestMu.Lock()
+	a.motor = m
+	a.ingestMu.Unlock()
+}
+
+// GetHistoricalView answers a viewport query the same way the gateway's
+// GET /api/view does, returning the base64-encoded tile wire format
+// frontend/src/tile.ts decodes (Wails IPC has no raw-binary transport).
+func (a *App) GetHistoricalView(from, to float64, width int) (string, error) {
+	a.ingestMu.Lock()
+	pyr, store, motor := a.pyramid, a.store, a.motor
+	a.ingestMu.Unlock()
+	if pyr == nil || store == nil {
+		return "", errStoreUnavailable
+	}
+	view, err := viewquery.BuildView(pyr, store, motor, from, to, width)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(viewquery.Encode(view)), nil
+}
+
+// GetTiersInfo answers the same session-span/sample-count query as the
+// gateway's GET /api/tiers.
+func (a *App) GetTiersInfo() (viewquery.TiersMeta, error) {
+	a.ingestMu.Lock()
+	pyr, store := a.pyramid, a.store
+	a.ingestMu.Unlock()
+	if pyr == nil {
+		return viewquery.TiersMeta{}, errStoreUnavailable
+	}
+	return viewquery.BuildTiersMeta(pyr, store), nil
 }
 
 func (a *App) broadcastLoop() {
@@ -134,6 +255,7 @@ func (a *App) ProgramMotor(ip string, rs, rr, ls, lr, lm, j, npp float32) (*hilU
 		a.stateMu.Lock()
 		a.lastMotor[ip] = p
 		a.stateMu.Unlock()
+		a.setMotor(derive.MotorFromParams(p.Npp, p.Lm, p.Lr))
 	}
 	return status, err
 }
@@ -173,6 +295,7 @@ func (a *App) SetParams(
 			a.ring.Clear()
 		}
 		a.raw.Reset()
+		a.resetSession()
 		a.punchTelemetry(ip)
 	}
 	status, err := hilUDP.Set(ip, p)
@@ -218,6 +341,7 @@ func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
 		a.ring.Clear()
 	}
 	a.raw.Reset()
+	a.resetSession()
 	a.punchTelemetry(ip)
 	if _, err := a.recorder.Start(""); err != nil {
 		return nil, err
@@ -312,6 +436,7 @@ func (a *App) AttachTelemetry(ip string) (*hilUDP.HilStatus, error) {
 		a.ring.Clear()
 	}
 	a.raw.Reset()
+	a.resetSession()
 	a.punchTelemetry(ip)
 	decim := transportDecim
 	sampleHz := uint32(gpioFallbackHz)
