@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"hil.local/daemon/internal/appdir"
 	"hil.local/daemon/internal/derive"
 	"hil.local/daemon/internal/frame"
 	"hil.local/daemon/internal/pwmrecv"
@@ -211,10 +212,7 @@ func main() {
 	}
 	defer pwmRecv.Stop()
 
-	runsDir := strings.TrimSpace(os.Getenv("HIL_RUNS_DIR"))
-	if runsDir == "" {
-		runsDir = "./runs"
-	}
+	runsDir := appdir.DefaultRunsDir()
 	if err := os.MkdirAll(runsDir, 0755); err != nil {
 		log.Printf("warning: could not create runs dir %q: %v", runsDir, err)
 	}

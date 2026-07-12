@@ -10,6 +10,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"hil.local/daemon/internal/appdir"
 	"hil.local/daemon/internal/frame"
 	"hil.local/daemon/internal/pwmrecv"
 	"hil.local/daemon/internal/rawbuf"
@@ -47,7 +48,7 @@ func NewApp() *App {
 		done:      make(chan struct{}),
 		lastSet:   make(map[string]hilUDP.SetParams),
 		lastMotor: make(map[string]hilUDP.MotorParams),
-		recorder:  record.New("./runs"),
+		recorder:  record.New(appdir.DefaultRunsDir()),
 		raw:       rawbuf.New(300_000),
 	}
 }
