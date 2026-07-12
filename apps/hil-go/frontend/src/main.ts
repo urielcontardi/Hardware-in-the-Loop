@@ -65,6 +65,13 @@ type HilApi = {
   // visible instead of sliding off the raw buffer's ~6s window.
   GetHistoricalView?(from: number, to: number, width: number): Promise<string>;
   GetTiersInfo?(): Promise<{ tLast?: number; sampleCount?: number }>;
+  // Wails-only equivalents of the gateway's /api/runs and /api/runs/{name},
+  // backing the History tab from the same on-disk .hilbin files the
+  // recorder already seals on every run.
+  ListRuns?(): Promise<RunMeta[]>;
+  SaveRunToHistory?(dataB64: string, name: string, source: string): Promise<RunMeta>;
+  DownloadRun?(name: string): Promise<string>;
+  DeleteRun?(name: string): Promise<void>;
 };
 
 const isWails = typeof window !== "undefined" && !!(window as any).go?.main?.App;
@@ -143,6 +150,10 @@ const api: HilApi = isWails ? {
   LoadRun: (WailsApp as any).LoadRun as HilApi["LoadRun"],
   GetHistoricalView: (WailsApp as any).GetHistoricalView as HilApi["GetHistoricalView"],
   GetTiersInfo: (WailsApp as any).GetTiersInfo as HilApi["GetTiersInfo"],
+  ListRuns: (WailsApp as any).ListRuns as HilApi["ListRuns"],
+  SaveRunToHistory: (WailsApp as any).SaveRunToHistory as HilApi["SaveRunToHistory"],
+  DownloadRun: (WailsApp as any).DownloadRun as HilApi["DownloadRun"],
+  DeleteRun: (WailsApp as any).DeleteRun as HilApi["DeleteRun"],
 } : {
   onTelemetry(cb) {
     const events = getSharedEvents();
@@ -1402,12 +1413,14 @@ elBtnBatchStop.addEventListener("click", () => {
 elBtnSaveRun.addEventListener("click", () => withButton(elBtnSaveRun, async () => {
   const name = `hil_run_${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}`;
   const scenarioMeta = { scenario: { name: elScenarioName.value.trim() || "manual", events: readScenarioEvents().map(({ t, target, param, value }) => ({ t, target, param, value })), endTime: getScenarioEndTime() } };
+  // History gets first claim on the just-sealed full-rate raw capture
+  // (record.Recorder.CopyLatest is one-shot); the native save-dialog copy
+  // below falls back to the browser-buffered bytes if it runs second.
+  await saveRunToServer(name, scenarioMeta);
   if (isWails) {
     await triggerSave(name, scenarioMeta);
-  } else {
-    await saveRunToServer(name, scenarioMeta);
-    setStatus(`Saved: ${name}.hilbin`, "ok");
   }
+  setStatus(`Saved: ${name}.hilbin`, "ok");
 }));
 
 elBtnExportCsv.addEventListener("click", exportToCsv);
@@ -3504,10 +3517,13 @@ function safeRunStem(name: string): string {
 }
 
 async function saveRunToServer(name: string, extraMeta: Partial<HilbinMeta> = {}): Promise<void> {
-  if (isWails) return; // Wails uses native file dialog
   const buf = serializeHilbin(name, extraMeta);
   const filename = (name.endsWith(".hilbin") ? name : name + ".hilbin").replace(/[/\\]+/g, "_");
   const source = gatewayHistoryEnabled ? "latest" : "display";
+  if (isWails) {
+    await api.SaveRunToHistory!(arrayBufferToBase64(buf), filename, source);
+    return;
+  }
   const res = await fetch(gatewayURL(`/api/runs?name=${encodeURIComponent(filename)}&source=${source}`), {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
@@ -3519,10 +3535,31 @@ async function saveRunToServer(name: string, extraMeta: Partial<HilbinMeta> = {}
   }
 }
 
+// fetchRunBytes/deleteRunOnDisk abstract the gateway's /api/runs/{name} over
+// either a real HTTP fetch (gateway/web) or the Wails-bound DownloadRun/
+// DeleteRun (native app), both backed by the same on-disk .hilbin files.
+async function fetchRunBytes(name: string): Promise<ArrayBuffer> {
+  if (isWails) {
+    const b64 = await api.DownloadRun!(name);
+    return base64ToArrayBuffer(b64);
+  }
+  const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(name)}`));
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.arrayBuffer();
+}
+
+async function deleteRunOnDisk(name: string): Promise<void> {
+  if (isWails) {
+    await api.DeleteRun!(name);
+    return;
+  }
+  const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(name)}`), { method: "DELETE" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}
+
 async function loadRunHistory(): Promise<void> {
-  if (isWails) { elRunsEmpty.textContent = "History not available in Wails mode."; return; }
   try {
-    const runs = await getJSON<RunMeta[]>("/api/runs");
+    const runs = isWails ? await api.ListRuns!() : await getJSON<RunMeta[]>("/api/runs");
     elRunsList.querySelectorAll(".run-card,.run-group").forEach(c => c.remove());
     const groups = new Map<string, RunMeta[]>();
     for (const run of runs) {
@@ -3605,9 +3642,7 @@ function buildRunCard(run: RunMeta): HTMLElement {
 
   card.querySelector<HTMLElement>(".run-btn-load")!.addEventListener("click", async () => {
     try {
-      const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = await res.arrayBuffer();
+      const buf = await fetchRunBytes(run.name);
       const meta = deserializeHilbin(buf);
       showRunMetaBadge(meta);
       setActiveTab("telemetry");
@@ -3618,18 +3653,33 @@ function buildRunCard(run: RunMeta): HTMLElement {
     }
   });
 
-  card.querySelector<HTMLButtonElement>(".run-btn-download")!.addEventListener("click", () => {
-    const a = document.createElement("a");
-    a.href = gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`);
-    a.download = run.name;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  card.querySelector<HTMLButtonElement>(".run-btn-download")!.addEventListener("click", async () => {
+    // Web mode keeps the plain link-download (browser handles the HTTP GET
+    // directly, unchanged from before). Wails has no HTTP server to link to,
+    // so it fetches the bytes and downloads a Blob instead.
+    if (!isWails) {
+      const a = document.createElement("a");
+      a.href = gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`);
+      a.download = run.name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      return;
+    }
+    try {
+      const buf = await fetchRunBytes(run.name);
+      const blob = new Blob([buf], { type: "application/octet-stream" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = run.name;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    } catch (e) {
+      setStatus(`Download failed: ${e}`, "error");
+    }
   });
 
   card.querySelector<HTMLButtonElement>(".run-btn-csv")!.addEventListener("click", async () => {
     try {
-      const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(run.name)}`));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = await res.arrayBuffer();
+      const buf = await fetchRunBytes(run.name);
       const csv = hilbinToCsv(buf);
       const blob = new Blob([csv], { type: "text/csv" });
       const url  = URL.createObjectURL(blob);
@@ -3819,8 +3869,11 @@ async function deleteRunCards(cards: HTMLElement[]) {
   for (const card of cards) {
     const name = card.dataset.filename;
     if (!name) continue;
-    const res = await fetch(gatewayURL(`/api/runs/${encodeURIComponent(name)}`), { method: "DELETE" });
-    if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+    try {
+      await deleteRunOnDisk(name);
+    } catch (e) {
+      throw new Error(`${name}: ${e}`);
+    }
     card.classList.add("run-card-deleting");
     window.setTimeout(() => { card.remove(); updateRunsEmpty(); }, 180);
   }

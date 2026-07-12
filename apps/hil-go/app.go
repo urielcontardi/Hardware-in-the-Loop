@@ -22,6 +22,7 @@ import (
 	"hil.local/daemon/internal/receiver"
 	"hil.local/daemon/internal/record"
 	"hil.local/daemon/internal/ring"
+	"hil.local/daemon/internal/runstore"
 	"hil.local/daemon/internal/sampleclock"
 	"hil.local/daemon/internal/sessionstore"
 	hilUDP "hil.local/daemon/internal/udp"
@@ -348,6 +349,7 @@ func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
 	}
 	status, err := hilUDP.Run(ip)
 	if err == nil {
+		a.recorder.SetMetadata(a.captureMetadata(ip, status))
 		a.punchTelemetry(ip)
 		return status, nil
 	}
@@ -377,9 +379,101 @@ func (a *App) Run(ip string) (*hilUDP.HilStatus, error) {
 	if err != nil {
 		_ = a.recorder.Stop()
 	} else {
+		a.recorder.SetMetadata(a.captureMetadata(ip, status))
 		a.punchTelemetry(ip)
 	}
 	return status, err
+}
+
+// captureMetadata mirrors cmd/gateway/main.go's captureMetadata: the
+// controller/motor snapshot embedded in every raw capture the recorder
+// seals, so History entries carry the same setup summary the gateway's do.
+func (a *App) captureMetadata(ip string, status *hilUDP.HilStatus) map[string]any {
+	controller := map[string]any{}
+	if status != nil {
+		controller = map[string]any{
+			"freq_hz":        status.FreqHz,
+			"freq_actual_hz": status.FreqActualHz,
+			"vdc_v":          status.VdcV,
+			"torque_nm":      status.TorqueNm,
+			"base_freq_hz":   status.BaseFreqHz,
+			"max_v_pu":       status.MaxVPu,
+			"accel_time_s":   status.AccelTimeSec,
+		}
+	}
+
+	a.stateMu.Lock()
+	motor := a.lastMotor[ip]
+	a.stateMu.Unlock()
+
+	return map[string]any{
+		"controller": controller,
+		"motor": map[string]any{
+			"rs":  ptrValue(motor.Rs, 0.4396),
+			"rr":  ptrValue(motor.Rr, 0.2826),
+			"ls":  ptrValue(motor.Ls, 3.1364e-3),
+			"lr":  ptrValue(motor.Lr, 6.3264e-3),
+			"lm":  ptrValue(motor.Lm, 109.9442e-3),
+			"j":   ptrValue(motor.J, 0.4),
+			"npp": ptrValue(motor.Npp, 2.0),
+		},
+	}
+}
+
+func ptrValue(p *float32, fallback float32) float32 {
+	if p == nil {
+		return fallback
+	}
+	return *p
+}
+
+// ListRuns returns every saved .hilbin run, mirroring GET /api/runs.
+func (a *App) ListRuns() ([]runstore.RunMeta, error) {
+	return runstore.List(a.runsDir)
+}
+
+// SaveRunToHistory registers a run in the browsable History list, mirroring
+// POST /api/runs: when source != "display" it first tries to claim the
+// just-sealed full-rate raw capture (record.Recorder.CopyLatest) instead of
+// the browser-buffered bytes, same as the gateway.
+func (a *App) SaveRunToHistory(dataB64, name, source string) (runstore.RunMeta, error) {
+	data, err := base64.StdEncoding.DecodeString(dataB64)
+	if err != nil {
+		return runstore.RunMeta{}, err
+	}
+	clean := name
+	if !strings.HasSuffix(clean, ".hilbin") {
+		clean += ".hilbin"
+	}
+	if source != "display" {
+		path := filepath.Join(a.runsDir, filepath.Base(clean))
+		extra := runstore.ReadMetaFromBytes(data)
+		if copied, copyErr := a.recorder.CopyLatest(path, extra); copyErr != nil {
+			return runstore.RunMeta{}, copyErr
+		} else if copied {
+			fi, statErr := os.Stat(path)
+			if statErr != nil {
+				return runstore.RunMeta{}, statErr
+			}
+			return runstore.RunMeta{Name: filepath.Base(clean), Size: fi.Size(), Modified: fi.ModTime().UTC().Format(time.RFC3339)}, nil
+		}
+	}
+	return runstore.Save(a.runsDir, clean, data)
+}
+
+// DownloadRun returns a saved run's base64-encoded bytes, mirroring
+// GET /api/runs/{name} (Wails IPC has no raw-binary transport).
+func (a *App) DownloadRun(name string) (string, error) {
+	data, err := runstore.Read(a.runsDir, name)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// DeleteRun removes a saved run from disk, mirroring DELETE /api/runs/{name}.
+func (a *App) DeleteRun(name string) error {
+	return runstore.Delete(a.runsDir, name)
 }
 
 // Pause disables the motor but keeps the params.
