@@ -54,13 +54,17 @@ type App struct {
 	// runsDir, pyramid and store back the same historical-viewport contract
 	// the gateway's /api/view and /api/tiers serve (see internal/viewquery),
 	// so a run of any length stays fully visible instead of sliding off the
-	// ~6s raw buffer window.
-	runsDir  string
-	ingestMu sync.Mutex
-	clk      sampleclock.Clock
-	pyramid  *pyramid.Pyramid
-	store    *sessionstore.Store
-	motor    derive.Motor
+	// ~6s raw buffer window. ingestQueue decouples the store/pyramid writes
+	// (disk I/O + bucket math) from the UDP receive loop, the same way
+	// record.Recorder.Submit already decouples disk writes from it — see
+	// ingestSamples/ingestLoop.
+	runsDir     string
+	ingestMu    sync.Mutex
+	clk         sampleclock.Clock
+	pyramid     *pyramid.Pyramid
+	store       *sessionstore.Store
+	motor       derive.Motor
+	ingestQueue chan []frame.Sample
 }
 
 // Keep the native app on the same acquisition and display contract as the
@@ -78,15 +82,16 @@ const (
 func NewApp() *App {
 	runsDir := appdir.DefaultRunsDir()
 	a := &App{
-		ring:      ring.New(262144),
-		done:      make(chan struct{}),
-		lastSet:   make(map[string]hilUDP.SetParams),
-		lastMotor: make(map[string]hilUDP.MotorParams),
-		recorder:  record.New(runsDir),
-		raw:       rawbuf.New(300_000),
-		runsDir:   runsDir,
-		pyramid:   pyramid.New(dmaTelemetryHz),
-		motor:     derive.DefaultMotor,
+		ring:        ring.New(262144),
+		done:        make(chan struct{}),
+		lastSet:     make(map[string]hilUDP.SetParams),
+		lastMotor:   make(map[string]hilUDP.MotorParams),
+		recorder:    record.New(runsDir),
+		raw:         rawbuf.New(300_000),
+		runsDir:     runsDir,
+		pyramid:     pyramid.New(dmaTelemetryHz),
+		motor:       derive.DefaultMotor,
+		ingestQueue: make(chan []frame.Sample, 256),
 	}
 	a.resetSession()
 	return a
@@ -116,6 +121,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	go a.broadcastLoop()
+	go a.ingestLoop()
 	runtime.LogInfof(ctx, "HIL daemon ready — telem destination: %s", a.localIP)
 }
 
@@ -137,11 +143,47 @@ func (a *App) shutdown(_ context.Context) {
 	a.ingestMu.Unlock()
 }
 
-// ingestSamples feeds the pyramid+session store pair that backs
-// GetHistoricalView/GetTiersInfo, mirroring cmd/gateway/main.go's telemetry
-// SetSampleHandler. Runs on the receiver's single goroutine, same as the
-// gateway's ingestion path.
+// ingestSamples hands samples to ingestLoop without blocking. The UDP
+// receiver (internal/receiver/receiver.go) calls the sample handler
+// synchronously inside its hot read loop, so any work done here directly
+// delays the next ReadFromUDP call; once delayed long enough, the kernel's
+// UDP receive buffer fills and starts silently dropping datagrams (visible
+// as GetStats().dropped/seq_missed). record.Recorder.Submit already avoids
+// this via a buffered channel drained by its own goroutine — this mirrors
+// that pattern for the store/pyramid writes added for the historical
+// viewport, which include disk I/O (sessionstore periodically flushes) and
+// are too slow to do inline.
 func (a *App) ingestSamples(samples []frame.Sample) {
+	if len(samples) == 0 {
+		return
+	}
+	cp := append([]frame.Sample(nil), samples...)
+	select {
+	case a.ingestQueue <- cp:
+	default:
+		// Queue full: drop this batch's contribution to the historical
+		// viewport rather than stall the UDP receive loop. The raw capture
+		// (record.Recorder) and live raw buffer are unaffected — this only
+		// affects pyramid/store, which back GetHistoricalView/GetTiersInfo.
+	}
+}
+
+func (a *App) ingestLoop() {
+	for {
+		select {
+		case <-a.done:
+			return
+		case samples := <-a.ingestQueue:
+			a.ingestSamplesSync(samples)
+		}
+	}
+}
+
+// ingestSamplesSync feeds the pyramid+session store pair that backs
+// GetHistoricalView/GetTiersInfo, mirroring cmd/gateway/main.go's telemetry
+// SetSampleHandler. Runs on ingestLoop's own goroutine (see ingestSamples),
+// not the UDP receive loop.
+func (a *App) ingestSamplesSync(samples []frame.Sample) {
 	a.ingestMu.Lock()
 	defer a.ingestMu.Unlock()
 	if a.store == nil {
