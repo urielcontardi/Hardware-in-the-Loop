@@ -60,7 +60,10 @@ def test_plot_pwm_stimulus_creates_files(tmp_path):
     va = 620 * np.sign(np.sin(ph))
     vb = 620 * np.sign(np.sin(ph - 2 * np.pi / 3))
     vc = 620 * np.sign(np.sin(ph + 2 * np.pi / 3))
-    data = {"va": va.tolist(), "vb": vb.tolist(), "vc": vc.tolist()}
+    ia = 20 * np.sin(ph)
+    ib = 20 * np.sin(ph - 2 * np.pi / 3)
+    data = {"va": va.tolist(), "vb": vb.tolist(), "vc": vc.tolist(),
+            "vhdl_i_alpha": ia.tolist(), "vhdl_i_beta": ((ia + 2 * ib) / np.sqrt(3)).tolist()}
     case = {"id": "vf2s", "label": "V/f 2 s", "tipo": "vf", "fig_prefix": "HIL_L3",
             "labels": {"dut": "Top_HIL", "ref": "C"}, "pwm_zoom_ms": (5.0, 15.0)}
     eng.plot_pwm_stimulus(t_ms, data, case, tmp_path)

@@ -337,9 +337,10 @@ def plot_window_nrmse(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -
 
 
 def plot_pwm_stimulus(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
-    """Estimulo PWM/tensao: tensoes de fase va/vb/vc (saida NPC) numa janela curta.
+    """Estimulo -> resposta numa janela curta: PWM (saida NPC) em cima e as
+    correntes de fase resultantes embaixo, no mesmo eixo de tempo.
 
-    Especifico do L3 — mostra a modulacao NPC real que alimenta os dois modelos.
+    Especifico do L3 — mostra a modulacao NPC real e a corrente que ela produz.
     A janela vem de case['pwm_zoom_ms']=(t0,t1); sem ela, usa os primeiros 20 ms.
     """
     t = np.asarray(t_ms)
@@ -347,17 +348,30 @@ def plot_pwm_stimulus(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -
     mask = (t >= a_ms) & (t <= b_ms)
     ts = t[mask] / 1000.0  # s
 
-    fig, ax = plt.subplots(figsize=(8, 3.5))
+    dut, _ = _labels(case)
+    vhdl_i = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 5.5), sharex=True)
+
+    # Painel 1 — estimulo PWM (saida NPC)
     for name, col, lbl in (("va", PHASE_COLORS[0], "$v_a$"),
                            ("vb", PHASE_COLORS[1], "$v_b$"),
                            ("vc", PHASE_COLORS[2], "$v_c$")):
         v = np.asarray(data[name])[mask]
-        ax.plot(ts, v, color=col, linewidth=1.0, drawstyle="steps-post", label=lbl)
-    ax.set_xlabel("Tempo [s]")
-    ax.set_ylabel("Tensão de fase [V]")
-    ax.set_title(f"{_lvl(case)} — {case['label']}: estímulo PWM (saída NPC), "
-                 f"{a_ms:.0f}–{b_ms:.0f} ms")
-    ax.legend(loc="upper right", ncol=3, fontsize=8)
+        axes[0].plot(ts, v, color=col, linewidth=1.0, drawstyle="steps-post", label=lbl)
+    axes[0].set_ylabel("Tensão de fase [V]")
+    axes[0].set_title(f"{_lvl(case)} — {case['label']}: estímulo PWM → resposta, "
+                      f"{a_ms:.0f}–{b_ms:.0f} ms")
+    axes[0].legend(loc="upper right", ncol=3, fontsize=8)
+
+    # Painel 2 — corrente de fase resultante (DUT)
+    for k, lbl in enumerate(("$i_a$", "$i_b$", "$i_c$")):
+        axes[1].plot(ts, np.asarray(vhdl_i[k])[mask], color=PHASE_COLORS[k],
+                     linewidth=1.1, label=lbl)
+    axes[1].set_ylabel(f"Corrente [A] ({dut})")
+    axes[1].set_xlabel("Tempo [s]")
+    axes[1].legend(loc="upper right", ncol=3, fontsize=8)
+
     save_fig(fig, out_dir, _fig_name(case, "PWMStimulus"))
 
 
