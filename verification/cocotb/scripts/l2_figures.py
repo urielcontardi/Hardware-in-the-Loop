@@ -280,3 +280,54 @@ def plot_window_nrmse(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -
     ax.set_title(f"L2 — {case['label']}: NRMSE por janela")
     ax.legend(fontsize=9)
     save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_WindowNRMSE")
+
+
+# ── Driver ────────────────────────────────────────────────────────────────────
+# Conjunto de plots por tipo de cenario
+PLOTSET = {
+    "sine": ("overlay", "lissajous", "phase_zoom"),
+    "vf": ("overlay", "lissajous", "residual", "phase_zoom", "window_nrmse"),
+}
+_PLOT_FN = {
+    "overlay": lambda t, d, c, o: plot_overlay(t, d, c, o),
+    "lissajous": lambda t, d, c, o: plot_lissajous(t, d, c, o),
+    "phase_zoom": lambda t, d, c, o: plot_phase_zoom(t, d, c, o),
+    "residual": lambda t, d, c, o: plot_residual(t, d, c, o),
+    "window_nrmse": lambda t, d, c, o: plot_window_nrmse(t, d, c, o),
+}
+
+
+def generate_case(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_DIR) -> dict:
+    t_ms, data = load_case(case, campaign)
+    metrics = compute_metrics(data)
+    kinds = case.get("plots") or PLOTSET[case["tipo"]]
+    for kind in kinds:
+        if kind == "phase_zoom" and not case.get("zoom"):
+            continue
+        if kind == "window_nrmse" and not case.get("windows_s"):
+            continue
+        _PLOT_FN[kind](t_ms, data, case, out_dir)
+    print(f"[ok] {case['id']}: figuras em {out_dir}")
+    return metrics
+
+
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(description="Gera figuras L2 (VHDL vs C).")
+    ap.add_argument("--campaign", type=Path, default=CAMPAIGN_DIR)
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--case", action="append", choices=[c["id"] for c in CASES],
+                    help="ids a gerar (default: todos)")
+    args = ap.parse_args(argv)
+
+    selected = [c for c in CASES if not args.case or c["id"] in args.case]
+    all_metrics: dict[str, dict] = {}
+    for case in selected:
+        all_metrics[case["id"]] = generate_case(case, args.out, args.campaign)
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "l2_metrics.json").write_text(json.dumps(all_metrics, indent=2))
+    print(f"[ok] metricas em {args.out / 'l2_metrics.json'}")
+
+
+if __name__ == "__main__":
+    main()

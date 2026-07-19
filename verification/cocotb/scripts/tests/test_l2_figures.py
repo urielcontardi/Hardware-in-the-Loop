@@ -114,3 +114,14 @@ def test_plot_window_nrmse_creates_files(tmp_path):
                 windows_s=[(0.0, 0.002), (0.002, 0.005)])
     l2.plot_window_nrmse(t_ms, data, case, tmp_path)
     assert (tmp_path / "HIL_L2_VF2s_WindowNRMSE.pdf").stat().st_size > 0
+
+
+def test_generate_case_end_to_end(tmp_path):
+    case = next(c for c in l2.CASES if c["id"] == "vf2s")
+    if not (l2.CAMPAIGN_DIR / case["dir"] / case["csv"]).is_file():
+        pytest.skip("dados da campanha_03 ausentes")
+    metrics = l2.generate_case(case, tmp_path, l2.CAMPAIGN_DIR)
+    assert (tmp_path / "HIL_L2_VF2s_Overlay.pdf").stat().st_size > 0
+    assert (tmp_path / "HIL_L2_VF2s_WindowNRMSE.pdf").stat().st_size > 0
+    assert (tmp_path / "HIL_L2_VF2s_Residual.pdf").stat().st_size > 0
+    assert 0.0 < metrics["i_alpha"]["nrmse"] < 0.1
