@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import chapter_common as cc
 
+inverse_clarke = cc.inverse_clarke
+
 plt.rcParams.update({
     "font.family": "serif",
     "axes.grid": True,
@@ -34,16 +36,6 @@ TREND_GROUPS = {
     "2,0 s": ["A4", "A7"],
     "5,0 s": ["A5", "A6"],
 }
-
-
-def inverse_clarke(i_alpha: list[float], i_beta: list[float]) -> tuple[list[float], list[float], list[float]]:
-    """Reconstroi as tres correntes de fase (ia, ib, ic) a partir de i_alpha/i_beta,
-    assumindo sistema trifasico equilibrado (ia + ib + ic = 0)."""
-    sqrt3_2 = 3 ** 0.5 / 2
-    ia = list(i_alpha)
-    ib = [-0.5 * a + sqrt3_2 * b for a, b in zip(i_alpha, i_beta)]
-    ic = [-0.5 * a - sqrt3_2 * b for a, b in zip(i_alpha, i_beta)]
-    return ia, ib, ic
 
 
 def plot_forma_onda(case: cc.CaseMetrics, out_path: Path) -> bool:

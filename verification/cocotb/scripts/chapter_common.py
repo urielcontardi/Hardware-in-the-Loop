@@ -40,6 +40,16 @@ TESTS_LINE_RE = re.compile(
 )
 
 
+def inverse_clarke(i_alpha: list[float], i_beta: list[float]) -> tuple[list[float], list[float], list[float]]:
+    """Reconstroi as tres correntes de fase (ia, ib, ic) a partir de i_alpha/i_beta,
+    assumindo sistema trifasico equilibrado (ia + ib + ic = 0)."""
+    sqrt3_2 = 3 ** 0.5 / 2
+    ia = list(i_alpha)
+    ib = [-0.5 * a + sqrt3_2 * b for a, b in zip(i_alpha, i_beta)]
+    ic = [-0.5 * a - sqrt3_2 * b for a, b in zip(i_alpha, i_beta)]
+    return ia, ib, ic
+
+
 @dataclass
 class CaseMetrics:
     case_id: str

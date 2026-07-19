@@ -175,3 +175,13 @@ def test_parse_run_log_timing_returns_none_without_tests_line(tmp_path):
 
 def test_parse_run_log_timing_returns_none_for_missing_file(tmp_path):
     assert cc.parse_run_log_timing(tmp_path / "does_not_exist.log") is None
+
+
+def test_inverse_clarke_balanced_sums_to_zero():
+    import chapter_common as cc
+    ia, ib, ic = cc.inverse_clarke([1.0, 2.0], [0.0, 0.5])
+    # sistema equilibrado: ia+ib+ic == 0 em cada amostra
+    for a, b, c in zip(ia, ib, ic):
+        assert abs(a + b + c) < 1e-12
+    # alpha mapeia direto para ia
+    assert ia == [1.0, 2.0]
