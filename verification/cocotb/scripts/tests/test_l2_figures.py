@@ -43,3 +43,23 @@ def test_compute_metrics_nrmse_matches_metrics_json():
     expected = json.loads(mj_path.read_text())["metrics"]
     assert m["i_alpha"]["nrmse"] == pytest.approx(expected["nrmse_i_alpha"], rel=1e-3)
     assert m["i_beta"]["nrmse"] == pytest.approx(expected["nrmse_i_beta"], rel=1e-3)
+
+
+def test_plot_overlay_creates_files(tmp_path):
+    import numpy as np
+    n = 200
+    t = [i for i in range(n)]  # us
+    ramp = [i / n for i in range(n)]
+    data = {
+        "t_us": t,
+        "vhdl_i_alpha": ramp, "vhdl_i_beta": ramp,
+        "ref_i_alpha": ramp, "ref_i_beta": ramp,
+        "vhdl_flux_alpha": ramp, "vhdl_flux_beta": ramp,
+        "ref_flux_alpha": ramp, "ref_flux_beta": ramp,
+        "vhdl_speed": ramp, "ref_speed": ramp,
+    }
+    t_ms = np.asarray(t) * 1e-3
+    case = {"id": "smoke", "label": "Smoke", "tipo": "vf", "zoom": []}
+    l2.plot_overlay(t_ms, data, case, tmp_path)
+    assert (tmp_path / "HIL_L2_Smoke_Overlay.pdf").stat().st_size > 0
+    assert (tmp_path / "HIL_L2_Smoke_Overlay.png").stat().st_size > 0
