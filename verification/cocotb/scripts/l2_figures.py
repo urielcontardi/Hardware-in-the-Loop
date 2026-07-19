@@ -119,8 +119,25 @@ def compute_metrics(data: dict[str, list[float]]) -> dict[str, dict[str, float]]
 
 # ── Carregamento / gravação ───────────────────────────────────────────────────
 def _fig_id(case: dict) -> str:
-    return {"sine": "Sine", "vf50ms": "VF50ms", "vf2s": "VF2s"}.get(
+    return {"sine": "Sine", "vf50ms": "VF50ms", "vf2s": "VF2s",
+            "sine6ms": "Sine6ms"}.get(
         case["id"], case["id"].capitalize())
+
+
+def _fig_name(case: dict, kind: str) -> str:
+    """Nome-base do arquivo: HIL_<nivel>_<Cenario>_<Tipo> (nivel default L2)."""
+    return f"{case.get('fig_prefix', 'HIL_L2')}_{_fig_id(case)}_{kind}"
+
+
+def _labels(case: dict) -> tuple[str, str]:
+    """Rotulos (DUT, referencia) para legendas/titulos. Default VHDL vs C."""
+    lab = case.get("labels", {})
+    return lab.get("dut", "VHDL"), lab.get("ref", "C")
+
+
+def _lvl(case: dict) -> str:
+    """Prefixo de nivel para titulos: 'L2', 'L3', ... (de fig_prefix)."""
+    return case.get("fig_prefix", "HIL_L2").replace("HIL_", "")
 
 
 _SIGS = ("i_alpha", "i_beta", "flux_alpha", "flux_beta", "speed")
@@ -166,7 +183,8 @@ def save_fig(fig, out_dir: Path, name: str) -> None:
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
 def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
-    """3 paineis: correntes trifasicas, modulo do fluxo, velocidade (VHDL vs C)."""
+    """3 paineis: correntes trifasicas, modulo do fluxo, velocidade (DUT vs ref)."""
+    dut, ref = _labels(case)
     t = t_ms / 1000.0  # s
     vhdl_i = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
     ref_i = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
@@ -185,21 +203,21 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
         axes[0].plot(t, vhdl_i[k], color=PHASE_COLORS[k], label=labels[k], **VHDL_STYLE)
         axes[0].plot(t, ref_i[k], color=PHASE_COLORS[k], **REF_STYLE)
     axes[0].set_ylabel("Corrente [A]")
-    axes[0].set_title(f"L2 — {case['label']}: correntes (— VHDL, - - C)")
+    axes[0].set_title(f"{_lvl(case)} — {case['label']}: correntes (— {dut}, - - {ref})")
     axes[0].legend(loc="upper right", ncol=3, fontsize=8)
 
-    axes[1].plot(t, vhdl_flux, color=COL_VHDL, **VHDL_STYLE, label="VHDL")
-    axes[1].plot(t, ref_flux, color=COL_C, **REF_STYLE, label="C")
+    axes[1].plot(t, vhdl_flux, color=COL_VHDL, **VHDL_STYLE, label=dut)
+    axes[1].plot(t, ref_flux, color=COL_C, **REF_STYLE, label=ref)
     axes[1].set_ylabel(r"$|\psi_r|$ [Wb]")
     axes[1].legend(loc="upper right", fontsize=8)
 
-    axes[2].plot(t, np.asarray(data["vhdl_speed"]), color=COL_VHDL, **VHDL_STYLE, label="VHDL")
-    axes[2].plot(t, np.asarray(data["ref_speed"]), color=COL_C, **REF_STYLE, label="C")
+    axes[2].plot(t, np.asarray(data["vhdl_speed"]), color=COL_VHDL, **VHDL_STYLE, label=dut)
+    axes[2].plot(t, np.asarray(data["ref_speed"]), color=COL_C, **REF_STYLE, label=ref)
     axes[2].set_ylabel(r"$\omega$ [rad/s]")
     axes[2].set_xlabel("Tempo [s]")
     axes[2].legend(loc="upper right", fontsize=8)
 
-    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_Overlay")
+    save_fig(fig, out_dir, _fig_name(case, "Overlay"))
 
 
 def _subsample(n: int, target: int = 5000) -> slice:
@@ -208,19 +226,20 @@ def _subsample(n: int, target: int = 5000) -> slice:
 
 
 def plot_lissajous(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
-    """Trajetoria espaco-vetorial i_beta x i_alpha (VHDL vs C)."""
+    """Trajetoria espaco-vetorial i_beta x i_alpha (DUT vs ref)."""
+    dut, ref = _labels(case)
     s = _subsample(len(t_ms))
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot(np.asarray(data["vhdl_i_alpha"])[s], np.asarray(data["vhdl_i_beta"])[s],
-            color=COL_VHDL, label="VHDL", **VHDL_STYLE)
+            color=COL_VHDL, label=dut, **VHDL_STYLE)
     ax.plot(np.asarray(data["ref_i_alpha"])[s], np.asarray(data["ref_i_beta"])[s],
-            color=COL_C, label="C", **REF_STYLE)
+            color=COL_C, label=ref, **REF_STYLE)
     ax.set_xlabel(r"$i_\alpha$ [A]")
     ax.set_ylabel(r"$i_\beta$ [A]")
     ax.set_aspect("equal", adjustable="datalim")
-    ax.set_title(f"L2 — {case['label']}: trajetória $i_\\beta \\times i_\\alpha$")
+    ax.set_title(f"{_lvl(case)} — {case['label']}: trajetória $i_\\beta \\times i_\\alpha$")
     ax.legend(loc="upper right", fontsize=9)
-    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_Lissajous")
+    save_fig(fig, out_dir, _fig_name(case, "Lissajous"))
 
 
 def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
@@ -230,32 +249,33 @@ def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> 
     ref_ia = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])[0]
     vhdl_ia, ref_ia = np.asarray(vhdl_ia), np.asarray(ref_ia)
 
+    dut, ref = _labels(case)
     zooms = case.get("zoom", [])
     nz = len(zooms)
     fig, axes = plt.subplots(1 + nz, 1, figsize=(8, 3 + 2.2 * nz))
     if nz == 0:
         axes = [axes]
     top = axes[0]
-    top.plot(t, vhdl_ia, color=COL_VHDL, label="$i_a$ (VHDL)", **VHDL_STYLE)
-    top.plot(t, ref_ia, color=COL_C, label="$i_a$ (C)", **REF_STYLE)
+    top.plot(t, vhdl_ia, color=COL_VHDL, label=f"$i_a$ ({dut})", **VHDL_STYLE)
+    top.plot(t, ref_ia, color=COL_C, label=f"$i_a$ ({ref})", **REF_STYLE)
     for (a_ms, b_ms, lbl, col) in zooms:
         top.axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.15, label=lbl)
     top.set_ylabel("$i_a$ [A]")
     top.set_xlabel("Tempo [s]")
-    top.set_title(f"L2 — {case['label']}: visão completa e zoom")
+    top.set_title(f"{_lvl(case)} — {case['label']}: visão completa e zoom")
     top.legend(loc="upper right", fontsize=8)
 
     for ax, (a_ms, b_ms, lbl, col) in zip(axes[1:], zooms):
         a, b = a_ms / 1000.0, b_ms / 1000.0
         mask = (t >= a) & (t <= b)
-        ax.plot(t[mask], vhdl_ia[mask], color=COL_VHDL, label="VHDL", **VHDL_STYLE)
-        ax.plot(t[mask], ref_ia[mask], color=COL_C, label="C", **REF_STYLE)
+        ax.plot(t[mask], vhdl_ia[mask], color=COL_VHDL, label=dut, **VHDL_STYLE)
+        ax.plot(t[mask], ref_ia[mask], color=COL_C, label=ref, **REF_STYLE)
         ax.set_title(f"{lbl}: {a_ms:.0f}–{b_ms:.0f} ms", fontsize=10)
         ax.set_ylabel("$i_a$ [A]")
         ax.legend(loc="upper right", fontsize=8)
     axes[-1].set_xlabel("Tempo [s]")
     fig.tight_layout()
-    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_PhaseZoom")
+    save_fig(fig, out_dir, _fig_name(case, "PhaseZoom"))
 
 
 def plot_residual(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
@@ -271,7 +291,8 @@ def plot_residual(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> No
         axes[0].plot(t, err, color=PHASE_COLORS[k], linewidth=0.9, label=labels[k])
     axes[0].axhline(0.0, color="0.5", linewidth=0.6)
     axes[0].set_ylabel("Erro corrente [A]")
-    axes[0].set_title(f"L2 — {case['label']}: erro VHDL − C")
+    dut, ref = _labels(case)
+    axes[0].set_title(f"{_lvl(case)} — {case['label']}: erro {dut} − {ref}")
     axes[0].legend(loc="upper right", ncol=3, fontsize=8)
 
     err_w = np.asarray(data["vhdl_speed"]) - np.asarray(data["ref_speed"])
@@ -280,7 +301,7 @@ def plot_residual(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> No
     axes[1].set_ylabel("Erro veloc. [rad/s]")
     axes[1].set_xlabel("Tempo [s]")
     axes[1].legend(loc="upper right", fontsize=8)
-    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_Residual")
+    save_fig(fig, out_dir, _fig_name(case, "Residual"))
 
 
 def plot_window_nrmse(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
@@ -308,9 +329,34 @@ def plot_window_nrmse(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -
     ax.set_xticks(x); ax.set_xticklabels(xlabels)
     ax.set_xlabel("Janela [s]")
     ax.set_ylabel("NRMSE [%]")
-    ax.set_title(f"L2 — {case['label']}: NRMSE por janela")
+    ax.set_title(f"{_lvl(case)} — {case['label']}: NRMSE por janela")
     ax.legend(fontsize=9)
-    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_WindowNRMSE")
+    save_fig(fig, out_dir, _fig_name(case, "WindowNRMSE"))
+
+
+def plot_pwm_stimulus(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
+    """Estimulo PWM/tensao: tensoes de fase va/vb/vc (saida NPC) numa janela curta.
+
+    Especifico do L3 — mostra a modulacao NPC real que alimenta os dois modelos.
+    A janela vem de case['pwm_zoom_ms']=(t0,t1); sem ela, usa os primeiros 20 ms.
+    """
+    t = np.asarray(t_ms)
+    a_ms, b_ms = case.get("pwm_zoom_ms", (float(t.min()), min(float(t.min()) + 20.0, float(t.max()))))
+    mask = (t >= a_ms) & (t <= b_ms)
+    ts = t[mask] / 1000.0  # s
+
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+    for name, col, lbl in (("va", PHASE_COLORS[0], "$v_a$"),
+                           ("vb", PHASE_COLORS[1], "$v_b$"),
+                           ("vc", PHASE_COLORS[2], "$v_c$")):
+        v = np.asarray(data[name])[mask]
+        ax.plot(ts, v, color=col, linewidth=1.0, drawstyle="steps-post", label=lbl)
+    ax.set_xlabel("Tempo [s]")
+    ax.set_ylabel("Tensão de fase [V]")
+    ax.set_title(f"{_lvl(case)} — {case['label']}: estímulo PWM (saída NPC), "
+                 f"{a_ms:.0f}–{b_ms:.0f} ms")
+    ax.legend(loc="upper right", ncol=3, fontsize=8)
+    save_fig(fig, out_dir, _fig_name(case, "PWMStimulus"))
 
 
 # ── Driver ────────────────────────────────────────────────────────────────────
@@ -325,6 +371,7 @@ _PLOT_FN = {
     "phase_zoom": lambda t, d, c, o: plot_phase_zoom(t, d, c, o),
     "residual": lambda t, d, c, o: plot_residual(t, d, c, o),
     "window_nrmse": lambda t, d, c, o: plot_window_nrmse(t, d, c, o),
+    "pwm_stimulus": lambda t, d, c, o: plot_pwm_stimulus(t, d, c, o),
 }
 
 

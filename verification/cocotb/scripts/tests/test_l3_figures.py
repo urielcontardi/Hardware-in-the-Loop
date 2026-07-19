@@ -45,3 +45,23 @@ def test_load_case_defaults_l2_unchanged(tmp_path):
     t_ms, data = eng.load_case(case, tmp_path)
     assert t_ms[-1] == pytest.approx(3e-6)  # t_us=3e-3 -> 3e-6 ms
     assert "ref_i_alpha" in data
+
+
+def test_labels_default_and_custom():
+    assert eng._labels({}) == ("VHDL", "C")
+    assert eng._labels({"labels": {"dut": "Top_HIL", "ref": "C indep."}}) == ("Top_HIL", "C indep.")
+
+
+def test_plot_pwm_stimulus_creates_files(tmp_path):
+    n = 400
+    t_ms = np.linspace(0, 20, n)  # 0..20 ms
+    ph = 2 * np.pi * 60 * (t_ms * 1e-3)
+    # onda NPC multinivel sintetica (degraus)
+    va = 620 * np.sign(np.sin(ph))
+    vb = 620 * np.sign(np.sin(ph - 2 * np.pi / 3))
+    vc = 620 * np.sign(np.sin(ph + 2 * np.pi / 3))
+    data = {"va": va.tolist(), "vb": vb.tolist(), "vc": vc.tolist()}
+    case = {"id": "vf2s", "label": "V/f 2 s", "tipo": "vf", "fig_prefix": "HIL_L3",
+            "labels": {"dut": "Top_HIL", "ref": "C"}, "pwm_zoom_ms": (5.0, 15.0)}
+    eng.plot_pwm_stimulus(t_ms, data, case, tmp_path)
+    assert (tmp_path / "HIL_L3_VF2s_PWMStimulus.pdf").stat().st_size > 0
