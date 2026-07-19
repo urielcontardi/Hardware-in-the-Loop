@@ -65,3 +65,35 @@ def test_plot_pwm_stimulus_creates_files(tmp_path):
             "labels": {"dut": "Top_HIL", "ref": "C"}, "pwm_zoom_ms": (5.0, 15.0)}
     eng.plot_pwm_stimulus(t_ms, data, case, tmp_path)
     assert (tmp_path / "HIL_L3_VF2s_PWMStimulus.pdf").stat().st_size > 0
+
+
+import l3_figures as l3
+
+
+def test_l3_manifest_has_pwm_replay_and_fullstack():
+    ids = {c["id"] for c in l3.CASES_L3}
+    assert any("pwmreplay" in i for i in ids)
+    assert any("fullstack" in i for i in ids)
+    # todos L3 usam t_s e prefixo de figura HIL_L3
+    for c in l3.CASES_L3:
+        assert c["time_col"] == "t_s"
+        assert c["fig_prefix"] == "HIL_L3"
+
+
+def test_generate_pwm_replay_end_to_end(tmp_path):
+    case = next(c for c in l3.CASES_L3 if c["id"] == "pwmreplay_vf2s")
+    if not (l3.CAMPAIGN_DIR / case["dir"] / case["csv"]).is_file():
+        pytest.skip("dados L3 da campanha_03 ausentes")
+    metrics = eng.generate_case(case, tmp_path, l3.CAMPAIGN_DIR)
+    assert (tmp_path / "HIL_L3_PWMreplay_VF2s_Overlay.pdf").stat().st_size > 0
+    assert (tmp_path / "HIL_L3_PWMreplay_VF2s_PWMStimulus.pdf").stat().st_size > 0
+    assert 0.0 < metrics["i_alpha"]["nrmse"] < 0.1
+
+
+def test_generate_fullstack_end_to_end(tmp_path):
+    case = next(c for c in l3.CASES_L3 if c["id"] == "fullstack_vf2s")
+    if not (l3.CAMPAIGN_DIR / case["dir"] / case["csv"]).is_file():
+        pytest.skip("dados L3 da campanha_03 ausentes")
+    metrics = eng.generate_case(case, tmp_path, l3.CAMPAIGN_DIR)
+    assert (tmp_path / "HIL_L3_Fullstack_VF2s_Overlay.pdf").stat().st_size > 0
+    assert metrics["i_alpha"]["r2"] > 0.9

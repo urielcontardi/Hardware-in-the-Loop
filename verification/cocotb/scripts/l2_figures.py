@@ -119,6 +119,8 @@ def compute_metrics(data: dict[str, list[float]]) -> dict[str, dict[str, float]]
 
 # ── Carregamento / gravação ───────────────────────────────────────────────────
 def _fig_id(case: dict) -> str:
+    if "fig_id" in case:
+        return case["fig_id"]
     return {"sine": "Sine", "vf50ms": "VF50ms", "vf2s": "VF2s",
             "sine6ms": "Sine6ms"}.get(
         case["id"], case["id"].capitalize())
