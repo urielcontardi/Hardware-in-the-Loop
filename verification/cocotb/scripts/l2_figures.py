@@ -37,8 +37,10 @@ PHASE_COLORS = ("#0072B2", "#E69F00", "#009E73")  # ia, ib, ic
 COL_VHDL = "#0072B2"        # azul  — solido
 COL_C = "#D55E00"           # vermillion — tracejado
 COL_ERR_SPEED = "#CC79A7"   # roxo avermelhado (erro de velocidade)
-VHDL_STYLE = {"linestyle": "-", "linewidth": 1.3}
-REF_STYLE = {"linestyle": "--", "linewidth": 1.3, "alpha": 0.85}
+# VHDL grosso semitransparente por baixo; C tracejado fino por cima (estilo L1):
+# assim, mesmo com sobreposicao quase perfeita, ambos ficam visiveis.
+VHDL_STYLE = {"linestyle": "-", "linewidth": 2.4, "alpha": 0.5}
+REF_STYLE = {"linestyle": "--", "linewidth": 1.1, "alpha": 0.95}
 
 # ── Caminhos ──────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -49,8 +51,10 @@ DEFAULT_OUT = REPO_ROOT / "docs/results-chapter/figures/l2"
 # tipo: "sine" (regime) ou "vf" (rampa). Define o conjunto de plots.
 CASES = [
     {"id": "sine",  "dir": "l2_sine_60hz_realts", "csv": "sine_vhdl_vs_c.csv",
-     "tipo": "sine", "label": "Seno 60 Hz",
-     "zoom": [(1.0, 4.0, "Regime permanente", "#009E73")]},   # ms (ver t_ms)
+     "tipo": "sine", "label": "Partida senoidal 60 Hz",
+     # 50 ms de partida do repouso sob senoide: NAO e regime permanente.
+     # Zoom nos ultimos ~1.5 ciclos, onde a corrente ja esta mais desenvolvida.
+     "zoom": [(30.0, 50.0, "Detalhe de fase", "#009E73")]},   # ms (ver t_ms)
     {"id": "vf50ms", "dir": "l2_vf_50ms_realts", "csv": "vf_vhdl_vs_c.csv",
      "tipo": "vf", "label": "V/f 50 ms",
      "plots": ["overlay", "residual"],   # override: transitorio curto
@@ -151,19 +155,19 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
 
     labels = ("$i_a$", "$i_b$", "$i_c$")
     for k in range(3):
-        axes[0].plot(t, ref_i[k], color=PHASE_COLORS[k], **REF_STYLE)
         axes[0].plot(t, vhdl_i[k], color=PHASE_COLORS[k], label=labels[k], **VHDL_STYLE)
+        axes[0].plot(t, ref_i[k], color=PHASE_COLORS[k], **REF_STYLE)
     axes[0].set_ylabel("Corrente [A]")
     axes[0].set_title(f"L2 — {case['label']}: correntes (— VHDL, - - C)")
     axes[0].legend(loc="upper right", ncol=3, fontsize=8)
 
-    axes[1].plot(t, ref_flux, color=COL_C, **REF_STYLE, label="C")
     axes[1].plot(t, vhdl_flux, color=COL_VHDL, **VHDL_STYLE, label="VHDL")
+    axes[1].plot(t, ref_flux, color=COL_C, **REF_STYLE, label="C")
     axes[1].set_ylabel(r"$|\psi_r|$ [Wb]")
     axes[1].legend(loc="upper right", fontsize=8)
 
-    axes[2].plot(t, np.asarray(data["ref_speed"]), color=COL_C, **REF_STYLE, label="C")
     axes[2].plot(t, np.asarray(data["vhdl_speed"]), color=COL_VHDL, **VHDL_STYLE, label="VHDL")
+    axes[2].plot(t, np.asarray(data["ref_speed"]), color=COL_C, **REF_STYLE, label="C")
     axes[2].set_ylabel(r"$\omega$ [rad/s]")
     axes[2].set_xlabel("Tempo [s]")
     axes[2].legend(loc="upper right", fontsize=8)
@@ -180,10 +184,10 @@ def plot_lissajous(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> N
     """Trajetoria espaco-vetorial i_beta x i_alpha (VHDL vs C)."""
     s = _subsample(len(t_ms))
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.plot(np.asarray(data["ref_i_alpha"])[s], np.asarray(data["ref_i_beta"])[s],
-            color=COL_C, label="C", **REF_STYLE)
     ax.plot(np.asarray(data["vhdl_i_alpha"])[s], np.asarray(data["vhdl_i_beta"])[s],
             color=COL_VHDL, label="VHDL", **VHDL_STYLE)
+    ax.plot(np.asarray(data["ref_i_alpha"])[s], np.asarray(data["ref_i_beta"])[s],
+            color=COL_C, label="C", **REF_STYLE)
     ax.set_xlabel(r"$i_\alpha$ [A]")
     ax.set_ylabel(r"$i_\beta$ [A]")
     ax.set_aspect("equal", adjustable="datalim")
@@ -205,8 +209,8 @@ def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> 
     if nz == 0:
         axes = [axes]
     top = axes[0]
-    top.plot(t, ref_ia, color=COL_C, label="$i_a$ (C)", **REF_STYLE)
     top.plot(t, vhdl_ia, color=COL_VHDL, label="$i_a$ (VHDL)", **VHDL_STYLE)
+    top.plot(t, ref_ia, color=COL_C, label="$i_a$ (C)", **REF_STYLE)
     for (a_ms, b_ms, lbl, col) in zooms:
         top.axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.15, label=lbl)
     top.set_ylabel("$i_a$ [A]")
@@ -217,8 +221,8 @@ def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> 
     for ax, (a_ms, b_ms, lbl, col) in zip(axes[1:], zooms):
         a, b = a_ms / 1000.0, b_ms / 1000.0
         mask = (t >= a) & (t <= b)
-        ax.plot(t[mask], ref_ia[mask], color=COL_C, label="C", **REF_STYLE)
         ax.plot(t[mask], vhdl_ia[mask], color=COL_VHDL, label="VHDL", **VHDL_STYLE)
+        ax.plot(t[mask], ref_ia[mask], color=COL_C, label="C", **REF_STYLE)
         ax.set_title(f"{lbl}: {a_ms:.0f}–{b_ms:.0f} ms", fontsize=10)
         ax.set_ylabel("$i_a$ [A]")
         ax.legend(loc="upper right", fontsize=8)
