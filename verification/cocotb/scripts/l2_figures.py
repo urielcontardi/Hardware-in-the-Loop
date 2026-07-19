@@ -269,6 +269,15 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
     axes[2].set_xlabel("Tempo [s]")
     axes[2].legend(loc="upper right", fontsize=8)
 
+    # sombreia a(s) janela(s) de zoom, ligando a visão geral aos recortes
+    for i, (a_ms, b_ms, lbl, col) in enumerate(case.get("zoom", [])):
+        for ax in axes:
+            ax.axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.12)
+        axes[0].axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.12,
+                        label=f"zoom: {lbl}")
+    if case.get("zoom"):
+        axes[0].legend(loc="upper right", ncol=4, fontsize=7.5)
+
     save_fig(fig, out_dir, _fig_name(case, "Overlay"))
 
 
