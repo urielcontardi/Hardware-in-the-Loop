@@ -117,6 +117,56 @@ def compute_metrics(data: dict[str, list[float]]) -> dict[str, dict[str, float]]
     return out
 
 
+# ── Análise de fase (vetor espacial) ──────────────────────────────────────────
+def space_vector_angle_deg(i_alpha, i_beta) -> np.ndarray:
+    """Ângulo do vetor espacial da corrente, em graus, desdobrado (unwrapped)."""
+    a = np.asarray(i_alpha, dtype=float)
+    b = np.asarray(i_beta, dtype=float)
+    return np.degrees(np.unwrap(np.arctan2(b, a)))
+
+
+def phase_drift_deg(data: dict) -> np.ndarray:
+    """Δφ(t) = ângulo do vetor espacial (VHDL − referência), em graus."""
+    return (space_vector_angle_deg(data["vhdl_i_alpha"], data["vhdl_i_beta"])
+            - space_vector_angle_deg(data["ref_i_alpha"], data["ref_i_beta"]))
+
+
+def phase_analysis(t_ms: np.ndarray, data: dict, window_s: tuple | None = None,
+                   f_hz: float = 60.0) -> dict[str, float]:
+    """Lag de fase (por correlação cruzada) e NRMSE bruto vs. alinhado numa janela.
+
+    Separa a parcela de erro que é só defasagem (removida ao alinhar) da parcela
+    de forma. `window_s` default = último quarto do registro (regime).
+    """
+    t = np.asarray(t_ms, dtype=float) / 1000.0
+    if window_s is None:
+        window_s = (0.75 * float(t.max()), float(t.max()))
+    a, b = window_s
+    m = (t >= a) & (t <= b)
+    v = np.asarray(data["vhdl_i_alpha"], dtype=float)[m]
+    r = np.asarray(data["ref_i_alpha"], dtype=float)[m]
+    tt = t[m]
+    dt = float(np.median(np.diff(tt)))
+
+    corr = np.correlate(v - v.mean(), r - r.mean(), "full")
+    lag = int(np.argmax(corr) - (len(v) - 1))
+    phase_deg = 360.0 * f_hz * lag * dt
+
+    def _n(a_, b_):
+        return float(np.sqrt(np.mean((a_ - b_) ** 2)) / np.sqrt(np.mean(b_ ** 2)))
+
+    n_raw = _n(v, r)
+    if lag > 0:
+        va, ra = v[lag:], r[:len(r) - lag]
+    elif lag < 0:
+        va, ra = v[:lag], r[-lag:]
+    else:
+        va, ra = v, r
+    n_aligned = _n(va, ra)
+    return {"phase_deg": phase_deg, "lag_samples": lag,
+            "nrmse_raw": n_raw, "nrmse_aligned": n_aligned}
+
+
 # ── Carregamento / gravação ───────────────────────────────────────────────────
 def _fig_id(case: dict) -> str:
     if "fig_id" in case:

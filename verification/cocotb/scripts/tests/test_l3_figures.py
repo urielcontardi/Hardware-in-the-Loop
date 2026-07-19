@@ -70,6 +70,29 @@ def test_plot_pwm_stimulus_creates_files(tmp_path):
     assert (tmp_path / "HIL_L3_VF2s_PWMStimulus.pdf").stat().st_size > 0
 
 
+def test_phase_analysis_recovers_known_offset():
+    fs = 4000.0
+    t = np.arange(0.0, 0.5, 1.0 / fs)
+    a = np.sin(2 * np.pi * 60 * t)
+    b = np.sin(2 * np.pi * 60 * t - np.pi / 2)  # vetor girante
+    k = 5  # ref adiantada de k amostras
+    ra, rb = np.roll(a, k), np.roll(b, k)
+    data = {"vhdl_i_alpha": a, "vhdl_i_beta": b, "ref_i_alpha": ra, "ref_i_beta": rb}
+    pa = eng.phase_analysis(t * 1000.0, data, window_s=(0.1, 0.5))
+    expected = 360.0 * 60 * k / fs
+    assert abs(abs(pa["phase_deg"]) - expected) < 2.0
+    assert pa["nrmse_aligned"] < pa["nrmse_raw"]
+
+
+def test_phase_drift_zero_when_identical():
+    t = np.linspace(0, 0.1, 400)
+    a = np.sin(2 * np.pi * 60 * t)
+    b = np.sin(2 * np.pi * 60 * t - np.pi / 2)
+    data = {"vhdl_i_alpha": a, "vhdl_i_beta": b, "ref_i_alpha": a, "ref_i_beta": b}
+    d = eng.phase_drift_deg(data)
+    assert np.max(np.abs(d)) < 1e-6
+
+
 import l3_figures as l3
 
 
@@ -100,3 +123,15 @@ def test_generate_fullstack_end_to_end(tmp_path):
     metrics = eng.generate_case(case, tmp_path, l3.CAMPAIGN_DIR)
     assert (tmp_path / "HIL_L3_Fullstack_VF2s_Overlay.pdf").stat().st_size > 0
     assert metrics["i_alpha"]["r2"] > 0.9
+
+
+def test_phase_drift_comparison_figure_and_numbers(tmp_path):
+    replay = next(c for c in l3.CASES_L3 if c["id"] == "pwmreplay_vf2s")
+    full = next(c for c in l3.CASES_L3 if c["id"] == "fullstack_vf2s")
+    if not (l3.CAMPAIGN_DIR / full["dir"] / full["csv"]).is_file():
+        pytest.skip("dados L3 da campanha_03 ausentes")
+    info = l3.plot_phase_drift_comparison(replay, full, tmp_path, l3.CAMPAIGN_DIR)
+    assert (tmp_path / "HIL_L3_PhaseDrift.pdf").stat().st_size > 0
+    # replay ~0°, full-stack ~20° no fim
+    assert abs(info["replay_end_deg"]) < 3.0
+    assert info["fullstack_end_deg"] > 15.0
