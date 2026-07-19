@@ -169,3 +169,59 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
     axes[2].legend(loc="upper right", fontsize=8)
 
     save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_Overlay")
+
+
+def _subsample(n: int, target: int = 5000) -> slice:
+    step = max(1, n // target)
+    return slice(None, None, step)
+
+
+def plot_lissajous(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
+    """Trajetoria espaco-vetorial i_beta x i_alpha (VHDL vs C)."""
+    s = _subsample(len(t_ms))
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot(np.asarray(data["ref_i_alpha"])[s], np.asarray(data["ref_i_beta"])[s],
+            color=COL_C, label="C", **REF_STYLE)
+    ax.plot(np.asarray(data["vhdl_i_alpha"])[s], np.asarray(data["vhdl_i_beta"])[s],
+            color=COL_VHDL, label="VHDL", **VHDL_STYLE)
+    ax.set_xlabel(r"$i_\alpha$ [A]")
+    ax.set_ylabel(r"$i_\beta$ [A]")
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_title(f"L2 — {case['label']}: trajetória $i_\\beta \\times i_\\alpha$")
+    ax.legend(loc="upper right", fontsize=9)
+    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_Lissajous")
+
+
+def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
+    """Corrente ia completa + regioes sombreadas + paineis de zoom (estilo L1)."""
+    t = t_ms / 1000.0  # s
+    vhdl_ia = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])[0]
+    ref_ia = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])[0]
+    vhdl_ia, ref_ia = np.asarray(vhdl_ia), np.asarray(ref_ia)
+
+    zooms = case.get("zoom", [])
+    nz = len(zooms)
+    fig, axes = plt.subplots(1 + nz, 1, figsize=(8, 3 + 2.2 * nz))
+    if nz == 0:
+        axes = [axes]
+    top = axes[0]
+    top.plot(t, ref_ia, color=COL_C, label="$i_a$ (C)", **REF_STYLE)
+    top.plot(t, vhdl_ia, color=COL_VHDL, label="$i_a$ (VHDL)", **VHDL_STYLE)
+    for (a_ms, b_ms, lbl, col) in zooms:
+        top.axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.15, label=lbl)
+    top.set_ylabel("$i_a$ [A]")
+    top.set_xlabel("Tempo [s]")
+    top.set_title(f"L2 — {case['label']}: visão completa e zoom")
+    top.legend(loc="upper right", fontsize=8)
+
+    for ax, (a_ms, b_ms, lbl, col) in zip(axes[1:], zooms):
+        a, b = a_ms / 1000.0, b_ms / 1000.0
+        mask = (t >= a) & (t <= b)
+        ax.plot(t[mask], ref_ia[mask], color=COL_C, label="C", **REF_STYLE)
+        ax.plot(t[mask], vhdl_ia[mask], color=COL_VHDL, label="VHDL", **VHDL_STYLE)
+        ax.set_title(f"{lbl}: {a_ms:.0f}–{b_ms:.0f} ms", fontsize=10)
+        ax.set_ylabel("$i_a$ [A]")
+        ax.legend(loc="upper right", fontsize=8)
+    axes[-1].set_xlabel("Tempo [s]")
+    fig.tight_layout()
+    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_PhaseZoom")

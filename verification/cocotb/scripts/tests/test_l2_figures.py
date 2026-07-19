@@ -63,3 +63,40 @@ def test_plot_overlay_creates_files(tmp_path):
     l2.plot_overlay(t_ms, data, case, tmp_path)
     assert (tmp_path / "HIL_L2_Smoke_Overlay.pdf").stat().st_size > 0
     assert (tmp_path / "HIL_L2_Smoke_Overlay.png").stat().st_size > 0
+
+
+import numpy as np
+
+
+def _synthetic_case(tmp_path, tipo="sine", zoom=None):
+    n = 600
+    t_us = np.linspace(0, 5000, n)  # 0..5 ms
+    ang = 2 * np.pi * 60 * (t_us * 1e-6)
+    ia = np.cos(ang)
+    ib = np.cos(ang - 2 * np.pi / 3)
+    # de volta a alpha/beta (Clarke direta) para alimentar o CSV-like dict
+    i_alpha = ia
+    i_beta = (ia + 2 * ib) / np.sqrt(3)
+    data = {
+        "t_us": t_us.tolist(),
+        "vhdl_i_alpha": i_alpha.tolist(), "vhdl_i_beta": i_beta.tolist(),
+        "ref_i_alpha": (i_alpha * 1.001).tolist(), "ref_i_beta": (i_beta * 1.001).tolist(),
+        "vhdl_flux_alpha": (0.5 * i_alpha).tolist(), "vhdl_flux_beta": (0.5 * i_beta).tolist(),
+        "ref_flux_alpha": (0.5 * i_alpha).tolist(), "ref_flux_beta": (0.5 * i_beta).tolist(),
+        "vhdl_speed": np.linspace(0, 180, n).tolist(),
+        "ref_speed": np.linspace(0, 180, n).tolist(),
+    }
+    case = {"id": "sine", "label": "Seno", "tipo": tipo, "zoom": zoom or [(1.0, 4.0, "Regime", "#009E73")]}
+    return t_us * 1e-3, data, case
+
+
+def test_plot_lissajous_creates_files(tmp_path):
+    t_ms, data, case = _synthetic_case(tmp_path)
+    l2.plot_lissajous(t_ms, data, case, tmp_path)
+    assert (tmp_path / "HIL_L2_Sine_Lissajous.pdf").stat().st_size > 0
+
+
+def test_plot_phase_zoom_creates_files(tmp_path):
+    t_ms, data, case = _synthetic_case(tmp_path)
+    l2.plot_phase_zoom(t_ms, data, case, tmp_path)
+    assert (tmp_path / "HIL_L2_Sine_PhaseZoom.pdf").stat().st_size > 0
