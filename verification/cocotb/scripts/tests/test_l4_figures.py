@@ -40,3 +40,13 @@ def test_generate_l4_end_to_end(tmp_path):
     assert (tmp_path / "HIL_L4_S0_Partida_Overlay.pdf").stat().st_size > 0
     # FPGA real vs C: R2 alto em regime
     assert metrics["regime"]["i_alpha"]["r2"] > 0.9
+
+
+def test_full_overview_end_to_end(tmp_path):
+    case = next(c for c in l4.CASES_L4 if c["id"] == "S0")
+    hb = l4.CAMPAIGN_L4 / case["dir"] / "raw/capture.hilbin"
+    if not hb.is_file():
+        pytest.skip("captura .hilbin ausente")
+    l4.plot_full_overview(case, tmp_path, l4.CAMPAIGN_L4)
+    assert (tmp_path / "HIL_L4_S0_Overview.pdf").stat().st_size > 0
+    assert (tmp_path / "HIL_L4_S0_Overview.png").stat().st_size > 0

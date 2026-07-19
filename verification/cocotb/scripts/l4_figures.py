@@ -78,6 +78,9 @@ def _seg_case(case: dict, seg: str) -> dict:
 
 def generate_case_l4(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) -> dict:
     metrics: dict[str, dict] = {}
+    # visão geral do tempo todo (FPGA real) antes dos zooms
+    if (campaign / case["dir"] / "raw/capture.hilbin").is_file():
+        plot_full_overview(case, out_dir, campaign)
     for seg in SEGMENTS:
         if not _npz_path(case, seg, campaign).is_file():
             continue
@@ -90,6 +93,61 @@ def generate_case_l4(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) ->
         metrics[seg] = eng.compute_metrics(data)
     print(f"[ok] {case['id']}: figuras L4 em {out_dir}")
     return metrics
+
+
+def _load_full_fpga(case: dict, campaign: Path) -> dict:
+    """Trajetória FPGA completa (todo o segmento monotônico) direto do .hilbin.
+
+    Só faz parsing do binário (rápido, ~0,03 s); NÃO replaya o modelo C — a
+    comparação detalhada fica nos zooms partida/regime.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import hilbin_vs_c as H
+    _, fpga, _ = H.parse_hilbin(campaign / case["dir"] / "raw/capture.hilbin")
+    return H._clip_fpga(fpga)
+
+
+def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) -> None:
+    """Visão geral da captura inteira (FPGA real), com as janelas partida/regime
+    sombreadas — contexto para o leitor antes dos zooms."""
+    fpga = _load_full_fpga(case, campaign)
+    n = fpga["t"].size
+    sl = slice(None, None, max(1, n // 4000))
+    t = fpga["t"][sl]
+    ia, ib = fpga["ia"][sl], fpga["ib"][sl]
+    ic = -(ia + ib)
+    flux = np.sqrt(fpga["flux_a"][sl] ** 2 + fpga["flux_b"][sl] ** 2)
+    spd = fpga["speed"][sl]
+
+    # janelas dos zooms (para sombrear), lidas do metrics.json
+    wins = []
+    mj_path = campaign / case["dir"] / "l4_pwm_replay/capture/metrics.json"
+    if mj_path.is_file():
+        mj = json.loads(mj_path.read_text())
+        for lbl, col in (("partida", eng.PHASE_COLORS[0]), ("regime", eng.PHASE_COLORS[2])):
+            w = mj.get(lbl, {}).get("window_s")
+            if w:
+                wins.append((w[0], w[1], _SEG_NAME[lbl], col))
+
+    plt = eng.plt
+    fig, axes = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
+    for k, (y, lbl) in enumerate(((ia, "$i_a$"), (ib, "$i_b$"), (ic, "$i_c$"))):
+        axes[0].plot(t, y, color=eng.PHASE_COLORS[k], linewidth=0.7, label=lbl)
+    axes[0].set_ylabel("Corrente [A]")
+    axes[0].set_title(f"L4 — {case['label']}: visão geral da captura (FPGA real)")
+    axes[1].plot(t, flux, color=eng.COL_VHDL, linewidth=0.9)
+    axes[1].set_ylabel(r"$|\psi_r|$ [Wb]")
+    axes[2].plot(t, spd, color=eng.COL_VHDL, linewidth=0.9)
+    axes[2].set_ylabel(r"$\omega$ [rad/s]")
+    axes[2].set_xlabel("Tempo [s]")
+
+    for (a, b, lbl, col) in wins:
+        for ax in axes:
+            ax.axvspan(a, b, color=col, alpha=0.13)
+        axes[0].axvspan(a, b, color=col, alpha=0.13, label=f"zoom: {lbl}")
+    axes[0].legend(loc="upper right", ncol=5, fontsize=7.5)
+    eng.save_fig(fig, out_dir, f"HIL_L4_{case['id']}_Overview")
 
 
 def main(argv=None) -> None:
