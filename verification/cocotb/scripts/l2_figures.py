@@ -123,10 +123,37 @@ def _fig_id(case: dict) -> str:
         case["id"], case["id"].capitalize())
 
 
+_SIGS = ("i_alpha", "i_beta", "flux_alpha", "flux_beta", "speed")
+_TIME_SCALE_MS = {"t_us": 1e-3, "t_s": 1e3}
+
+
 def load_case(case: dict, campaign: Path = CAMPAIGN_DIR) -> tuple[np.ndarray, dict]:
+    """Carrega o CSV do caso e devolve (t_ms, data) com colunas canonicas.
+
+    Aceita colunas de tempo distintas (`t_us` no L2, `t_s` no L3) e prefixos de
+    referencia distintos (`ref_` no L2/PWM-replay, `c_` no full-stack L3),
+    remapeando tudo para as chaves canonicas `vhdl_*`/`ref_*`.
+    """
+    time_col = case.get("time_col", "t_us")
+    ref_prefix = case.get("ref_prefix", "ref")
+    extra = list(case.get("extra_cols", []))
+
+    cols = [time_col]
+    cols += [f"vhdl_{s}" for s in _SIGS]
+    cols += [f"{ref_prefix}_{s}" for s in _SIGS]
+    cols += [c for c in extra if c not in cols]
+
     csv_path = campaign / case["dir"] / case["csv"]
-    data = cc.load_csv_columns(csv_path, CSV_COLS)
-    t_ms = np.asarray(data["t_us"], dtype=float) * 1e-3
+    raw = cc.load_csv_columns(csv_path, cols)
+
+    data: dict[str, list[float]] = {}
+    for s in _SIGS:
+        data[f"vhdl_{s}"] = raw[f"vhdl_{s}"]
+        data[f"ref_{s}"] = raw[f"{ref_prefix}_{s}"]
+    for c in extra:
+        data[c] = raw[c]
+
+    t_ms = np.asarray(raw[time_col], dtype=float) * _TIME_SCALE_MS[time_col]
     return t_ms, data
 
 
