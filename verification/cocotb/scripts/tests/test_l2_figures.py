@@ -100,3 +100,17 @@ def test_plot_phase_zoom_creates_files(tmp_path):
     t_ms, data, case = _synthetic_case(tmp_path)
     l2.plot_phase_zoom(t_ms, data, case, tmp_path)
     assert (tmp_path / "HIL_L2_Sine_PhaseZoom.pdf").stat().st_size > 0
+
+
+def test_plot_residual_creates_files(tmp_path):
+    t_ms, data, case = _synthetic_case(tmp_path)
+    l2.plot_residual(t_ms, data, case, tmp_path)
+    assert (tmp_path / "HIL_L2_Sine_Residual.pdf").stat().st_size > 0
+
+
+def test_plot_window_nrmse_creates_files(tmp_path):
+    t_ms, data, case = _synthetic_case(tmp_path)
+    case = dict(case, id="vf2s", label="V/f 2 s",
+                windows_s=[(0.0, 0.002), (0.002, 0.005)])
+    l2.plot_window_nrmse(t_ms, data, case, tmp_path)
+    assert (tmp_path / "HIL_L2_VF2s_WindowNRMSE.pdf").stat().st_size > 0

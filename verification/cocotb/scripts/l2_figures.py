@@ -225,3 +225,58 @@ def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> 
     axes[-1].set_xlabel("Tempo [s]")
     fig.tight_layout()
     save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_PhaseZoom")
+
+
+def plot_residual(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
+    """Traco de erro epsilon(t)=VHDL-C: correntes de fase e velocidade."""
+    t = t_ms / 1000.0
+    vhdl_i = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
+    ref_i = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
+    labels = ("$\\varepsilon_{i_a}$", "$\\varepsilon_{i_b}$", "$\\varepsilon_{i_c}$")
+
+    fig, axes = plt.subplots(2, 1, figsize=(7, 5), sharex=True)
+    for k in range(3):
+        err = np.asarray(vhdl_i[k]) - np.asarray(ref_i[k])
+        axes[0].plot(t, err, color=PHASE_COLORS[k], linewidth=0.9, label=labels[k])
+    axes[0].axhline(0.0, color="0.5", linewidth=0.6)
+    axes[0].set_ylabel("Erro corrente [A]")
+    axes[0].set_title(f"L2 — {case['label']}: erro VHDL − C")
+    axes[0].legend(loc="upper right", ncol=3, fontsize=8)
+
+    err_w = np.asarray(data["vhdl_speed"]) - np.asarray(data["ref_speed"])
+    axes[1].plot(t, err_w, color=COL_ERR_SPEED, linewidth=1.0, label=r"$\varepsilon_\omega$")
+    axes[1].axhline(0.0, color="0.5", linewidth=0.6)
+    axes[1].set_ylabel("Erro veloc. [rad/s]")
+    axes[1].set_xlabel("Tempo [s]")
+    axes[1].legend(loc="upper right", fontsize=8)
+    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_Residual")
+
+
+def plot_window_nrmse(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
+    """NRMSE de i_alpha/i_beta por janela temporal (barras)."""
+    t_s = t_ms / 1000.0
+    windows = case.get("windows_s", [])
+    ia_ref, ia_vhdl = np.asarray(data["ref_i_alpha"]), np.asarray(data["vhdl_i_alpha"])
+    ib_ref, ib_vhdl = np.asarray(data["ref_i_beta"]), np.asarray(data["vhdl_i_beta"])
+
+    nrmse_a, nrmse_b, xlabels = [], [], []
+    for (a, b) in windows:
+        m = (t_s >= a) & (t_s < b)
+        if not np.any(m):
+            nrmse_a.append(0.0); nrmse_b.append(0.0)
+        else:
+            nrmse_a.append(_nrmse(ia_ref[m], ia_vhdl[m]) * 100.0)
+            nrmse_b.append(_nrmse(ib_ref[m], ib_vhdl[m]) * 100.0)
+        xlabels.append(f"{a:g}–{b:g}")
+
+    x = np.arange(len(windows))
+    w = 0.4
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.bar(x - w / 2, nrmse_a, w, color=PHASE_COLORS[0], label=r"$i_\alpha$")
+    ax.bar(x + w / 2, nrmse_b, w, color=PHASE_COLORS[1], label=r"$i_\beta$")
+    ax.set_xticks(x); ax.set_xticklabels(xlabels)
+    ax.set_xlabel("Janela [s]")
+    ax.set_ylabel("NRMSE [%]")
+    ax.set_title(f"L2 — {case['label']}: NRMSE por janela")
+    ax.legend(fontsize=9)
+    save_fig(fig, out_dir, f"HIL_L2_{_fig_id(case)}_WindowNRMSE")
