@@ -120,3 +120,6 @@ verification/results/
 docs/results-chapter/
 
 .env
+# Scratch de ferramentas de agente e artefatos de build do simulador
+.superpowers/
+verification/cocotb/work/
