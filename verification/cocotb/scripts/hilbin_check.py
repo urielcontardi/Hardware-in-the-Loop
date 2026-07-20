@@ -23,6 +23,7 @@ import numpy as np
 RUNS_DIR = Path(__file__).resolve().parents[3] / "apps" / "hil-go" / "runs"
 
 _PWM_DTYPE = np.dtype([("t", "<f4"), ("a", "u1"), ("b", "u1"), ("c", "u1"), ("pad", "u1")])
+_PWM_DTYPE_V2 = np.dtype([("cycles", "<u4"), ("a", "u1"), ("b", "u1"), ("c", "u1"), ("pad", "u1")])
 _SAMPLE_FLOATS = 7  # t, ia, ib, flux_a, flux_b, speed, pad
 
 GAP_WARN_S = 0.010   # > 10 ms → warning (5 ms is typical PWM period at 200 Hz)
@@ -93,8 +94,16 @@ def parse_hilbin(path: Path):
     pwm_count = struct.unpack_from("<I", data, pos)[0]
     pos += 4
     if pwm_count:
-        ev = np.frombuffer(data, dtype=_PWM_DTYPE, count=pwm_count, offset=pos)
-        t_pwm = ev["t"].astype(np.float64)
+        # v1 timestamped PWM events as float32 seconds, losing sub-microsecond
+        # structure late in a capture; v2 stores exact uint32 run-local cycles.
+        version = data[7]
+        dtype = _PWM_DTYPE if version < 2 else _PWM_DTYPE_V2
+        ev = np.frombuffer(data, dtype=dtype, count=pwm_count, offset=pos)
+        if version < 2:
+            t_pwm = ev["t"].astype(np.float64)
+        else:
+            clock_hz = float(meta.get("clock_hz") or 100_000_000)
+            t_pwm = ev["cycles"].astype(np.float64) / clock_hz
         a_pwm = ev["a"].astype(int)
         b_pwm = ev["b"].astype(int)
         c_pwm = ev["c"].astype(int)

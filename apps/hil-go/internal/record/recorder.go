@@ -34,8 +34,20 @@ type metadata struct {
 	ClockHz     int    `json:"clock_hz"`
 }
 
+// FormatVersion is written both to the header byte and to the metadata JSON.
+// v1 stored PWM event timestamps as float32 seconds; v2 stores them as uint32
+// run-local clock cycles (see pwmRecord). The record stays 8 bytes wide, so
+// readers must use the version to know how to decode the first 4.
+const FormatVersion = 2
+
+// pwmRecord holds the run-local hardware cycle count, not seconds. A float32
+// second only has a 24-bit mantissa, so its resolution decays with elapsed
+// time: ~7 ns at t=0.07 s but 238 ns at t=2 s and 477 ns at t=5 s. The NPC
+// dead time is ~520 ns, so past a second of capture a float32 timeline can no
+// longer resolve a dead-time pulse and the replayed gate waveform degrades.
+// A uint32 of 100 MHz cycles is exact over the counter's full 42.9 s range.
 type pwmRecord struct {
-	t       float32
+	cycles  uint32
 	a, b, c uint8
 }
 
@@ -109,14 +121,14 @@ func (r *Recorder) Start(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	metaBytes, err := json.Marshal(metadata{Version: 1, Date: time.Now().UTC().Format(time.RFC3339Nano), Name: name, Raw: true, ClockHz: clockHz})
+	metaBytes, err := json.Marshal(metadata{Version: FormatVersion, Date: time.Now().UTC().Format(time.RFC3339Nano), Name: name, Raw: true, ClockHz: clockHz})
 	if err != nil {
 		f.Close()
 		return "", err
 	}
 	header := make([]byte, 12+len(metaBytes))
 	copy(header, "HILDATA")
-	header[7] = 1
+	header[7] = FormatVersion
 	binary.LittleEndian.PutUint32(header[8:], uint32(len(metaBytes)))
 	copy(header[12:], metaBytes)
 	if _, err := f.Write(header); err != nil {
@@ -192,11 +204,11 @@ func (r *Recorder) Stop() error {
 		return err
 	}
 	sort.SliceStable(r.pwmEvents, func(i, j int) bool {
-		return r.pwmEvents[i].t < r.pwmEvents[j].t
+		return r.pwmEvents[i].cycles < r.pwmEvents[j].cycles
 	})
 	for _, ev := range r.pwmEvents {
 		var raw [8]byte
-		binary.LittleEndian.PutUint32(raw[:4], math.Float32bits(ev.t))
+		binary.LittleEndian.PutUint32(raw[:4], ev.cycles)
 		raw[4], raw[5], raw[6] = ev.a, ev.b, ev.c
 		if _, err := r.file.Write(raw[:]); err != nil {
 			return err
@@ -290,12 +302,13 @@ func (r *Recorder) appendPWMEventLocked(ev pwmrecv.Event) {
 	if absTC < r.baseAbsCycles {
 		return
 	}
-	t := float32(float64(absTC-r.baseAbsCycles) / float64(r.pwmClockHz))
 	if len(r.pwmEvents) >= maxPWMEvents {
 		r.dropped.Add(1)
 		return
 	}
-	r.pwmEvents = append(r.pwmEvents, pwmRecord{t: t, a: ev.A, b: ev.B, c: ev.C})
+	r.pwmEvents = append(r.pwmEvents, pwmRecord{
+		cycles: uint32(absTC - r.baseAbsCycles), a: ev.A, b: ev.B, c: ev.C,
+	})
 }
 
 func (r *Recorder) flushPendingPWMLocked() {
@@ -399,7 +412,7 @@ func mergeHilbinMeta(data []byte, extra map[string]any) ([]byte, error) {
 	body := data[origAligned:]
 	result := make([]byte, newAligned+len(body))
 	copy(result[:7], "HILDATA")
-	result[7] = 1
+	result[7] = data[7] // preserve the source file's format version
 	binary.LittleEndian.PutUint32(result[8:12], uint32(len(newJSON)))
 	copy(result[12:], newJSON)
 	copy(result[newAligned:], body)

@@ -149,3 +149,52 @@ def test_too_few_samples_errors(tmp_path):
     r = hc.check_file(path)
     assert not r.ok
     assert any("few" in e.lower() for e in r.errors)
+
+
+# ── format v2: PWM timestamps as exact run-local cycles ──────────────────────
+
+def _make_hilbin_v2(tmp_path: Path, fpga_t, pwm_cycles, clock_hz=100_000_000):
+    """Build a v2 .hilbin, whose PWM records hold uint32 cycles, not f32 seconds."""
+    meta_bytes = json.dumps({
+        "version": 2, "date": "2026-01-01T00:00:00Z", "name": "test",
+        "sample_count": len(fpga_t), "pwm_count": len(pwm_cycles),
+        "raw": True, "clock_hz": clock_hz,
+    }).encode()
+    pre = b"HILDATA\x02" + struct.pack("<I", len(meta_bytes)) + meta_bytes
+    aligned = (len(pre) + 7) & ~7
+    header = pre + b"\x00" * (aligned - len(pre))
+
+    fpga_arr = np.zeros((len(fpga_t), 7), dtype="<f4")
+    fpga_arr[:, 0] = np.array(fpga_t, dtype="<f4")
+
+    pwm_bytes = b"".join(struct.pack("<I", c) + bytes([3, 3, 3, 0]) for c in pwm_cycles)
+    body = (struct.pack("<I", len(fpga_t)) + fpga_arr.tobytes()
+            + struct.pack("<I", len(pwm_cycles)) + pwm_bytes)
+    path = tmp_path / "test_v2.hilbin"
+    path.write_bytes(header + body)
+    return path
+
+
+def test_v2_decodes_cycles_to_seconds(tmp_path):
+    path = _make_hilbin_v2(tmp_path, list(np.linspace(0.0, 1.0, 50)),
+                           [0, 100_000_000, 200_000_000])
+    _, _, t_pwm, _, _, _ = hc.parse_hilbin(path)
+    np.testing.assert_allclose(t_pwm, [0.0, 1.0, 2.0], atol=1e-9)
+
+
+def test_v2_resolves_dead_time_five_seconds_in(tmp_path):
+    """The defect v2 exists to fix: a float32 second snaps event spacing to an
+    ulp grid that coarsens as the capture runs on (477 ns at t=5 s), so a
+    ~520 ns dead time is no longer recorded at its true width."""
+    base, dead = 500_000_000, 52          # 5 s, 520 ns at 100 MHz
+    path = _make_hilbin_v2(tmp_path, list(np.linspace(0.0, 6.0, 50)),
+                           [base, base + dead])
+    _, _, t_pwm, _, _, _ = hc.parse_hilbin(path)
+
+    # v2 keeps the interval exact.
+    assert abs((t_pwm[1] - t_pwm[0]) - 520e-9) < 1e-12
+
+    # v1 would have snapped the same pair to one 477 ns ulp: ~8% short here,
+    # and it degrades further as t grows (the ulp doubles every octave).
+    v1_gap = float(np.float32((base + dead) / 1e8) - np.float32(base / 1e8))
+    assert abs(v1_gap - 520e-9) > 20e-9
