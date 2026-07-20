@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_ROOT = REPO_ROOT / "verification" / "results"
 
@@ -27,6 +29,11 @@ TIMESERIES_CSV_CANDIDATES = [
     "ref_vhdl_vs_c.csv",
     "fullstack_vs_top.csv",
 ]
+
+# L4 runs (hilbin_vs_c.py) nest their artifacts one level deeper, in
+# <run_dir>/capture/, and split the capture into partida/regime windows,
+# each its own .npz (fpga_*/cmod_* arrays) instead of a single flat CSV.
+NPZ_PREFIX_PAIR = ("fpga_", "cmod_")
 
 
 @dataclass
@@ -94,11 +101,50 @@ def detect_time_column(csv_path: Path) -> tuple[str, float]:
 
 
 def load_metrics(run_dir: Path) -> dict | None:
-    path = run_dir / "metrics.json"
-    if not path.is_file():
-        return None
-    try:
-        doc = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    return doc.get("metrics", doc)
+    for path in (run_dir / "metrics.json", find_capture_dir(run_dir) / "metrics.json"):
+        if not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return doc.get("metrics", doc)
+    return None
+
+
+def find_capture_dir(run_dir: Path) -> Path:
+    """L4 runs (hilbin_vs_c.py) nest artifacts in <run_dir>/capture/."""
+    nested = run_dir / "capture"
+    return nested if nested.is_dir() else run_dir
+
+
+def list_npz_windows(run_dir: Path) -> dict[str, Path]:
+    """Maps window label (e.g. 'partida', 'regime') -> its .npz path."""
+    base = find_capture_dir(run_dir)
+    return {p.stem: p for p in sorted(base.glob("*.npz"))}
+
+
+def load_npz_window(npz_path: Path) -> dict[str, np.ndarray]:
+    with np.load(npz_path) as data:
+        return {key: data[key] for key in data.files}
+
+
+@dataclass
+class NpzChannelPair:
+    suffix: str
+    fpga_key: str
+    cmod_key: str
+
+
+def detect_npz_channel_pairs(keys: list[str]) -> list[NpzChannelPair]:
+    fpga_prefix, cmod_prefix = NPZ_PREFIX_PAIR
+    keyset = set(keys)
+    pairs = []
+    for key in keys:
+        if not key.startswith(fpga_prefix) or key == "fpga_t":
+            continue
+        suffix = key[len(fpga_prefix):]
+        cmod_key = f"{cmod_prefix}{suffix}"
+        if cmod_key in keyset:
+            pairs.append(NpzChannelPair(suffix=suffix, fpga_key=key, cmod_key=cmod_key))
+    return pairs
