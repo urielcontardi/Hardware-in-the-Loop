@@ -145,7 +145,7 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
     for (a, b, lbl, col) in wins:
         for ax in axes:
             ax.axvspan(a, b, color=col, alpha=0.13)
-        axes[0].axvspan(a, b, color=col, alpha=0.13, label=f"zoom: {lbl}")
+        axes[0].axvspan(a, b, color=col, alpha=0.13, label=lbl)
     axes[0].legend(loc="upper right", ncol=5, fontsize=7.5)
     eng.save_fig(fig, out_dir, f"HIL_L4_{case['id']}_Overview")
 

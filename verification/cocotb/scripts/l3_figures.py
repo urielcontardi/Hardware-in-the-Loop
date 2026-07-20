@@ -57,10 +57,9 @@ CASES_L3 = [
             pwm_zoom_ms=(25.0, 45.0)),
     _replay("pwmreplay_vf2s", "l3_top_pwm_replay_vf_2s", "PWMreplay_VF2s",
             "PWM replay — V/f 2 s", "vf",
-            plots=["overlay", "lissajous", "residual", "phase_zoom",
-                   "window_nrmse", "pwm_stimulus"],
-            zoom=[(1900.0, 2000.0, "Regime permanente", "#009E73")],
-            windows_s=_WINDOWS_2S, pwm_zoom_ms=(1900.0, 1920.0)),
+            # sem faixa de zoom no overlay: o zoom de fase e mostrado no full-stack
+            plots=["overlay", "residual", "pwm_stimulus"],
+            pwm_zoom_ms=(1900.0, 1920.0)),
     # ── Full-stack (C independente) ──────────────────────────────────────────
     _fullstack("fullstack_vf50ms", "l3_fullstack_mock_vf_50ms", "Fullstack_VF50ms",
                "Full-stack — V/f 50 ms", "vf",

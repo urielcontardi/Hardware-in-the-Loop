@@ -53,8 +53,8 @@ CASES = [
     {"id": "sine",  "dir": "l2_sine_60hz_realts", "csv": "sine_vhdl_vs_c.csv",
      "tipo": "sine", "label": "Partida senoidal 60 Hz",
      # 50 ms de partida do repouso sob senoide: NAO e regime permanente.
-     # Zoom nos ultimos ~1.5 ciclos, onde a corrente ja esta mais desenvolvida.
-     "zoom": [(30.0, 50.0, "Detalhe de fase", "#009E73")]},   # ms (ver t_ms)
+     # Sem faixa de zoom no overlay: nao ha figura de zoom deste caso no texto.
+     "plots": ["overlay", "lissajous"]},
     {"id": "vf50ms", "dir": "l2_vf_50ms_realts", "csv": "vf_vhdl_vs_c.csv",
      "tipo": "vf", "label": "V/f 50 ms",
      "plots": ["overlay", "residual"],   # override: transitorio curto
@@ -274,7 +274,7 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
         for ax in axes:
             ax.axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.12)
         axes[0].axvspan(a_ms / 1000.0, b_ms / 1000.0, color=col, alpha=0.12,
-                        label=f"zoom: {lbl}")
+                        label=lbl)
     if case.get("zoom"):
         axes[0].legend(loc="upper right", ncol=4, fontsize=7.5)
 
