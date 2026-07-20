@@ -117,5 +117,6 @@ verification/cocotb/reports
 # in each campaign dir for the actual data). Tooling code under
 # verification/cocotb/scripts/ and verification/cocotb/campaigns/ IS tracked.
 verification/results/
+docs/results-chapter/
 
 .env
