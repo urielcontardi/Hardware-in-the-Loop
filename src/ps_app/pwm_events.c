@@ -47,7 +47,13 @@ static void send_events(uint64_t *events, int n, uint32_t status)
                         "%s[%u,%u,%u,%u,%u,%u]",
                         i ? "," : "", t, a, b, c, mask, epoch);
     }
-    if (pos <= 0 || pos >= (int)sizeof(json)) return;
+    /* snprintf reports what it *would* have written, so an overflowing batch
+     * used to silently drop all n events instead of the tail that did not fit. */
+    if (pos <= 0) return;
+    if (pos >= (int)sizeof(json)) {
+        fprintf(stderr, "pwm_events: JSON overflow, %d event(s) dropped\n", n);
+        return;
+    }
     pos += snprintf(json + pos, sizeof(json) - (size_t)pos, "]}");
     if (pos <= 0 || pos >= (int)sizeof(json)) return;
 
@@ -55,10 +61,25 @@ static void send_events(uint64_t *events, int n, uint32_t status)
                  (struct sockaddr *)&dest_addr, sizeof(dest_addr));
 }
 
+/* Two threads drain this FIFO: thread_fn() below, and the telemetry thread via
+ * pwm_events_poll(). gpio_pwmcap_read() is a non-atomic status/peek/pop
+ * sequence, so without this lock both could clear the empty flag, peek the same
+ * entry, and then pop twice -- reporting one event twice and consuming the next
+ * one without ever reading it. A lost event is the damaging half: when it is a
+ * dead-time exit, the offline replay leaves that leg parked at +-Vdc/4 for the
+ * rest of the carrier period. The duplicates are the visible tell (a
+ * change-triggered FIFO cannot emit two identical consecutive events), and they
+ * land in different UDP packets because each thread sends its own. seq is
+ * incremented under the same lock, since two senders racing on it is what put
+ * packets on the wire out of order. */
+static pthread_mutex_t drain_mu = PTHREAD_MUTEX_INITIALIZER;
+
 static int drain_once(void)
 {
     uint64_t batch[PWM_EVENTS_PER_PACKET];
     int n = 0;
+
+    pthread_mutex_lock(&drain_mu);
     uint32_t status = gpio_pwmcap_status();
     while (n < PWM_EVENTS_PER_PACKET && gpio_pwmcap_read(&batch[n])) {
         n++;
@@ -66,6 +87,7 @@ static int drain_once(void)
     if (n > 0) {
         send_events(batch, n, status);
     }
+    pthread_mutex_unlock(&drain_mu);
     return n;
 }
 
