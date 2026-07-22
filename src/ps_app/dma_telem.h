@@ -64,4 +64,25 @@ void dma_telem_deinit(void);
  */
 int dma_telem_next(dma_sample_t *out, int timeout_ms);
 
+/*
+ * dma_telem_resync — request that the in-flight S2MM transfer be abandoned
+ *                    and re-armed clean on its next poll.
+ *
+ * Call this right before pulsing the solver_reset GPIO bit (which holds the
+ * RTL's telem_clear_axi and silences the AXI4-Stream for ~2 ms — longer
+ * than one DMA burst). Without this, whatever partial burst was in flight
+ * when the stream goes silent sits parked mid-transfer; once the stream
+ * resumes, the remaining bytes are filled from the NEW run and the buffer
+ * decodes as one contiguous burst splicing old-run tail with new-run head,
+ * showing up as a large spurious discontinuity. Discarding the partial
+ * burst here costs at most one burst (~1.28 ms) of samples but keeps every
+ * decoded burst internally consistent.
+ *
+ * Safe to call even if DMA telemetry was never initialized or is not the
+ * active telemetry source (no-op in that case). Lock-free: only sets a
+ * flag polled by the thread that owns the DMA registers (dma_telem_next),
+ * so it never touches hardware registers from the caller's thread.
+ */
+void dma_telem_resync(void);
+
 #endif /* DMA_TELEM_H */

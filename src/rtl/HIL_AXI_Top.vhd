@@ -319,11 +319,8 @@ Architecture rtl of HIL_AXI_Top is
     --------------------------------------------------------------------------
     -- Registrador AXI4-Stream + Decimador
     --------------------------------------------------------------------------
-    constant AXIS_DMA_BURST_FRAMES_C : natural := 128;
     signal axis_tdata_r   : std_logic_vector(255 downto 0);
     signal axis_tvalid_r  : std_logic;
-    signal axis_tlast_r   : std_logic;
-    signal axis_frame_cnt : unsigned(6 downto 0);
     signal decim_count    : unsigned(29 downto 0);
     signal decim_ratio    : unsigned(29 downto 0);
 
@@ -1106,26 +1103,30 @@ Begin
     --   e envia ao DMA. Mantém TVALID até DMA confirmar com TREADY, mas não
     --   deixa TVALID preso entre amostras; caso contrário o DMA duplica o
     --   mesmo frame em todos os ciclos com TREADY=1.
+    --
+    --   TLAST não é gerado aqui (ver m_axis_tlast abaixo): o S2MM completa
+    --   pela contagem de bytes programada em S2MM_LENGTH, então não há
+    --   fronteira de pacote no RTL para (des)sincronizar com o PS. Antes
+    --   desta mudança, um contador de frames local emitia TLAST a cada 128
+    --   amostras, mas telem_clear_axi (pulsado em TODO RUN e STOP via
+    --   pwm_solver_reset_s) zerava esse contador sem tocar no progresso de
+    --   bytes já em curso no DMA -- o próximo TLAST chegava cedo demais e o
+    --   S2MM sinalizava DMAIntErr, descartando a rajada em voo.
     --------------------------------------------------------------------------
     AXI_Stream_Reg : process(clk)
     begin
         if rising_edge(clk) then
             if rst_n = '0' then
                 axis_tvalid_r <= '0';
-                axis_tlast_r  <= '0';
                 axis_tdata_r  <= (others => '0');
-                axis_frame_cnt <= (others => '0');
                 decim_count   <= (others => '0');
             elsif telem_clear_axi = '1' then
                 axis_tvalid_r <= '0';
-                axis_tlast_r  <= '0';
                 axis_tdata_r  <= (others => '0');
-                axis_frame_cnt <= (others => '0');
                 decim_count   <= (others => '0');
             else
                 if m_axis_tready = '1' and axis_tvalid_r = '1' then
                     axis_tvalid_r <= '0';
-                    axis_tlast_r  <= '0';
                 end if;
 
                 if solver_sample_pulse = '1' then
@@ -1141,14 +1142,6 @@ Begin
                             -- reconstruct 128 timestamps from one post-burst GPIO read.
                             axis_tdata_r(241 downto 210) <= std_logic_vector(pwm_cap_time);
                             axis_tdata_r(255 downto 242) <= std_logic_vector(pwm_cap_epoch(13 downto 0));
-                            if axis_frame_cnt = to_unsigned(AXIS_DMA_BURST_FRAMES_C - 1,
-                                                            axis_frame_cnt'length) then
-                                axis_tlast_r   <= '1';
-                                axis_frame_cnt <= (others => '0');
-                            else
-                                axis_tlast_r   <= '0';
-                                axis_frame_cnt <= axis_frame_cnt + 1;
-                            end if;
                             axis_tvalid_r <= '1';
                         end if;
                     else
@@ -1161,9 +1154,12 @@ Begin
 
     m_axis_tdata  <= axis_tdata_r;
     m_axis_tvalid <= axis_tvalid_r;
-    -- AXI DMA S2MM em modo simples espera TLAST no fim do pacote. O PS arma
-    -- DMA_BURST_FRAMES frames de 32 bytes; geramos TLAST no ultimo frame.
-    m_axis_tlast  <= axis_tlast_r;
+    -- AXI DMA S2MM em modo simples (sem SG) completa pela contagem de bytes
+    -- programada em S2MM_LENGTH pelo PS (DMA_BURST_BYTES), não por TLAST.
+    -- Mantendo TLAST baixo o tempo todo, o PS é a única autoridade sobre a
+    -- fronteira do pacote, eliminando a classe de DMAIntErr por TLAST
+    -- prematuro (ver comentário do processo acima).
+    m_axis_tlast  <= '0';
     m_axis_tkeep  <= (others => '1');  -- todos os 32 bytes do beat são válidos
 
 End Architecture rtl;

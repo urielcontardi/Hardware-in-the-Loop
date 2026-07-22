@@ -259,6 +259,13 @@ static void *telem_thread_fn(void *arg)
 static void start_telem_thread(void)
 {
     if (telem_active) return;
+    /* The DMA channel keeps accumulating into its currently-armed transfer
+     * the whole time nobody is calling dma_telem_next() (e.g. between
+     * daemon boot and the first "telem" command, or across a stop/restart
+     * of telemetry). Discard whatever partial/stale burst piled up during
+     * that idle gap so the first decoded burst isn't a splice of unrelated
+     * epochs (see dma_telem.h). */
+    dma_telem_resync();
     telem_active = 1;
     pthread_create(&telem_tid, NULL, telem_thread_fn, NULL);
     pwm_events_start();
@@ -294,6 +301,11 @@ static void ensure_telem_to(const char *ip)
 
 static void reset_solver_and_reprogram(void)
 {
+    /* vf_reset_solver() holds solver_reset (telem_clear_axi) for ~2 ms, which
+     * silences the DMA telemetry AXI4-Stream for longer than one burst.
+     * Abandon whatever burst is in flight now so it isn't spliced with the
+     * next run's first samples once the stream resumes (see dma_telem.h). */
+    dma_telem_resync();
     vf_reset_solver();
     if (program_motor_coeffs(&motor_params) != 0)
         fprintf(stderr, "WARNING: failed to reprogram motor model after solver reset\n");

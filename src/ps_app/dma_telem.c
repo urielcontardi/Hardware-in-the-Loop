@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -28,7 +29,9 @@
 #define DMACR_RESET    (1u << 2)
 
 #define DMASR_HALTED   (1u << 0)
-#define DMASR_INT_ERR  (1u << 4)   /* premature TLAST — transient at run boundaries */
+#define DMASR_INT_ERR  (1u << 4)   /* premature TLAST; RTL no longer asserts TLAST
+                                    * on the telemetry stream, so this should not
+                                    * fire anymore (kept as a guard). */
 #define DMASR_IOC_IRQ  (1u << 12)
 #define DMASR_ERR_IRQ  (1u << 14)
 
@@ -42,6 +45,10 @@ static uint32_t  buf_phys[DMA_N_BUFS] = { 0, 0 };
 static void     *buf_map_virt = NULL;
 static size_t    buf_map_size = 0;
 static int       active_buf = 0;   /* which buffer the DMA is currently filling */
+
+/* Set by dma_telem_resync() from any thread; consumed only by the thread
+ * running dma_telem_next(), which owns all DMA register access. */
+static atomic_int resync_pending = 0;
 
 /* ── Register helpers ────────────────────────────────────────────────────── */
 static inline void dma_wr(uint32_t off, uint32_t v) { dma_regs[off/4] = v; }
@@ -86,6 +93,15 @@ static void arm_transfer(int idx)
     dma_wr(S2MM_DA,     buf_phys[idx]);
     dma_wr(S2MM_DA_MSB, 0);
     dma_wr(S2MM_LENGTH, DMA_BURST_BYTES);  /* this arms and starts */
+}
+
+/* Abort whatever transfer is in flight and start a clean one on active_buf. */
+static void reset_and_rearm(void)
+{
+    dma_wr(S2MM_DMACR, DMACR_RESET);
+    usleep(1000);
+    dma_wr(S2MM_DMACR, DMACR_RUN);
+    arm_transfer(active_buf);
 }
 
 /* ── Decode a 32-byte frame into dma_sample_t ───────────────────────────── */
@@ -223,19 +239,26 @@ int dma_telem_next(dma_sample_t *out, int timeout_ms)
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     for (;;) {
+        if (atomic_exchange(&resync_pending, 0)) {
+            /* Caller is about to (or just did) pulse solver_reset, which holds
+             * telem_clear_axi and silences the AXI4-Stream for ~2 ms — longer
+             * than one burst. Abandon whatever partial burst is in flight now,
+             * before that silence starts, so we never splice its tail onto the
+             * next run's head. Costs at most one burst (~1.28 ms) of samples. */
+            reset_and_rearm();
+            return 0;
+        }
+
         uint32_t sr = dma_rd(S2MM_DMASR);
 
         if (sr & DMASR_ERR_IRQ) {
             fprintf(stderr, "dma_telem: error DMASR=0x%08x\n", sr);
-            /* Reset and re-arm */
-            dma_wr(S2MM_DMACR, DMACR_RESET);
-            usleep(1000);
-            dma_wr(S2MM_DMACR, DMACR_RUN);
-            arm_transfer(active_buf);
-            /* DMAIntErr (premature TLAST) is expected at solver-reset boundaries:
-             * the FPGA terminates the AXI stream early when the solver is held in
-             * reset. Treat as a skipped burst (return 0) so the caller does not
-             * count it toward the GPIO fallback threshold. */
+            reset_and_rearm();
+            /* DMAIntErr (premature TLAST) should no longer occur: the RTL ties
+             * the telemetry stream's TLAST low and lets S2MM complete purely by
+             * the programmed length. If this still fires, treat it as a skipped
+             * burst (return 0) rather than -1, so the caller does not count it
+             * toward the GPIO fallback threshold. */
             return (sr & DMASR_INT_ERR) ? 0 : -1;
         }
 
@@ -257,6 +280,17 @@ int dma_telem_next(dma_sample_t *out, int timeout_ms)
          * This thread is dedicated to telemetry and the Zynq has a spare core. */
     }
 
+    /* Re-check: resync_pending may have been set in the tiny window between
+     * the DMASR read that saw IOC_IRQ above and this point. Without this,
+     * a burst that legitimately finished a few instructions before the
+     * caller's resync request would still get decoded and returned as if
+     * clean, even though solver_reset is about to (or already did) start
+     * silencing the stream right after it. */
+    if (atomic_exchange(&resync_pending, 0)) {
+        reset_and_rearm();
+        return 0;
+    }
+
     /*
      * ── Double-buffer swap ─────────────────────────────────────────────────
      * Re-arm the DMA on the OTHER buffer FIRST so it starts immediately,
@@ -274,5 +308,29 @@ int dma_telem_next(dma_sample_t *out, int timeout_ms)
     for (int i = 0; i < DMA_BURST_FRAMES; i++)
         decode_frame(raw + i * DMA_FRAME_BYTES, &out[i]);
 
+    /* Diagnostic: prove no burst splices two runs together. `epoch`
+     * increments and `t_cycles` resets to 0 every time pwm_ctrl.enable
+     * rises (PWM_Capture process, HIL_AXI_Top.vhd), so a run boundary
+     * landing inside one decoded burst -- the exact corruption
+     * dma_telem_resync() exists to prevent -- shows up as an epoch change
+     * or a t_cycles drop between consecutive frames of the same buffer. */
+    for (int i = 1; i < DMA_BURST_FRAMES; i++) {
+        if (out[i].epoch != out[i - 1].epoch ||
+            out[i].t_cycles < out[i - 1].t_cycles) {
+            fprintf(stderr,
+                "dma_telem: SPLICED BURST at frame %d/%d: epoch %u->%u "
+                "t_cycles %u->%u (samples from two different runs mixed "
+                "in one buffer)\n",
+                i, DMA_BURST_FRAMES,
+                out[i - 1].epoch, out[i].epoch,
+                out[i - 1].t_cycles, out[i].t_cycles);
+        }
+    }
+
     return DMA_BURST_FRAMES;
+}
+
+void dma_telem_resync(void)
+{
+    atomic_store(&resync_pending, 1);
 }
