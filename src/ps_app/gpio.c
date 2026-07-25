@@ -107,9 +107,9 @@ void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word)
 }
 
 void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
-                          int64_t coeff_q14_28)
+                          int64_t coeff_raw)
 {
-    uint64_t raw = (uint64_t)coeff_q14_28 & ((1ULL << 42) - 1ULL);
+    uint64_t raw = (uint64_t)coeff_raw & ((1ULL << 42) - 1ULL);
     gpio_write(ADDR_HIL_REGS, REG_COEFF_ADDR, TIM_COEFF_ADDR(matrix, row, col));
     gpio_write(ADDR_HIL_REGS, REG_COEFF_DATA_LO, (uint32_t)(raw & 0xffffffffULL));
     gpio_write(ADDR_HIL_REGS, REG_COEFF_DATA_HI, (uint32_t)(raw >> 32));

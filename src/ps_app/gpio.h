@@ -20,7 +20,7 @@
  *   0x28  timer_tick_ctr   read  — ticks do timer do TIM_Solver
  *   0x2C  data_valid_latch read  — bit[0]=1: solver produziu saída
  *   0x30  coeff_addr       write/read — [1:0]=matrix A/B/Y, [4:2]=row, [7:5]=col
- *   0x34  coeff_data_lo    write/read — coefficient[31:0] raw Q14.28
+ *   0x34  coeff_data_lo    write/read — coefficient[31:0] raw (Q4.38, see BilinearSolverPkg)
  *   0x38  coeff_data_hi    write/read — coefficient[41:32]
  *   0x3C  coeff_commit     write      — bit[0]=1 pulses coeff_we,
  *                                  bit[1]=1 atomically applies shadow model
@@ -108,7 +108,7 @@ void gpio_set_pwm_ctrl(int enable, int clear_fault, int solver_reset,
                        uint32_t decim_ratio);
 void gpio_set_vdc_torque(int32_t vdc_word, int32_t torque_word);
 void gpio_write_tim_coeff(uint32_t matrix, uint32_t row, uint32_t col,
-                          int64_t coeff_q14_28);
+                          int64_t coeff_raw);
 void gpio_apply_tim_coeffs(void);
 
 /* Helpers — PWM event capture readout */

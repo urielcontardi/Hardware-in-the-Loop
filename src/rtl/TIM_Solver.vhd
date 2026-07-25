@@ -185,12 +185,14 @@ Architecture rtl of TIM_Solver is
     -- Conversion Functions
     --------------------------------------------------------------------------
     -- Function to convert matrix_t to matrix_fp_t
+    -- Only ever applied to AMATRIX/BMATRIX, i.e. solver coefficients -- hence
+    -- to_fp_coeff (Q4.38) and not to_fp (Q14.28, the state format).
     function matrix_to_fp(matrix_real : matrix_t) return matrix_fp_t is
         variable result : matrix_fp_t(matrix_real'range(1), matrix_real'range(2));
     begin
         for i in matrix_real'range(1) loop
             for col in matrix_real'range(2) loop
-                result(i, col) := to_fp(matrix_real(i, col));
+                result(i, col) := to_fp_coeff(matrix_real(i, col));
             end loop;
         end loop;
         return result;

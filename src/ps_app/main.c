@@ -409,14 +409,24 @@ static int json_get_string(const char *buf, const char *key, char *out, size_t o
     return 1;
 }
 
-static int64_t q14_28(double v)
+/* Solver coefficient format: Q4.38 (must match COEFF_FRACTION_BITS in
+ * BilinearSolverPkg.vhd). Range is +-8, against a largest entry of ~1.5e-3
+ * for machines from 0.1 kW to 1 MW. */
+#define Q_COEFF_SCALE 274877906944.0        /* 2^38 */
+#define Q_COEFF_MAX_ABS 8.0
+
+/* Unlike q14_28, this does NOT clamp. A coefficient outside the representable
+ * range means the requested motor cannot be modelled faithfully; saturating it
+ * would leave the solver integrating a silently different machine. Callers
+ * must reject the parameter set instead. */
+static int q_coeff_overflows(double v)
 {
-    const double scale = 268435456.0;
-    const double max_v = (double)((1LL << 41) - 1) / scale;
-    const double min_v = -(double)(1LL << 41) / scale;
-    if (v > max_v) v = max_v;
-    if (v < min_v) v = min_v;
-    return (int64_t)llround(v * scale);
+    return !(v > -Q_COEFF_MAX_ABS && v < Q_COEFF_MAX_ABS);
+}
+
+static int64_t q_coeff(double v)
+{
+    return (int64_t)llround(v * Q_COEFF_SCALE);
 }
 
 
@@ -450,12 +460,20 @@ static int program_motor_coeffs(const motor_params_t *m)
         { 0.0, 0.0, -ts/m->j },
     };
 
+    /* Coefficients use Q4.38, not the Q14.28 of states/telemetry: every entry
+     * carries the factor Ts, so they never approach 1 and their integer bits
+     * would be dead weight -- while the smallest entry (Ts*lm*rr/Lr) survives
+     * on only 9 LSBs in Q14.28, a 3.8% error in the effective Lm. Must match
+     * COEFF_FRACTION_BITS in BilinearSolverPkg.vhd. */
     for (uint32_t r = 0; r < 5; r++) {
         for (uint32_t c = 0; c < 5; c++) {
-            write_tim_coeff_shadow(TIM_COEFF_MATRIX_A, r, c, q14_28(a[r][c]));
+            if (q_coeff_overflows(a[r][c])) return -1;
+            write_tim_coeff_shadow(TIM_COEFF_MATRIX_A, r, c, q_coeff(a[r][c]));
         }
-        for (uint32_t c = 0; c < 3; c++)
-            write_tim_coeff_shadow(TIM_COEFF_MATRIX_B, r, c, q14_28(b[r][c]));
+        for (uint32_t c = 0; c < 3; c++) {
+            if (q_coeff_overflows(b[r][c])) return -1;
+            write_tim_coeff_shadow(TIM_COEFF_MATRIX_B, r, c, q_coeff(b[r][c]));
+        }
     }
     gpio_apply_tim_coeffs();
     return 0;
