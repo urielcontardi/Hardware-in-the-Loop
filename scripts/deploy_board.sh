@@ -11,7 +11,12 @@ set -e
 
 BOARD_IP="${IP:-192.168.15.8}"
 BOARD_USER="petalinux"
-BOARD_PASS="1234"      # ← altere aqui se necessário
+# Senha lida de .env (PASSWORD_HIL); o literal antigo "1234" ficou obsoleto
+# quando a imagem PetaLinux foi regerada. Ainda aceita override por ambiente.
+if [ -z "${BOARD_PASS:-}" ] && [ -f "$(dirname "$0")/../.env" ]; then
+    BOARD_PASS="$(sed -n 's/^ *PASSWORD_HIL *= *//p' "$(dirname "$0")/../.env" | tr -d '\r\n')"
+fi
+BOARD_PASS="${BOARD_PASS:-1234}"
 BOARD_HOME="/home/petalinux"
 SKIP_BITSTREAM="${SKIP_BITSTREAM:-0}"
 
@@ -25,11 +30,15 @@ HIL_SUP="$ROOT_DIR/src/ps_app/hil_supervisor"
 # ---------------------------------------------------------------------------
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 
+# /home/petalinux is root-owned (drwxr-xr-x), so the petalinux user cannot scp
+# straight into it. Stage in /tmp, then install with sudo.
 scp_file() {
     local src="$1"
     local dst="$2"
+    local tmp="/tmp/$(basename "$dst").upload"
     echo "  → $(basename "$src")"
-    sshpass -p "$BOARD_PASS" scp $SSH_OPTS "$src" "${BOARD_USER}@${BOARD_IP}:${dst}"
+    sshpass -p "$BOARD_PASS" scp $SSH_OPTS "$src" "${BOARD_USER}@${BOARD_IP}:${tmp}"
+    run_board_sudo "cp $tmp $dst && chmod 0755 $dst && rm -f $tmp"
 }
 
 run_board() {

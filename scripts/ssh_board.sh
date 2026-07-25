@@ -7,7 +7,10 @@
 
 BOARD_IP="${IP:-192.168.15.8}"
 BOARD_USER="petalinux"
-BOARD_PASS="1234"
+if [ -z "${BOARD_PASS:-}" ] && [ -f "$(dirname "$0")/../.env" ]; then
+    BOARD_PASS="$(sed -n 's/^ *PASSWORD_HIL *= *//p' "$(dirname "$0")/../.env" | tr -d '\r\n')"
+fi
+BOARD_PASS="${BOARD_PASS:-1234}"
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=5"
 
