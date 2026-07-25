@@ -44,21 +44,19 @@ def _npz_path(case: dict, seg: str, campaign: Path) -> Path:
 def load_segment(case: dict, seg: str, campaign: Path = CAMPAIGN_L4) -> tuple[np.ndarray, dict]:
     """Carrega o .npz de um segmento e mapeia p/ as chaves canônicas do engine.
 
-    Correntes vêm em fase (ia, ib); reconstroi α/β por Clarke direta para que os
-    plots do engine (que fazem Clarke inversa) reproduzam ia/ib/ic corretamente.
-    Fluxo já vem em α/β (flux_a/flux_b).
+    A telemetria da placa já entrega as correntes em α/β (campos `ialpha_A`/
+    `ibeta_A`, gravados no .hilbin como `ia`/`ib` — ver hilbin_vs_c.py, onde
+    `s["ia"]`→`is_alpha` e `s["ib"]`→`is_beta`). Portanto o mapeamento é direto,
+    SEM Clarke: os plots do engine (que fazem Clarke inversa) reconstroem
+    ia/ib/ic equilibradas a partir do α/β real. Fluxo idem (flux_a/flux_b = α/β).
     """
     d = np.load(_npz_path(case, seg, campaign))
-    s3 = np.sqrt(3.0)
-
-    def clarke_beta(ia, ib):
-        return (np.asarray(ia) + 2.0 * np.asarray(ib)) / s3
 
     data = {
         "vhdl_i_alpha": np.asarray(d["fpga_ia"]),
-        "vhdl_i_beta": clarke_beta(d["fpga_ia"], d["fpga_ib"]),
+        "vhdl_i_beta": np.asarray(d["fpga_ib"]),
         "ref_i_alpha": np.asarray(d["cmod_ia"]),
-        "ref_i_beta": clarke_beta(d["cmod_ia"], d["cmod_ib"]),
+        "ref_i_beta": np.asarray(d["cmod_ib"]),
         "vhdl_flux_alpha": np.asarray(d["fpga_flux_a"]),
         "vhdl_flux_beta": np.asarray(d["fpga_flux_b"]),
         "ref_flux_alpha": np.asarray(d["cmod_flux_a"]),
@@ -115,8 +113,10 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
     n = fpga["t"].size
     sl = slice(None, None, max(1, n // 4000))
     t = fpga["t"][sl]
-    ia, ib = fpga["ia"][sl], fpga["ib"][sl]
-    ic = -(ia + ib)
+    # fpga["ia"]/["ib"] são, na verdade, i_alpha/i_beta (telemetria α/β da placa);
+    # reconstrói as três fases físicas por Clarke inversa.
+    i_alpha, i_beta = fpga["ia"][sl], fpga["ib"][sl]
+    ia, ib, ic = (np.asarray(x) for x in eng.cc.inverse_clarke(i_alpha, i_beta))
     flux = np.sqrt(fpga["flux_a"][sl] ** 2 + fpga["flux_b"][sl] ** 2)
     spd = fpga["speed"][sl]
 

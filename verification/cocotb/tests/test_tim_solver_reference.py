@@ -261,3 +261,92 @@ async def test_tim_solver_matches_reference_model(dut):
         dut._log.info(f"Report saved: {HTML_PATH}")
     else:
         dut._log.warning(f"Report generation failed:\n{result.stderr}")
+
+
+# ---------------------------------------------------------------------------
+# Effective-coefficient identification
+#
+# The steady-state rotor-flux balance of row 0 is  -A00*psi + A02*i = 0, so
+# A02/|A00| IS the magnetizing inductance the solver actually integrates. That
+# ratio is what a 3.7% error in the emulated machine comes from -- but reaching
+# steady state needs ~5*tau_r = 2 s of simulated time (hours of wall clock).
+#
+# Instead identify the coefficients directly from the increment relation
+#     dpsi_alpha = A00*psi_alpha + A01*(psi_beta*w) + A02*i_alpha
+# by least squares over a short window. psi, i and w are all solver outputs, so
+# no internal probing is needed and a few thousand steps suffice.
+# ---------------------------------------------------------------------------
+
+ID_STEPS   = 12000      # ~1.6 ms of solver time
+ID_FREQ_HZ = 2000.0     # fast excitation -> well-conditioned regressors quickly
+ID_VAMP    = 300.0
+LM_NOMINAL = 109.9442e-3
+# Ts*lm*rr/Lr_total for the default machine -- the smallest entry of the A
+# matrix and the one Q14.28 rounds to 9 LSBs (-3.8%).
+A02_EXACT  = (26.0 / 200e6) * 109.9442e-3 * 0.2826 / (6.3264e-3 + 109.9442e-3)
+
+
+@cocotb.test()
+async def test_effective_lm_matches_requested(dut):
+    """Identify A02/|A00| from the RTL and compare with the requested Lm."""
+    import math
+
+    clock = Clock(dut.sysclk, CLK_PERIOD_PS, unit="ps")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    dut.torque_load_i.value = 0
+    ts = 26.0 / 200e6
+
+    psi_a: list[float] = []
+    psi_b: list[float] = []
+    i_a:   list[float] = []
+    w:     list[float] = []
+
+    for step in range(ID_STEPS):
+        th = 2.0 * math.pi * ID_FREQ_HZ * (step * ts)
+        va = ID_VAMP * math.cos(th)
+        vb = ID_VAMP * math.cos(th - 2.0 * math.pi / 3.0)
+        vc = ID_VAMP * math.cos(th + 2.0 * math.pi / 3.0)
+        dut.va_i.value = signed_to_slv(real_to_fp(va), DATA_WIDTH)
+        dut.vb_i.value = signed_to_slv(real_to_fp(vb), DATA_WIDTH)
+        dut.vc_i.value = signed_to_slv(real_to_fp(vc), DATA_WIDTH)
+
+        await wait_data_valid(dut)
+        psi_a.append(signal_fp_to_real(dut.flux_rotor_alpha_o))
+        psi_b.append(signal_fp_to_real(dut.flux_rotor_beta_o))
+        i_a.append(signal_fp_to_real(dut.ialpha_o))
+        w.append(signal_fp_to_real(dut.speed_mech_o))
+
+    # Least squares on  dpsi_a[n] = a00*psi_a[n] + a01*(psi_b[n]*w[n]) + a02*i_a[n]
+    # Discard the first samples: the pipeline needs a few steps to settle.
+    skip = 200
+    rows = [[psi_a[n], psi_b[n] * w[n], i_a[n]] for n in range(skip, len(psi_a) - 1)]
+    rhs  = [psi_a[n + 1] - psi_a[n] for n in range(skip, len(psi_a) - 1)]
+
+    # Normal equations (3x3) solved with Gaussian elimination -- no numpy in the
+    # cocotb environment is assumed.
+    m = [[sum(r[i] * r[j] for r in rows) for j in range(3)] + [sum(r[i] * y for r, y in zip(rows, rhs))]
+         for i in range(3)]
+    for col in range(3):
+        piv = max(range(col, 3), key=lambda r: abs(m[r][col]))
+        m[col], m[piv] = m[piv], m[col]
+        assert abs(m[col][col]) > 1e-30, "sistema mal condicionado na identificacao"
+        for r in range(3):
+            if r == col:
+                continue
+            f = m[r][col] / m[col][col]
+            for c in range(col, 4):
+                m[r][c] -= f * m[col][c]
+    a00, a01, a02 = (m[i][3] / m[i][i] for i in range(3))
+
+    # Only a02 is identifiable in a short window: over ~1.6 ms the A00*psi term
+    # contributes a couple of LSBs against an increment of several hundred, so
+    # the ratio a02/a00 is dominated by noise. a02 is the coefficient the
+    # quantization actually ruins (9 LSBs in Q14.28), so assert on it directly.
+    err = 100.0 * (a02 / A02_EXACT - 1.0)
+    dut._log.info(f"a02 identificado={a02:.6e}  exato={A02_EXACT:.6e}  erro={err:+.3f}%")
+    assert abs(err) < 0.5, (
+        f"a02={a02:.6e} vs exato={A02_EXACT:.6e}  erro={err:+.3f}% (limite 0.5%) -- "
+        f"Lm efetiva implicada = {LM_NOMINAL*(1+err/100):.6f} H"
+    )

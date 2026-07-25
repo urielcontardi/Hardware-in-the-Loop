@@ -78,6 +78,14 @@ async def reset_dut(dut, cycles: int = 10) -> None:
     await ClockCycles(dut.sysclk, cycles)
 
 
+COEFF_FRAC  = 38
+COEFF_SCALE = 1 << COEFF_FRAC
+
+
+def to_fp_coeff(v: float) -> int:
+    return int(round(v * COEFF_SCALE))
+
+
 def golden_result(A, Y_raw, X, B, U) -> float:
     acc = 0.0
     for j in range(N_SS):
@@ -91,10 +99,11 @@ def golden_result(A, Y_raw, X, B, U) -> float:
 
 
 async def run_unit(dut, A, Y_raw, X, B, U) -> float:
-    _set_vec(dut, _AVEC, [slv(to_fp(A[j])) for j in range(N_SS)])
+    # A/B are coefficients (Q4.38); X/U are states/inputs (Q14.28).
+    _set_vec(dut, _AVEC, [slv(to_fp_coeff(A[j])) for j in range(N_SS)])
     _set_vec(dut, _XVEC, [slv(to_fp(X[j])) for j in range(N_SS)])
     _set_vec(dut, _YVEC, [slv(Y_raw[j]) for j in range(N_SS)])  # raw integer index
-    _set_vec(dut, _BVEC, [slv(to_fp(B[k])) for k in range(N_IN)])
+    _set_vec(dut, _BVEC, [slv(to_fp_coeff(B[k])) for k in range(N_IN)])
     _set_vec(dut, _UVEC, [slv(to_fp(U[k])) for k in range(N_IN)])
 
     await RisingEdge(dut.sysclk)
@@ -231,3 +240,127 @@ async def test_all_states_nonzero(dut):
         f"result={result:.6e}  ref={ref:.6e}  err={abs(result-ref):.2e}  tol={tol:.2e}"
     )
     dut._log.info(f"All states: result={result:.2e} (ref {ref:.2e}) PASS")
+
+
+# ---------------------------------------------------------------------------
+# Coefficient-format tests (Q4.38)
+#
+# States/inputs stay Q14.28, but the A/B coefficients carry a factor Ts=130 ns
+# which crushes them to ~1e-7 -- against a Q14.28 LSB of 3.7e-9. The smallest
+# entry of the real motor matrix (Ts*lm*rr/Lr) survives on only 9 LSBs, a 3.8%
+# parameter error. These tests pin the coefficients to their own, finer format.
+# ---------------------------------------------------------------------------
+
+
+# Smallest entry of the 22 kW machine's A matrix: Ts*lm*rr/Lr_total.
+A02_REAL = 3.484197e-08
+# Torque/inertia input coefficient: Ts/j.
+B42_REAL = 3.259629e-07
+
+
+async def run_unit_coeff(dut, A, Y_raw, X, B, U) -> float:
+    """Same as run_unit, but A/B are driven in Q4.38 instead of Q14.28."""
+    _set_vec(dut, _AVEC, [slv(to_fp_coeff(A[j])) for j in range(N_SS)])
+    _set_vec(dut, _XVEC, [slv(to_fp(X[j])) for j in range(N_SS)])
+    _set_vec(dut, _YVEC, [slv(Y_raw[j]) for j in range(N_SS)])
+    _set_vec(dut, _BVEC, [slv(to_fp_coeff(B[k])) for k in range(N_IN)])
+    _set_vec(dut, _UVEC, [slv(to_fp(U[k])) for k in range(N_IN)])
+
+    await RisingEdge(dut.sysclk)
+    dut.start_i.value = 1
+    await RisingEdge(dut.sysclk)
+    dut.start_i.value = 0
+
+    for _ in range(MAX_WAIT):
+        await RisingEdge(dut.sysclk)
+        if int(dut.busy_o.value) == 0:
+            break
+    else:
+        raise AssertionError("Solver never completed (busy stayed high)")
+
+    return read_fp(dut.stateresult_o)
+
+
+@cocotb.test()
+async def test_coeff_q438_small_A_scale_is_correct(dut):
+    """A[0]=Ts*lm*rr/Lr driven in Q4.38 -> result within one Q14.28 output LSB.
+
+    A single step cannot do better: 3.48e-08 lies between 9 and 10 LSBs of the
+    Q14.28 output, so exactness is impossible here (that is what the
+    accumulation test covers). What this pins down is that the coefficient is
+    interpreted at the right scale -- a format mismatch shows up as a 2**10
+    error, not a sub-LSB one.
+    """
+    clock = Clock(dut.sysclk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    A = [0.0] * N_SS;  A[0] = A02_REAL
+    Y_raw = [Y_DISABLED] * N_SS
+    X = [0.0] * N_SS;  X[0] = 1.0
+    B = [0.0] * N_IN
+    U = [0.0] * N_IN
+
+    result = await run_unit_coeff(dut, A, Y_raw, X, B, U)
+    lsb = 1.0 / SCALE
+    assert abs(result - A02_REAL) <= lsb, (
+        f"result={result:.6e} ref={A02_REAL:.6e} err={abs(result-A02_REAL):.3e} > 1 LSB ({lsb:.3e})"
+    )
+    dut._log.info(f"A em Q4.38: erro {abs(result-A02_REAL)/lsb:.2f} LSB PASS")
+
+
+@cocotb.test()
+async def test_coeff_q438_small_B_scale_is_correct(dut):
+    """B[0]=Ts/j driven in Q4.38 -> within one output LSB. Exercises the B path,
+    which moved from pipeline stage 1 to stage 2 so every coefficient shares one
+    rescale point."""
+    clock = Clock(dut.sysclk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    A = [0.0] * N_SS
+    Y_raw = [Y_DISABLED] * N_SS
+    X = [0.0] * N_SS
+    B = [0.0] * N_IN;  B[0] = B42_REAL
+    U = [0.0] * N_IN;  U[0] = 1.0
+
+    result = await run_unit_coeff(dut, A, Y_raw, X, B, U)
+    lsb = 1.0 / SCALE
+    assert abs(result - B42_REAL) <= lsb, (
+        f"result={result:.6e} ref={B42_REAL:.6e} err={abs(result-B42_REAL):.3e} > 1 LSB ({lsb:.3e})"
+    )
+    dut._log.info(f"B em Q4.38: erro {abs(result-B42_REAL)/lsb:.2f} LSB PASS")
+
+
+@cocotb.test()
+async def test_increment_accumulates_without_bias(dut):
+    """N steps of a sub-LSB increment must sum to N*exact, not N*truncated.
+
+    stateResult_o is Q14.28, so one step of A02*1 (3.48e-8) can only ever emit
+    9 or 10 LSBs -- the value is not representable. What must NOT happen is
+    emitting 9 every time: that is a systematic -3.8% bias which integrates
+    straight into the effective Lm. Carrying the truncation residual forward
+    makes the running sum track the exact value.
+    """
+    clock = Clock(dut.sysclk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    N = 256
+    A = [0.0] * N_SS;  A[0] = A02_REAL
+    Y_raw = [Y_DISABLED] * N_SS
+    X = [0.0] * N_SS;  X[0] = 1.0
+    B = [0.0] * N_IN
+    U = [0.0] * N_IN
+
+    total = 0.0
+    for _ in range(N):
+        total += await run_unit(dut, A, Y_raw, X, B, U)
+
+    exact = N * A02_REAL
+    rel = abs(total - exact) / exact
+    assert rel < 1e-3, (
+        f"soma={total:.6e} exata={exact:.6e} rel_err={rel*100:.3f}% (limite 0.1%) "
+        f"-- vies sistematico de truncagem"
+    )
+    dut._log.info(f"soma de {N} incrementos: erro relativo {rel*100:.4f}% PASS")

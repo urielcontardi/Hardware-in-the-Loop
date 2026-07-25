@@ -816,6 +816,12 @@ def main() -> None:
                     help="delay added to PWM timestamps during replay [us] (default 0)")
     ap.add_argument("--auto-pwm-delay-us", type=float, default=0.0,
                     help="sweep +/- this delay on the regime tail and use the best PWM delay [us]")
+    ap.add_argument("--exact-ts", action="store_true",
+                    help="reference model integrates with the nominal Ts instead of the "
+                         "Q14.28-rounded one. Use with bitstreams whose coefficients are "
+                         "in the Q4.38 format: there Ts is encoded to ~0.0003%, so keeping "
+                         "the old +0.296%% bias in the reference makes the DUT look wrong "
+                         "by ~0.56 rad/s of speed that it no longer has.")
     ap.add_argument("--ts", type=float, default=FIRMWARE_DEFAULT_PARAMS.ts,
                     help="solver step [s] (default firmware TIMER_STEPS/200MHz)")
     ap.add_argument("--rs", type=float, default=FIRMWARE_DEFAULT_PARAMS.rs)
@@ -846,7 +852,8 @@ def main() -> None:
         try:
             summary.append(run_one(f, args.vdc, args.tload, out_root, args.window, _params_from_args(args),
                                    args.output_hz, args.pwm_delay_us * 1e-6, args.auto_pwm_delay_us,
-                                   tload2=args.tload2, t_step_s=args.t_step_s))
+                                   tload2=args.tload2, t_step_s=args.t_step_s,
+                                   model_ts=None if args.exact_ts else _quantized_ts()))
         except Exception as exc:  # keep batch going
             print(f"  ERRO em {f.name}: {exc}")
             summary.append({"capture": f.stem, "error": str(exc)})

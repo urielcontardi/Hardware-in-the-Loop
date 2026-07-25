@@ -25,8 +25,10 @@ def test_load_segment_maps_fpga_and_c(tmp_path):
     assert t_ms[-1] == pytest.approx(500.0)  # 0.5 s -> 500 ms
     assert "vhdl_i_alpha" in data and "ref_i_alpha" in data
     assert "vhdl_flux_alpha" in data and "vhdl_speed" in data
-    # i_beta = (ia + 2 ib)/sqrt3 ; com ia=ib=1 -> (1+2)/sqrt3 = sqrt3
-    assert data["vhdl_i_beta"][0] == pytest.approx(np.sqrt(3))
+    # A telemetria do .hilbin ja entrega i_alpha/i_beta (campos fpga_ia/fpga_ib);
+    # o mapeamento e direto, sem Clarke. Com fpga_ia=fpga_ib=1:
+    assert data["vhdl_i_alpha"][0] == pytest.approx(1.0)
+    assert data["vhdl_i_beta"][0] == pytest.approx(1.0)
 
 
 def test_generate_l4_end_to_end(tmp_path):
