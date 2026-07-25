@@ -319,8 +319,18 @@ Architecture rtl of HIL_AXI_Top is
     --------------------------------------------------------------------------
     -- Registrador AXI4-Stream + Decimador
     --------------------------------------------------------------------------
+    -- S2MM em modo simples TERMINA o pacote por TLAST. Sem TLAST o stream e um
+    -- pacote infinito: ao completar S2MM_LENGTH bytes o DMA acusa "packet
+    -- larger than buffer" (DMAIntErr) em TODA rajada. A remocao do TLAST em
+    -- d3546c2 nunca chegou a rodar em hardware -- o bitstream da bancada era
+    -- anterior a ela -- e e a causa do DMAIntErr continuo em qualquer bitstream
+    -- regerado. A dessincronizacao que motivou aquela remocao ja e tratada no
+    -- PS por dma_telem_resync(), que aborta e rearma a rajada em voo.
+    constant AXIS_DMA_BURST_FRAMES_C : natural := 128;
     signal axis_tdata_r   : std_logic_vector(255 downto 0);
     signal axis_tvalid_r  : std_logic;
+    signal axis_tlast_r   : std_logic;
+    signal axis_frame_cnt : unsigned(6 downto 0);
     signal decim_count    : unsigned(29 downto 0);
     signal decim_ratio    : unsigned(29 downto 0);
 
@@ -1118,15 +1128,20 @@ Begin
         if rising_edge(clk) then
             if rst_n = '0' then
                 axis_tvalid_r <= '0';
+                axis_tlast_r  <= '0';
                 axis_tdata_r  <= (others => '0');
+                axis_frame_cnt <= (others => '0');
                 decim_count   <= (others => '0');
             elsif telem_clear_axi = '1' then
                 axis_tvalid_r <= '0';
+                axis_tlast_r  <= '0';
                 axis_tdata_r  <= (others => '0');
+                axis_frame_cnt <= (others => '0');
                 decim_count   <= (others => '0');
             else
                 if m_axis_tready = '1' and axis_tvalid_r = '1' then
                     axis_tvalid_r <= '0';
+                    axis_tlast_r  <= '0';
                 end if;
 
                 if solver_sample_pulse = '1' then
@@ -1142,6 +1157,14 @@ Begin
                             -- reconstruct 128 timestamps from one post-burst GPIO read.
                             axis_tdata_r(241 downto 210) <= std_logic_vector(pwm_cap_time);
                             axis_tdata_r(255 downto 242) <= std_logic_vector(pwm_cap_epoch(13 downto 0));
+                            if axis_frame_cnt = to_unsigned(AXIS_DMA_BURST_FRAMES_C - 1,
+                                                            axis_frame_cnt'length) then
+                                axis_tlast_r   <= '1';
+                                axis_frame_cnt <= (others => '0');
+                            else
+                                axis_tlast_r   <= '0';
+                                axis_frame_cnt <= axis_frame_cnt + 1;
+                            end if;
                             axis_tvalid_r <= '1';
                         end if;
                     else
@@ -1159,7 +1182,7 @@ Begin
     -- Mantendo TLAST baixo o tempo todo, o PS é a única autoridade sobre a
     -- fronteira do pacote, eliminando a classe de DMAIntErr por TLAST
     -- prematuro (ver comentário do processo acima).
-    m_axis_tlast  <= '0';
+    m_axis_tlast  <= axis_tlast_r;
     m_axis_tkeep  <= (others => '1');  -- todos os 32 bytes do beat são válidos
 
 End Architecture rtl;
