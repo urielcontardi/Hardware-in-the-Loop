@@ -68,14 +68,31 @@ def load_segment(case: dict, seg: str, campaign: Path = CAMPAIGN_L4) -> tuple[np
     return t_ms, data
 
 
-def _seg_case(case: dict, seg: str) -> dict:
-    return {"id": case["id"], "tipo": "vf", "fig_prefix": "HIL_L4", "labels": _LAB,
-            "fig_id": f"{case['id']}_{_SEG_NAME[seg]}",
-            "label": f"{case['label']} · {_SEG_NAME[seg]}"}
+def _seg_case(case: dict, seg: str, tload_step: tuple | None = None) -> dict:
+    c = {"id": case["id"], "tipo": "vf", "fig_prefix": "HIL_L4", "labels": _LAB,
+         "fig_id": f"{case['id']}_{_SEG_NAME[seg]}",
+         "label": f"{case['label']} · {_SEG_NAME[seg]}"}
+    if tload_step:
+        c["tload_step"] = tload_step
+    return c
+
+
+def _read_tload_step(case: dict, campaign: Path) -> tuple | None:
+    """Lê (pre_nm, post_nm, t_step_s) do metrics.json do caso, quando é um
+    degrau de carga (Grupo B). None para os demais (S0/A1/A3/A5, carga
+    constante) -- aí o overlay fica com os 3 painéis de sempre."""
+    mj_path = campaign / case["dir"] / "l4_pwm_replay/capture/metrics.json"
+    if not mj_path.is_file():
+        return None
+    tload = json.loads(mj_path.read_text()).get("tload")
+    if isinstance(tload, dict) and "t_step_s" in tload:
+        return (tload["pre"], tload["post"], tload["t_step_s"])
+    return None
 
 
 def generate_case_l4(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) -> dict:
     metrics: dict[str, dict] = {}
+    tload_step = _read_tload_step(case, campaign)
     # visão geral do tempo todo (FPGA real) antes dos zooms
     if (campaign / case["dir"] / "raw/capture.hilbin").is_file():
         plot_full_overview(case, out_dir, campaign)
@@ -83,7 +100,7 @@ def generate_case_l4(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) ->
         if not _npz_path(case, seg, campaign).is_file():
             continue
         t_ms, data = load_segment(case, seg, campaign)
-        c = _seg_case(case, seg)
+        c = _seg_case(case, seg, tload_step)
         eng.plot_overlay(t_ms, data, c, out_dir)
         eng.plot_residual(t_ms, data, c, out_dir)
         if seg == "regime":
@@ -122,16 +139,30 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
 
     # janelas dos zooms (para sombrear), lidas do metrics.json
     wins = []
+    step_t = None
     mj_path = campaign / case["dir"] / "l4_pwm_replay/capture/metrics.json"
     if mj_path.is_file():
         mj = json.loads(mj_path.read_text())
+        tload = mj.get("tload")
+        # Grupo B (degrau): "partida"/"regime" aqui são, na verdade, as janelas
+        # de regime estacionário imediatamente antes/depois do degrau (ver
+        # hilbin_vs_c.py:685-688) — rótulo genérico confundiria com o
+        # transitório de partida dos demais casos. Marca também o instante
+        # exato do degrau com uma linha vertical, em vez de deixar implícito
+        # na fronteira entre as duas sombras.
+        is_step = isinstance(tload, dict) and "t_step_s" in tload
+        seg_label = ({"partida": "Antes do degrau", "regime": "Depois do degrau"}
+                     if is_step else _SEG_NAME)
+        if is_step:
+            step_t = tload["t_step_s"]
         for lbl, col in (("partida", eng.PHASE_COLORS[0]), ("regime", eng.PHASE_COLORS[2])):
             w = mj.get(lbl, {}).get("window_s")
             if w:
-                wins.append((w[0], w[1], _SEG_NAME[lbl], col))
+                wins.append((w[0], w[1], seg_label[lbl], col))
 
     plt = eng.plt
-    fig, axes = plt.subplots(3, 1, figsize=(8, 7), sharex=True)
+    n_rows = 4 if step_t is not None else 3
+    fig, axes = plt.subplots(n_rows, 1, figsize=(8, 7 if n_rows == 3 else 8.6), sharex=True)
     for k, (y, lbl) in enumerate(((ia, "$i_a$"), (ib, "$i_b$"), (ic, "$i_c$"))):
         axes[0].plot(t, y, color=eng.PHASE_COLORS[k], linewidth=0.7, label=lbl)
     axes[0].set_ylabel("Corrente [A]")
@@ -140,13 +171,29 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
     axes[1].set_ylabel(r"$|\psi_r|$ [Wb]")
     axes[2].plot(t, spd, color=eng.COL_VHDL, linewidth=0.9)
     axes[2].set_ylabel(r"$\omega$ [rad/s]")
-    axes[2].set_xlabel("Tempo [s]")
+
+    if step_t is not None:
+        pre_nm, post_nm = tload["pre"], tload["post"]
+        tl = np.where(t >= step_t, post_nm, pre_nm)
+        axes[3].plot(t, tl, color="black", linewidth=1.4, drawstyle="steps-post")
+        axes[3].set_ylabel(r"$T_L$ [N$\cdot$m]")
+        axes[3].margins(y=0.35)
+        axes[3].annotate(f"{pre_nm:.1f} N·m", xy=(t[0], pre_nm),
+                         xytext=(6, 6), textcoords="offset points", fontsize=8)
+        axes[3].annotate(f"{post_nm:.1f} N·m", xy=(step_t, post_nm),
+                         xytext=(6, 6), textcoords="offset points", fontsize=8)
+    axes[-1].set_xlabel("Tempo [s]")
 
     for (a, b, lbl, col) in wins:
         for ax in axes:
             ax.axvspan(a, b, color=col, alpha=0.13)
         axes[0].axvspan(a, b, color=col, alpha=0.13, label=lbl)
-    axes[0].legend(loc="upper right", ncol=5, fontsize=7.5)
+    if step_t is not None:
+        for ax in axes:
+            ax.axvline(step_t, color="black", linestyle="--", linewidth=1.1)
+        axes[0].axvline(step_t, color="black", linestyle="--", linewidth=1.1,
+                        label=f"Degrau de carga (t={step_t:g} s)")
+    axes[0].legend(loc="upper right", ncol=3, fontsize=7.5)
     eng.save_fig(fig, out_dir, f"HIL_L4_{case['id']}_Overview")
 
 

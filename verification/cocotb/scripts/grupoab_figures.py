@@ -18,11 +18,17 @@ from pathlib import Path
 import numpy as np
 
 import l2_figures as eng
+import chapter_common as cc
 
 CAMP = eng.REPO_ROOT / "verification/results/2026-07-04_campaign_03"
 DEFAULT_OUT = eng.REPO_ROOT / "docs/results-chapter/figures/grupoab"
 _LAB = {"dut": "Top_HIL", "ref": "C (replay)"}
 _STEP_COLOR = "#E69F00"
+
+# Perfil de carga (pre, post, t_step) por caso do Grupo B, direto do manifest da
+# campanha (fonte da verdade) -- alimenta o 4o painel T_L(t) do overlay.
+_TLOAD_BY_ID = {c.case_id: (c.tload_pre_nm, c.tload_post_nm, c.t_step_s)
+                for c in cc.load_grupo_b(CAMP)}
 
 # id -> (case_dir, l2_sub, l3_sub, fig_id, label, tipo, zoom_ms, plots)
 _A = [
@@ -37,7 +43,7 @@ _B = [
     ("B1", "B1_step025_to075", "l2_step_1s", "l3_top_pwm_replay_step_1s",
      "GrupoB_B1", r"B1 — degrau 0,25$\rightarrow$0,75 $T_n$", True),
     ("B2", "B2_step050_to100", "l2_step_1s", "l3_top_pwm_replay_step_1s",
-     "GrupoB_B2", r"B2 — degrau 0,50$\rightarrow$1,00 $T_n$", False),
+     "GrupoB_B2", r"B2 — degrau 0,50$\rightarrow$1,00 $T_n$", True),
 ]
 
 
@@ -58,6 +64,8 @@ def _case_b(cid, cdir, l2sub, l3sub, fig_id, label, with_zoom):
     if with_zoom:
         c["zoom"] = [(500.0, 700.0, "Degrau de carga", _STEP_COLOR)]
         c["plots"] = ["overlay", "residual", "phase_zoom"]
+    if cid in _TLOAD_BY_ID:
+        c["tload_step"] = _TLOAD_BY_ID[cid]
     return c
 
 

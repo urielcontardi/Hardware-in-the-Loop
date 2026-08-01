@@ -234,8 +234,14 @@ def save_fig(fig, out_dir: Path, name: str) -> None:
 
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
+COL_TLOAD = "#000000"
+
+
 def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
-    """3 paineis: correntes trifasicas, modulo do fluxo, velocidade (DUT vs ref)."""
+    """Paineis: correntes trifasicas, modulo do fluxo, velocidade (DUT vs ref) e,
+    se o caso tiver um degrau de carga (`case["tload_step"]=(pre_nm, post_nm,
+    t_step_s)`), um 4o painel com o valor de T_L(t) aplicado — assim o degrau
+    fica com um numero (N.m) visivel, em vez de so uma faixa sombreada."""
     dut, ref = _labels(case)
     t = t_ms / 1000.0  # s
     vhdl_i = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
@@ -248,7 +254,9 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
     vhdl_flux = mag(data["vhdl_flux_alpha"], data["vhdl_flux_beta"])
     ref_flux = mag(data["ref_flux_alpha"], data["ref_flux_beta"])
 
-    fig, axes = plt.subplots(3, 1, figsize=(7, 8), sharex=True)
+    tload_step = case.get("tload_step")
+    n_rows = 4 if tload_step else 3
+    fig, axes = plt.subplots(n_rows, 1, figsize=(7, 8 if n_rows == 3 else 9.6), sharex=True)
 
     labels = ("$i_a$", "$i_b$", "$i_c$")
     for k in range(3):
@@ -266,8 +274,19 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
     axes[2].plot(t, np.asarray(data["vhdl_speed"]), color=COL_VHDL, **VHDL_STYLE, label=dut)
     axes[2].plot(t, np.asarray(data["ref_speed"]), color=COL_C, **REF_STYLE, label=ref)
     axes[2].set_ylabel(r"$\omega$ [rad/s]")
-    axes[2].set_xlabel("Tempo [s]")
     axes[2].legend(loc="upper right", fontsize=8)
+
+    if tload_step:
+        pre_nm, post_nm, t_step_s = tload_step
+        tl = np.where(t >= t_step_s, post_nm, pre_nm)
+        axes[3].plot(t, tl, color=COL_TLOAD, linewidth=1.6, drawstyle="steps-post")
+        axes[3].set_ylabel(r"$T_L$ [N$\cdot$m]")
+        axes[3].margins(y=0.35)
+        axes[3].annotate(f"{pre_nm:.1f} N·m", xy=(t[0], pre_nm),
+                         xytext=(6, 6), textcoords="offset points", fontsize=8)
+        axes[3].annotate(f"{post_nm:.1f} N·m", xy=(t_step_s, post_nm),
+                         xytext=(6, 6), textcoords="offset points", fontsize=8)
+    axes[-1].set_xlabel("Tempo [s]")
 
     # sombreia a(s) janela(s) de zoom, ligando a visão geral aos recortes
     for i, (a_ms, b_ms, lbl, col) in enumerate(case.get("zoom", [])):
