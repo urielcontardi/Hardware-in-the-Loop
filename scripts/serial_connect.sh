@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# serial_connect.sh — lista portas USB seriais e abre picocom na escolhida
+# List USB serial ports and open the selected port with picocom.
 #
-# Uso:
-#   ./scripts/serial_connect.sh            # baud padrão: 115200
-#   ./scripts/serial_connect.sh 9600       # baud customizado
+# Usage:
+#   ./scripts/serial_connect.sh            # default baud rate: 115200
+#   ./scripts/serial_connect.sh 9600       # custom baud rate
 
 BAUD="${1:-115200}"
 
-# ── mata instâncias anteriores do picocom ─────────────────────────────────────
+# ── Stop previous picocom instances ────────────────────────────────────────────
 if pgrep -x picocom > /dev/null; then
     echo "Encerrando picocom aberto anteriormente..."
     pkill picocom
     sleep 0.5
 fi
 
-# ── garante que o driver FTDI está carregado ──────────────────────────────────
+# ── Ensure that the FTDI driver is loaded ──────────────────────────────────────
 if ! lsmod | grep -q ftdi_sio; then
     echo "Carregando módulo ftdi_sio..."
     sudo modprobe ftdi_sio
     sleep 0.5
 fi
 
-# ── coleta dispositivos ────────────────────────────────────────────────────────
+# ── Collect devices ────────────────────────────────────────────────────────────
 mapfile -t PORTS < <(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null)
 
 if [[ ${#PORTS[@]} -eq 0 ]]; then
@@ -29,7 +29,7 @@ if [[ ${#PORTS[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# ── listagem com info extra (driver/produto via udevadm) ───────────────────────
+# ── List devices with driver/product details from udevadm ─────────────────────
 echo ""
 echo "Portas seriais disponíveis:"
 echo "─────────────────────────────────────────────────"
@@ -44,7 +44,7 @@ done
 echo "─────────────────────────────────────────────────"
 echo ""
 
-# ── seleção ───────────────────────────────────────────────────────────────────
+# ── Selection ─────────────────────────────────────────────────────────────────
 if [[ ${#PORTS[@]} -eq 1 ]]; then
     SELECTED="${PORTS[0]}"
     echo "Apenas uma porta encontrada — conectando em $SELECTED"
@@ -57,7 +57,7 @@ else
     SELECTED="${PORTS[$((CHOICE-1))]}"
 fi
 
-# ── verifica permissão ────────────────────────────────────────────────────────
+# ── Check permissions ─────────────────────────────────────────────────────────
 if [[ ! -r "$SELECTED" || ! -w "$SELECTED" ]]; then
     echo "Sem permissão em $SELECTED — adicionando usuário ao grupo 'dialout':"
     echo "  sudo usermod -aG dialout $USER && newgrp dialout"
@@ -66,7 +66,7 @@ if [[ ! -r "$SELECTED" || ! -w "$SELECTED" ]]; then
     exit 1
 fi
 
-# ── conecta ───────────────────────────────────────────────────────────────────
+# ── Connect ───────────────────────────────────────────────────────────────────
 echo "Conectando em $SELECTED @ ${BAUD} baud"
 echo "(Para sair: Ctrl+A  Ctrl+X)"
 echo ""

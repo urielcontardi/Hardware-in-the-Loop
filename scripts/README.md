@@ -26,13 +26,14 @@ scripts/
 ## Placa (EBAZ4205)
 
 ### `board.sh`
-Wrapper SSH não-interativo. Credenciais embutidas no arquivo — por isso ele
-está em `.gitignore` e não é commitado.
+Wrapper SSH não-interativo para a imagem de bancada. O arquivo é local,
+ignorado pelo Git e pode conter a credencial da imagem de desenvolvimento;
+não coloque senhas pessoais ou de produção nele.
 
 ```bash
 ./scripts/board.sh                          # shell interativo
 ./scripts/board.sh "comando shell"          # roda comando e sai
-IP=192.168.15.20 ./scripts/board.sh ls      # override de IP
+IP=192.168.15.20 ./scripts/board.sh ls      # sobrescreve o IP
 ```
 
 ### `ssh_board.sh`
@@ -83,7 +84,8 @@ alinhar fase em vez de assumir portadora ideal.
 ## Setup
 
 ### `setup/install_petalinux_deps.sh`
-Instala todas as dependências necessárias para PetaLinux no Ubuntu 24.04.
+Instala as dependências de sistema usadas pelo PetaLinux 2025.1 no Ubuntu
+24.04. O instalador do PetaLinux ainda deve ser baixado separadamente da AMD.
 
 ```bash
 cd scripts/setup

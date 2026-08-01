@@ -225,6 +225,13 @@ Read All: 'A'             →  0x55 | REG0..REG9 (60 bytes)
 | NVC | ≥ 1.19.3 | Simulação VHDL (mais rápido) |
 | Python | ≥ 3.10 | cocotb, modelos de referência |
 | uv | latest | Gerenciador de pacotes Python |
+| Go | conforme `apps/hil-go/go.mod` | Gateway e backend |
+| Node.js + npm | versão LTS | Build do frontend |
+| GCC / Make | toolchain do sistema | Validação nativa da aplicação PS |
+
+As versões declaradas pelos manifests (`go.mod`, `package.json` e
+`verification/cocotb/pyproject.toml`) prevalecem sobre esta tabela. O SDK do
+PetaLinux é necessário apenas para os builds ARM.
 
 ---
 
@@ -233,5 +240,9 @@ Read All: 'A'             →  0x55 | REG0..REG9 (60 bytes)
 - **VHDL entities**: `PascalCase` (ex: `TIM_Solver`)
 - **VHDL files**: `PascalCase.vhd`
 - **Python**: `snake_case.py`
+- **Comentários no código**: inglês (documentação voltada ao usuário pode
+  permanecer em português)
 - **Commits**: Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`)
-- **Branch principal**: `lcapyIntroduction` / desenvolvimento: `develop`
+- **Branch principal**: `main`
+- **Submódulo `common/`**: acompanha a revisão fixada pelo repositório raiz;
+  não assuma que o `develop` mais recente é compatível

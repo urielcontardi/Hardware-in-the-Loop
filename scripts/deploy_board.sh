@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy_board.sh — Envia bitstream + binários para a EBAZ4205
+# Deploy the bitstream and binaries to the EBAZ4205.
 # =============================================================================
-# Uso:
+# Usage:
 #   ./scripts/deploy_board.sh
 #   IP=192.168.1.50 ./scripts/deploy_board.sh
 # =============================================================================
@@ -11,8 +11,9 @@ set -e
 
 BOARD_IP="${IP:-192.168.15.8}"
 BOARD_USER="petalinux"
-# Senha lida de .env (PASSWORD_HIL); o literal antigo "1234" ficou obsoleto
-# quando a imagem PetaLinux foi regerada. Ainda aceita override por ambiente.
+# Read the password from .env (PASSWORD_HIL). The old "1234" literal became
+# obsolete after regenerating the PetaLinux image. An environment override is
+# still supported.
 if [ -z "${BOARD_PASS:-}" ] && [ -f "$(dirname "$0")/../.env" ]; then
     BOARD_PASS="$(sed -n 's/^ *PASSWORD_HIL *= *//p' "$(dirname "$0")/../.env" | tr -d '\r\n')"
 fi
@@ -45,7 +46,7 @@ run_board() {
     sshpass -p "$BOARD_PASS" ssh $SSH_OPTS "${BOARD_USER}@${BOARD_IP}" "$@"
 }
 
-# Executa comando com sudo no board, passando a senha via stdin
+# Run a board command with sudo, passing the password through stdin.
 run_board_sudo() {
     local cmd="$*"
     local quoted_cmd
@@ -62,7 +63,7 @@ echo "╚═══════════════════════�
 echo "  Board: ${BOARD_USER}@${BOARD_IP}"
 echo ""
 
-# Verifica / compila arquivos necessários
+# Check or build required files.
 if [ ! -f "$VIVADO_BIN" ]; then
     echo "ERRO: bitstream não encontrado: $VIVADO_BIN"
     echo "  Rode: make synth"
@@ -84,13 +85,13 @@ if [ ! -f "$HIL_SUP" ]; then
     make -C "$ROOT_DIR" ps-build
 fi
 
-# Verifica sshpass
+# Check for sshpass.
 if ! command -v sshpass &>/dev/null; then
     echo "ERRO: sshpass não instalado. Rode: sudo apt-get install sshpass"
     exit 1
 fi
 
-# Testa conexão
+# Test the connection.
 echo "Testando conexão..."
 if ! run_board "echo OK" > /dev/null 2>&1; then
     echo "ERRO: não foi possível conectar em ${BOARD_USER}@${BOARD_IP}"
@@ -101,8 +102,8 @@ fi
 echo "  Conexão OK"
 echo ""
 
-# Mata processos e remove binários antes de copiar
-# (não é possível sobrescrever binário em execução no Linux — apagar libera o inode)
+# Stop processes and remove binaries before copying. An executing binary cannot
+# be overwritten on Linux; unlinking it releases the path while the inode lives.
 echo "Parando processos e removendo binários anteriores..."
 run_board_sudo "PID=\$(pidof hil_controller); if [ -n \"\$PID\" ]; then kill -9 \$PID; fi; true"
 run_board_sudo "PID=\$(pidof hil_supervisor); if [ -n \"\$PID\" ]; then kill -9 \$PID; fi; true"
@@ -110,7 +111,7 @@ run_board_sudo "PID=\$(pidof test_fpga); if [ -n \"\$PID\" ]; then kill -9 \$PID
 sleep 1
 run_board_sudo "rm -f $BOARD_HOME/hil_controller $BOARD_HOME/hil_supervisor $BOARD_HOME/test_fpga"
 
-# Copia arquivos
+# Copy files.
 echo "Copiando arquivos..."
 scp_file "$VIVADO_BIN"  "$BOARD_HOME/ebaz4205_wrapper.bin"
 scp_file "$TEST_FPGA"   "$BOARD_HOME/test_fpga"
@@ -118,7 +119,7 @@ scp_file "$HIL_CTRL"    "$BOARD_HOME/hil_controller"
 scp_file "$HIL_SUP"     "$BOARD_HOME/hil_supervisor"
 echo ""
 
-# Carrega bitstream
+# Load the bitstream.
 if [ "$SKIP_BITSTREAM" = "1" ]; then
     echo "Pulando carga do bitstream (SKIP_BITSTREAM=1)."
 else
@@ -137,7 +138,7 @@ echo "  Logs:"
 echo "    ssh ${BOARD_USER}@${BOARD_IP} 'tail -f $BOARD_HOME/hil_supervisor.log'"
 echo ""
 
-# Smoke test
+# Run the smoke test.
 echo "Rodando smoke test..."
 echo "────────────────────────────────────────────────"
 if ! run_board_sudo "$BOARD_HOME/test_fpga"; then
@@ -148,8 +149,8 @@ fi
 echo "────────────────────────────────────────────────"
 echo ""
 
-# Inicia hil_controller em background. Isso evita deixar o daemon preso ao PTY
-# do SSH e facilita publicar/controlar via gateway web.
+# Start hil_controller in the background so it is not tied to the SSH PTY and
+# can be published and controlled through the web gateway.
 echo "Iniciando hil_controller..."
 echo "────────────────────────────────────────────────"
 run_board_sudo "nohup $BOARD_HOME/hil_controller > $BOARD_HOME/hil_controller.log 2>&1 &"

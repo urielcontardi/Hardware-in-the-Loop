@@ -1,15 +1,15 @@
 # =============================================================================
 # Makefile — HIL PS Application
 #
-# Cross-compilação para ARM Cortex-A9 (EBAZ4205 / Zynq-7010)
+# Cross-compilation for ARM Cortex-A9 (EBAZ4205 / Zynq-7010)
 #
-# Uso:
-#   make              — cross-compila com toolchain do PetaLinux SDK
-#   make native       — compila nativo (para testes no x86, sem hardware)
-#   make clean        — remove binários
-#   make deploy IP=<ip_da_placa>  — copia para a placa via SCP
+# Usage:
+#   make              — cross-compile with the PetaLinux SDK toolchain
+#   make native       — build natively for x86 tests without hardware
+#   make clean        — remove binaries
+#   make deploy IP=<board_ip>  — copy binaries to the board over SCP
 #
-# Pré-requisito (uma vez):
+# One-time prerequisite:
 #   source <petalinux_dir>/images/linux/sdk/environment-setup-cortexa9t2hf-neon-xilinx-linux-gnueabi
 # =============================================================================
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script de instalação de dependências Petalinux para Ubuntu 24.04
+# Install PetaLinux host dependencies on Ubuntu 24.04.
 
 set -e
 
@@ -25,16 +25,16 @@ echo "Dependências instaladas com sucesso!"
 echo "======================================"
 echo ""
 echo "Próximos passos:"
-echo "1. Baixe o Petalinux 2024.1 do site AMD/Xilinx:"
+echo "1. Baixe o PetaLinux 2025.1 do site AMD/Xilinx:"
 echo "   https://www.xilinx.com/support/download/index.html/content/xilinx/en/downloadNav/embedded-design-tools.html"
 echo ""
 echo "2. Salve em ~/Downloads/"
 echo ""
 echo "3. Execute:"
 echo "   cd ~/Downloads"
-echo "   chmod +x petalinux-v2024.1-final-installer.run"
+echo "   chmod +x petalinux-v2025.1-final-installer.run"
 echo "   mkdir -p ~/xilinx/petalinux"
-echo "   ./petalinux-v2024.1-final-installer.run -d ~/xilinx/petalinux"
+echo "   ./petalinux-v2025.1-final-installer.run -d ~/xilinx/petalinux"
 echo ""
 echo "4. Depois de instalar, source o ambiente:"
 echo "   source ~/xilinx/petalinux/settings.sh"
