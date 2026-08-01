@@ -172,5 +172,93 @@ def plot_overlay_l4b(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) ->
     eng.save_fig(fig, out_dir, eng._fig_name(case, "Overlay"))
 
 
+def _decimate(n: int, max_pts: int = 6000) -> slice:
+    step = max(1, n // max_pts)
+    return slice(None, None, step)
+
+
+def load_full_fpga_l4b(case: dict, campaign: Path) -> dict:
+    """Full FPGA capture (all samples), decimated, phase currents via Clarke
+    inversa. Mirrors results_explorer_app.py::_load_full_capture."""
+    hilbin_path = campaign / case["dir"] / "raw" / "capture.hilbin"
+    _, fpga, _ = H.parse_hilbin(hilbin_path)
+    fpga = H._clip_fpga(fpga)
+    n = fpga["t"].size
+    sl = _decimate(n)
+    ia, ib, ic = cc.inverse_clarke(fpga["ia"][sl], fpga["ib"][sl])
+    return {
+        "t": np.asarray(fpga["t"][sl], dtype=float),
+        "ia": np.asarray(ia, dtype=float),
+        "ib": np.asarray(ib, dtype=float),
+        "ic": np.asarray(ic, dtype=float),
+        "speed": np.asarray(fpga["speed"][sl], dtype=float),
+    }
+
+
+def load_full_psim_l4b(case: dict, repo_root: Path) -> dict:
+    """Full PSIM CSV export (all samples), decimated, phase currents via
+    Clarke inversa. Reuses psim_csv_to_npz.to_psim_channels with the full
+    [min,max] time range (i.e. no windowing)."""
+    df = psim_mod.load_psim_csv(repo_root / case["psim_csv"])
+    channels, _branch = psim_mod.to_psim_channels(df, float(df["Time"].min()), float(df["Time"].max()))
+    n = channels["psim_t"].size
+    sl = _decimate(n)
+    ia, ib, ic = cc.inverse_clarke(channels["psim_ia"][sl], channels["psim_ib"][sl])
+    return {
+        "t": np.asarray(channels["psim_t"][sl], dtype=float),
+        "ia": np.asarray(ia, dtype=float),
+        "ib": np.asarray(ib, dtype=float),
+        "ic": np.asarray(ic, dtype=float),
+        "speed": np.asarray(channels["psim_speed"][sl], dtype=float),
+    }
+
+
+def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root: Path) -> None:
+    """Janela completa: correntes de fase + velocidade, FPGA vs. PSIM, com
+    as janelas de partida/regime sombreadas (lidas de metrics.json)."""
+    fpga = load_full_fpga_l4b(case, campaign)
+    psim = load_full_psim_l4b(case, repo_root)
+
+    mj_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / "metrics.json"
+    wins: list[tuple[float, float, str, str]] = []
+    if mj_path.is_file():
+        mj = json.loads(mj_path.read_text())
+        for lbl, col in (("partida", eng.PHASE_COLORS[0]), ("regime", eng.PHASE_COLORS[2])):
+            w = mj.get(lbl, {}).get("window_s")
+            if w:
+                wins.append((w[0], w[1], lbl.capitalize(), col))
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+
+    ax = axes[0]
+    for dut_y, ref_y, color in zip((fpga["ia"], fpga["ib"], fpga["ic"]),
+                                     (psim["ia"], psim["ib"], psim["ic"]),
+                                     eng.PHASE_COLORS):
+        ax.plot(fpga["t"], dut_y, color=color, **eng.VHDL_STYLE)
+        ax.plot(psim["t"], ref_y, color=color, **eng.REF_STYLE)
+    ax.set_ylabel("Corrente [A]")
+    ax.set_title("Correntes de fase")
+
+    ax = axes[1]
+    ax.plot(fpga["t"], fpga["speed"], color=eng.COL_VHDL, **eng.VHDL_STYLE)
+    ax.plot(psim["t"], psim["speed"], color=eng.COL_C, **eng.REF_STYLE)
+    ax.set_ylabel(r"$\omega_{mec}$ [rad/s]")
+    ax.set_xlabel("Tempo [s]")
+
+    for a, b, _label, col in wins:
+        for panel in axes:
+            panel.axvspan(a, b, color=col, alpha=0.13)
+
+    handles = [
+        plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label="FPGA (real)"),
+        plt.Line2D([], [], color="black", **eng.REF_STYLE, label="PSIM (independente)"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=9,
+               bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle(f"{case['label']} — visão geral", y=1.0)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    eng.save_fig(fig, out_dir, f"{case['fig_prefix']}_{case['id']}_Overview")
+
+
 if __name__ == "__main__":
     pass
