@@ -260,5 +260,65 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
     eng.save_fig(fig, out_dir, f"{case['fig_prefix']}_{case['id']}_Overview")
 
 
+_L4B_LABELS = {"dut": "FPGA (real)", "ref": "PSIM (independente)"}
+
+CASES_L4B = [
+    {"id": "S0", "dir": "S0_l4", "label": "S0 — t$_{acc}$=1 s, vazio", "fig_prefix": "HIL_L4B",
+     "psim_csv": "extras/induction-motor-model/data/S0/S0_1us_trapezoidal.csv", "labels": _L4B_LABELS},
+    {"id": "A1", "dir": "A1_l4", "label": "A1 — t$_{acc}$=0,5 s, vazio", "fig_prefix": "HIL_L4B",
+     "psim_csv": "extras/induction-motor-model/data/AX/A1_1us.csv", "labels": _L4B_LABELS},
+    {"id": "A3", "dir": "A3_l4", "label": "A3 — t$_{acc}$=1 s, carga leve", "fig_prefix": "HIL_L4B",
+     "psim_csv": "extras/induction-motor-model/data/AX/A3_1us.csv", "labels": _L4B_LABELS},
+    {"id": "A5", "dir": "A5_l4", "label": "A5 — t$_{acc}$=5 s, vazio", "fig_prefix": "HIL_L4B",
+     "psim_csv": "extras/induction-motor-model/data/AX/A5_1us.csv", "labels": _L4B_LABELS},
+    {"id": "B1", "dir": "B1_l4", "label": "B1 — degrau 0,25→0,75 T$_n$", "fig_prefix": "HIL_L4B",
+     "psim_csv": "extras/induction-motor-model/data/BX/B1_500ns.csv", "labels": _L4B_LABELS},
+    {"id": "B2", "dir": "B2_l4", "label": "B2 — degrau 0,50→1,00 T$_n$", "fig_prefix": "HIL_L4B",
+     "psim_csv": "extras/induction-motor-model/data/BX/B2_500ns.csv", "labels": _L4B_LABELS},
+]
+
+
+def generate_case_l4b(case: dict, out_dir: Path, campaign: Path, repo_root: Path) -> dict:
+    metrics: dict[str, dict] = {}
+    plot_full_overview_l4b(case, out_dir, campaign, repo_root)
+    for seg in ("partida", "regime"):
+        npz_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / f"{seg}.npz"
+        if not npz_path.is_file():
+            continue
+        t_ms, data = load_l4b_segment(case, seg, campaign)
+        seg_case = _seg_case(case, seg)
+        plot_overlay_l4b(t_ms, data, seg_case, out_dir)
+        eng.plot_lissajous(t_ms, data, seg_case, out_dir)
+        eng.plot_residual(t_ms, data, seg_case, out_dir)
+        metrics[seg] = compute_metrics_l4b(data)
+    print(f"[ok] {case['id']}: figuras L4-B em {out_dir}")
+    return metrics
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Gera figuras L4-B (FPGA real vs PSIM independente).")
+    ap.add_argument("--campaign", type=Path,
+                     default=eng.REPO_ROOT / "verification/results/2026-07-25_campaign_l4_final")
+    ap.add_argument("--out", type=Path,
+                     default=eng.REPO_ROOT / "docs/results-chapter/figures/l4b")
+    ap.add_argument("--tables-out", type=Path,
+                     default=eng.REPO_ROOT / "docs/results-chapter/tables")
+    ap.add_argument("--case", action="append", choices=[c["id"] for c in CASES_L4B],
+                     help="ids a gerar (default: todos)")
+    args = ap.parse_args(argv)
+
+    selected = [c for c in CASES_L4B if not args.case or c["id"] in args.case]
+    all_metrics: dict[str, dict] = {}
+    for case in selected:
+        all_metrics[case["id"]] = generate_case_l4b(case, args.out, args.campaign, eng.REPO_ROOT)
+
+    args.tables_out.mkdir(parents=True, exist_ok=True)
+    (args.tables_out / "l4b_metricas.tex").write_text(render_l4b_table(all_metrics), encoding="utf-8")
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "l4b_metrics.json").write_text(json.dumps(all_metrics, indent=2))
+    print(f"Tabela gerada em {args.tables_out / 'l4b_metricas.tex'}")
+    return 0
+
+
 if __name__ == "__main__":
-    pass
+    raise SystemExit(main())
