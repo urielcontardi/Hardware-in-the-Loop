@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from l4b_figures import _overlap_mask_and_grid, load_l4b_segment
+from l4b_figures import _overlap_mask_and_grid, compute_metrics_l4b, load_l4b_segment
 
 
 def test_overlap_mask_and_grid_clips_to_shorter_series():
@@ -25,3 +25,33 @@ def test_load_l4b_segment_a3_regime_has_expected_shape_and_units():
         assert data[key].shape == t_ms.shape
     # sanity: speeds should be in the same ballpark (both near sync ~187 rad/s in regime)
     assert abs(float(np.mean(data["vhdl_speed"])) - float(np.mean(data["ref_speed"]))) < 5.0
+
+
+def test_compute_metrics_l4b_zero_for_identical_series():
+    data = {
+        "vhdl_i_alpha": np.array([1.0, 2.0, 3.0, 4.0]),
+        "vhdl_i_beta": np.array([-1.0, 0.0, 1.0, 2.0]),
+        "vhdl_speed": np.array([100.0, 101.0, 102.0, 103.0]),
+        "ref_i_alpha": np.array([1.0, 2.0, 3.0, 4.0]),
+        "ref_i_beta": np.array([-1.0, 0.0, 1.0, 2.0]),
+        "ref_speed": np.array([100.0, 101.0, 102.0, 103.0]),
+    }
+    m = compute_metrics_l4b(data)
+    assert m["nrmse_i_alpha_pct"] == 0.0
+    assert m["nrmse_i_beta_pct"] == 0.0
+    assert m["mae_speed_rad_s"] == 0.0
+
+
+def test_compute_metrics_l4b_nonzero_for_offset_series():
+    data = {
+        "vhdl_i_alpha": np.array([1.0, 2.0, 3.0, 4.0]),
+        "vhdl_i_beta": np.array([-1.0, 0.0, 1.0, 2.0]),
+        "vhdl_speed": np.array([100.0, 101.0, 102.0, 103.0]),
+        "ref_i_alpha": np.array([1.0, 2.0, 3.0, 4.0]) + 1.0,
+        "ref_i_beta": np.array([-1.0, 0.0, 1.0, 2.0]),
+        "ref_speed": np.array([100.0, 101.0, 102.0, 103.0]) + 2.0,
+    }
+    m = compute_metrics_l4b(data)
+    assert m["nrmse_i_alpha_pct"] > 0.0
+    assert m["nrmse_i_beta_pct"] == 0.0
+    assert m["mae_speed_rad_s"] == 2.0

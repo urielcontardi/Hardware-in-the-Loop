@@ -68,5 +68,26 @@ def load_l4b_segment(case: dict, seg: str, campaign: Path) -> tuple[np.ndarray, 
     return t_ms, data
 
 
+def _nrmse_pct(dut: np.ndarray, ref: np.ndarray) -> float:
+    """RMSE(dut-ref) normalized by the peak-to-peak range of ref, as a percentage."""
+    rmse = float(np.sqrt(np.mean((dut - ref) ** 2)))
+    span = float(np.ptp(ref))
+    return 100.0 * rmse / span if span > 0 else float("nan")
+
+
+def _mae(dut: np.ndarray, ref: np.ndarray) -> float:
+    return float(np.mean(np.abs(dut - ref)))
+
+
+def compute_metrics_l4b(data: dict) -> dict[str, float]:
+    """NRMSE (%) for i_alpha/i_beta, MAE for speed. No flux metric: the PSIM
+    native motor block doesn't expose rotor flux."""
+    return {
+        "nrmse_i_alpha_pct": _nrmse_pct(data["vhdl_i_alpha"], data["ref_i_alpha"]),
+        "nrmse_i_beta_pct": _nrmse_pct(data["vhdl_i_beta"], data["ref_i_beta"]),
+        "mae_speed_rad_s": _mae(data["vhdl_speed"], data["ref_speed"]),
+    }
+
+
 if __name__ == "__main__":
     pass
