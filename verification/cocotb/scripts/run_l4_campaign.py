@@ -35,14 +35,17 @@ FREQ_HZ = 60.0
 # Same parameters as verification/results/2026-07-04_campaign_03 (manifest.json
 # + metrics.json), so L4 is directly comparable to the existing L2/L3 numbers.
 SCENARIOS = {
-    "S0": dict(group="sanity", t_acc_s=1.0, tload_nm=0.0, duration_s=2.0),
-    "A1": dict(group="partida_aceleracao", t_acc_s=0.5, tload_nm=0.0, duration_s=0.5),
-    "A3": dict(group="partida_aceleracao", t_acc_s=1.0, tload_nm=58.3568124670283, duration_s=1.0),
-    "A5": dict(group="partida_aceleracao", t_acc_s=5.0, tload_nm=0.0, duration_s=5.0),
+    # duration_s deve dar >= 2 s de regime estacionario APOS o fim da rampa (t_acc),
+    # senao a janela de regime (ultimos 0,5 s) cai sobre o rabo da rampa e infla o
+    # NRMSE (ver investigacao do A5). Casos de degrau ja tem regime pos-degrau.
+    "S0": dict(group="sanity", t_acc_s=1.0, tload_nm=0.0, duration_s=3.0),
+    "A1": dict(group="partida_aceleracao", t_acc_s=0.5, tload_nm=0.0, duration_s=2.5),
+    "A3": dict(group="partida_aceleracao", t_acc_s=1.0, tload_nm=58.3568124670283, duration_s=3.0),
+    "A5": dict(group="partida_aceleracao", t_acc_s=5.0, tload_nm=0.0, duration_s=7.0),
     "B1": dict(group="perturbacao_carga", t_acc_s=0.5, tload_nm=29.17840623351415,
-               tload_post_nm=87.53521870054244, t_step_s=0.6, duration_s=1.0),
+               tload_post_nm=87.53521870054244, t_step_s=0.6, duration_s=1.5),
     "B2": dict(group="perturbacao_carga", t_acc_s=0.5, tload_nm=58.3568124670283,
-               tload_post_nm=116.7136249340566, t_step_s=0.6, duration_s=1.0),
+               tload_post_nm=116.7136249340566, t_step_s=0.6, duration_s=1.5),
 }
 
 TAIL_BUFFER_S = 0.15   # extra capture time past nominal duration
