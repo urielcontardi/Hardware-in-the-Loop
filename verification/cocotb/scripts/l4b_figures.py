@@ -146,12 +146,19 @@ def plot_overlay_l4b(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) ->
 
     fig, axes = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
 
+    dut_label, ref_label = eng._labels(case)
+    handles = [
+        plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label=dut_label),
+        plt.Line2D([], [], color="black", **eng.REF_STYLE, label=ref_label),
+    ]
+
     ax = axes[0]
     for dut_y, ref_y, color in zip((dut_ia, dut_ib, dut_ic), (ref_ia, ref_ib, ref_ic), eng.PHASE_COLORS):
         ax.plot(t_s, dut_y, color=color, **eng.VHDL_STYLE)
         ax.plot(t_s, ref_y, color=color, **eng.REF_STYLE)
     ax.set_ylabel("Corrente [A]")
-    ax.set_title(f"{case['label']} — correntes de fase")
+    ax.set_title("Correntes de fase")
+    ax.legend(handles=handles, loc="best", fontsize=8, framealpha=0.9)
 
     ax = axes[1]
     ax.plot(t_s, data["vhdl_speed"], color=eng.COL_VHDL, **eng.VHDL_STYLE)
@@ -159,16 +166,7 @@ def plot_overlay_l4b(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) ->
     ax.set_ylabel(r"$\omega_{mec}$ [rad/s]")
     ax.set_xlabel("Tempo [s]")
 
-    dut_label, ref_label = eng._labels(case)
-    handles = [
-        plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label=dut_label),
-        plt.Line2D([], [], color="black", **eng.REF_STYLE, label=ref_label),
-    ]
-    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=9,
-               bbox_to_anchor=(0.5, -0.02))
-    fig.suptitle(f"{case['label']}", y=1.0)
-    axes[0].set_title("Correntes de fase")
-    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    fig.tight_layout()
     eng.save_fig(fig, out_dir, eng._fig_name(case, "Overlay"))
 
 
@@ -219,6 +217,15 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
     fpga = load_full_fpga_l4b(case, campaign)
     psim = load_full_psim_l4b(case, repo_root)
 
+    # Trunca as duas series no menor alcance comum -- sem isso, a serie mais
+    # longa (normalmente a FPGA) desenha uma "cauda" sem nada pra comparar,
+    # o que so ocupa espaco e pode confundir o leitor.
+    t_shared_max = min(float(fpga["t"].max()), float(psim["t"].max()))
+    fpga_keep = fpga["t"] <= t_shared_max
+    psim_keep = psim["t"] <= t_shared_max
+    fpga = {k: v[fpga_keep] for k, v in fpga.items()}
+    psim = {k: v[psim_keep] for k, v in psim.items()}
+
     mj_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / "metrics.json"
     wins: list[tuple[float, float, str, str]] = []
     if mj_path.is_file():
@@ -230,6 +237,11 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
 
     fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
 
+    handles = [
+        plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label="FPGA (real)"),
+        plt.Line2D([], [], color="black", **eng.REF_STYLE, label="PSIM (independente)"),
+    ]
+
     ax = axes[0]
     for dut_y, ref_y, color in zip((fpga["ia"], fpga["ib"], fpga["ic"]),
                                      (psim["ia"], psim["ib"], psim["ic"]),
@@ -238,6 +250,7 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
         ax.plot(psim["t"], ref_y, color=color, **eng.REF_STYLE)
     ax.set_ylabel("Corrente [A]")
     ax.set_title("Correntes de fase")
+    ax.legend(handles=handles, loc="best", fontsize=8, framealpha=0.9)
 
     ax = axes[1]
     ax.plot(fpga["t"], fpga["speed"], color=eng.COL_VHDL, **eng.VHDL_STYLE)
@@ -249,14 +262,7 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
         for panel in axes:
             panel.axvspan(a, b, color=col, alpha=0.13)
 
-    handles = [
-        plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label="FPGA (real)"),
-        plt.Line2D([], [], color="black", **eng.REF_STYLE, label="PSIM (independente)"),
-    ]
-    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=9,
-               bbox_to_anchor=(0.5, -0.02))
-    fig.suptitle(f"{case['label']} — visão geral", y=1.0)
-    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    fig.tight_layout()
     eng.save_fig(fig, out_dir, f"{case['fig_prefix']}_{case['id']}_Overview")
 
 
