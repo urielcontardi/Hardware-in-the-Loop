@@ -89,5 +89,42 @@ def compute_metrics_l4b(data: dict) -> dict[str, float]:
     }
 
 
+def _fmt_pct(x: float) -> str:
+    return f"{x:.2f}\\%"
+
+
+def _fmt_sci(x: float) -> str:
+    return f"{x:.3g}"
+
+
+def render_l4b_table(all_metrics: dict[str, dict[str, dict[str, float]]]) -> str:
+    """Table-body fragment only (no \\begin{table}/\\caption/\\label wrapper --
+    those are hand-written in 4-Resultados.tex, matching tab:l4-metricas'
+    style; see chapter_tables.py::_render_metricas_table for the sibling
+    pattern this mirrors)."""
+    lines = [
+        "\\begin{tabular}{l" + "c" * 6 + "}",
+        "\\toprule",
+        " & \\multicolumn{3}{c}{Partida} & \\multicolumn{3}{c}{Regime} \\\\",
+        "Caso & $i_\\alpha$ [\\%] & $i_\\beta$ [\\%] & $\\omega$ [rad/s] "
+        "& $i_\\alpha$ [\\%] & $i_\\beta$ [\\%] & $\\omega$ [rad/s] \\\\",
+        "\\midrule",
+    ]
+    for case_id, windows in all_metrics.items():
+        p = windows.get("partida", {})
+        r = windows.get("regime", {})
+        cells = [
+            _fmt_pct(p.get("nrmse_i_alpha_pct", float("nan"))),
+            _fmt_pct(p.get("nrmse_i_beta_pct", float("nan"))),
+            _fmt_sci(p.get("mae_speed_rad_s", float("nan"))),
+            _fmt_pct(r.get("nrmse_i_alpha_pct", float("nan"))),
+            _fmt_pct(r.get("nrmse_i_beta_pct", float("nan"))),
+            _fmt_sci(r.get("mae_speed_rad_s", float("nan"))),
+        ]
+        lines.append(f"{case_id} & " + " & ".join(cells) + " \\\\")
+    lines += ["\\bottomrule", "\\end{tabular}", ""]
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     pass

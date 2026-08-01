@@ -2,7 +2,12 @@ from pathlib import Path
 
 import numpy as np
 
-from l4b_figures import _overlap_mask_and_grid, compute_metrics_l4b, load_l4b_segment
+from l4b_figures import (
+    _overlap_mask_and_grid,
+    compute_metrics_l4b,
+    load_l4b_segment,
+    render_l4b_table,
+)
 
 
 def test_overlap_mask_and_grid_clips_to_shorter_series():
@@ -55,3 +60,16 @@ def test_compute_metrics_l4b_nonzero_for_offset_series():
     assert m["nrmse_i_alpha_pct"] > 0.0
     assert m["nrmse_i_beta_pct"] == 0.0
     assert m["mae_speed_rad_s"] == 2.0
+
+
+def test_render_l4b_table_has_expected_structure():
+    all_metrics = {
+        "S0": {"partida": {"nrmse_i_alpha_pct": 1.23, "nrmse_i_beta_pct": 2.34, "mae_speed_rad_s": 0.01},
+               "regime": {"nrmse_i_alpha_pct": 0.5, "nrmse_i_beta_pct": 0.6, "mae_speed_rad_s": 0.001}},
+    }
+    tex = render_l4b_table(all_metrics)
+    assert tex.startswith("\\begin{tabular}")
+    assert tex.rstrip().endswith("\\end{tabular}")
+    assert "S0 &" in tex
+    assert "1.23\\%" in tex
+    assert "\\toprule" in tex and "\\bottomrule" in tex
