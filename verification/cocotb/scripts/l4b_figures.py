@@ -126,5 +126,51 @@ def render_l4b_table(all_metrics: dict[str, dict[str, dict[str, float]]]) -> str
     return "\n".join(lines)
 
 
+def _seg_case(case: dict, seg: str) -> dict:
+    """Per-segment copy of a case dict: fig_id becomes '<Id>_<Partida|Regime>'
+    so eng._fig_name produces <fig_prefix>_<Id>_<Partida|Regime>_<Kind> file
+    names, matching the existing HIL_L4_<Caso>_<Partida|Regime>_Overlay.pdf
+    convention."""
+    seg_case = dict(case)
+    seg_case["fig_id"] = f"{case['id']}_{seg.capitalize()}"
+    return seg_case
+
+
+def plot_overlay_l4b(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
+    """Correntes de fase (a/b/c, via Clarke inversa) + velocidade, FPGA
+    (vhdl) vs. PSIM (ref) sobrepostos. Sem painel de fluxo -- PSIM nativo nao
+    expoe fluxo do rotor."""
+    dut_ia, dut_ib, dut_ic = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
+    ref_ia, ref_ib, ref_ic = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
+    t_s = t_ms / 1000.0
+
+    fig, axes = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+
+    ax = axes[0]
+    for dut_y, ref_y, color in zip((dut_ia, dut_ib, dut_ic), (ref_ia, ref_ib, ref_ic), eng.PHASE_COLORS):
+        ax.plot(t_s, dut_y, color=color, **eng.VHDL_STYLE)
+        ax.plot(t_s, ref_y, color=color, **eng.REF_STYLE)
+    ax.set_ylabel("Corrente [A]")
+    ax.set_title(f"{case['label']} — correntes de fase")
+
+    ax = axes[1]
+    ax.plot(t_s, data["vhdl_speed"], color=eng.COL_VHDL, **eng.VHDL_STYLE)
+    ax.plot(t_s, data["ref_speed"], color=eng.COL_C, **eng.REF_STYLE)
+    ax.set_ylabel(r"$\omega_{mec}$ [rad/s]")
+    ax.set_xlabel("Tempo [s]")
+
+    dut_label, ref_label = eng._labels(case)
+    handles = [
+        plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label=dut_label),
+        plt.Line2D([], [], color="black", **eng.REF_STYLE, label=ref_label),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=9,
+               bbox_to_anchor=(0.5, -0.02))
+    fig.suptitle(f"{case['label']}", y=1.0)
+    axes[0].set_title("Correntes de fase")
+    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    eng.save_fig(fig, out_dir, eng._fig_name(case, "Overlay"))
+
+
 if __name__ == "__main__":
     pass
