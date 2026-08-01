@@ -44,5 +44,29 @@ def _overlap_mask_and_grid(fpga_t: np.ndarray, psim_t: np.ndarray) -> tuple[np.n
     return mask, fpga_t[mask]
 
 
+def load_l4b_segment(case: dict, seg: str, campaign: Path) -> tuple[np.ndarray, dict]:
+    """Load one partida/regime .npz, align PSIM onto the FPGA/C time grid.
+
+    Returns (t_ms, data): data has vhdl_i_alpha/vhdl_i_beta/vhdl_speed
+    (FPGA, clipped to PSIM's coverage) and ref_i_alpha/ref_i_beta/ref_speed
+    (PSIM, interpolated onto the clipped FPGA grid).
+    """
+    npz_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / f"{seg}.npz"
+    d = np.load(npz_path)
+    fpga_t = np.asarray(d["fpga_t"], dtype=float)
+    psim_t = np.asarray(d["psim_t"], dtype=float)
+    mask, t_common = _overlap_mask_and_grid(fpga_t, psim_t)
+    data = {
+        "vhdl_i_alpha": np.asarray(d["fpga_ia"])[mask],
+        "vhdl_i_beta": np.asarray(d["fpga_ib"])[mask],
+        "vhdl_speed": np.asarray(d["fpga_speed"])[mask],
+        "ref_i_alpha": np.interp(t_common, psim_t, np.asarray(d["psim_ia"])),
+        "ref_i_beta": np.interp(t_common, psim_t, np.asarray(d["psim_ib"])),
+        "ref_speed": np.interp(t_common, psim_t, np.asarray(d["psim_speed"])),
+    }
+    t_ms = t_common * 1000.0
+    return t_ms, data
+
+
 if __name__ == "__main__":
     pass
