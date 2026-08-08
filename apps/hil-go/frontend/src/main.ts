@@ -2993,7 +2993,7 @@ function serializeHilbin(name: string, extraMeta: Partial<HilbinMeta> = {}): Arr
   const u8   = new Uint8Array(buf);
 
   "HILDATA".split('').forEach((c, i) => { u8[i] = c.charCodeAt(0); });
-  u8[7] = 1;
+  u8[7] = 2;
 
   view.setUint32(8, jsonSize, true);
   u8.set(metaBytes, 12);
@@ -3014,7 +3014,9 @@ function serializeHilbin(name: string, extraMeta: Partial<HilbinMeta> = {}): Arr
 
   view.setUint32(off, pwmEvents.length, true); off += 4;
   for (const ev of pwmEvents) {
-    view.setFloat32(off, ev.t_sec, true);
+    // Match the v2 format declared above: uint32 run-local clock cycles, not
+    // float32 seconds (see the matching note in deserializeHilbin).
+    view.setUint32(off, Math.max(0, Math.round(ev.t_sec * pwmClockHz)), true);
     view.setInt8(off + 4, ev.a);
     view.setInt8(off + 5, ev.b);
     view.setInt8(off + 6, ev.c);
@@ -3077,8 +3079,14 @@ function deserializeHilbin(buf: ArrayBuffer): { name: string; date: string; samp
   }
 
   const pwmCount = view.getUint32(off, true); off += 4;
+  // v1 files store the PWM timestamp as float32 seconds; v2 (current) stores
+  // it as a uint32 count of run-local hardware clock cycles (see the format
+  // note in internal/record/recorder.go). The record is 8 bytes wide either
+  // way, so the JSON meta.version is what tells us how to read the first 4.
+  const pwmFormatV2 = meta.version >= 2;
+  const pwmClockHz  = typeof meta.clock_hz === "number" && meta.clock_hz > 0 ? meta.clock_hz : 100_000_000;
   for (let i = 0; i < pwmCount; i++) {
-    const t_sec = view.getFloat32(off,     true);
+    const t_sec = pwmFormatV2 ? view.getUint32(off, true) / pwmClockHz : view.getFloat32(off, true);
     const a     = view.getInt8(off + 4);
     const b     = view.getInt8(off + 5);
     const c     = view.getInt8(off + 6);
