@@ -3624,6 +3624,7 @@ function buildRunCard(run: RunMeta): HTMLElement {
       <input class="run-select" type="checkbox" aria-label="Select ${run.name}" />
     </label>
     <div class="run-card-body run-btn-load" title="Click to load and view" style="cursor:pointer">
+      <div class="run-card-spinner" aria-hidden="true"></div>
       <div class="run-card-name">${label}</div>
       <div class="run-card-meta">
         <span class="run-card-time" title="${absTime}">${relTime}</span>
@@ -3641,6 +3642,8 @@ function buildRunCard(run: RunMeta): HTMLElement {
   card.querySelector<HTMLInputElement>(".run-select")!.addEventListener("change", updateRunSelectionState);
 
   card.querySelector<HTMLElement>(".run-btn-load")!.addEventListener("click", async () => {
+    if (card.classList.contains("run-card-loading")) return;
+    card.classList.add("run-card-loading");
     try {
       const buf = await fetchRunBytes(run.name);
       const meta = deserializeHilbin(buf);
@@ -3650,6 +3653,8 @@ function buildRunCard(run: RunMeta): HTMLElement {
       setStatus(`Loaded: ${meta.name} (${meta.sampleCount.toLocaleString()} samples)`, "ok");
     } catch (e) {
       setStatus(`Load failed: ${e}`, "error");
+    } finally {
+      card.classList.remove("run-card-loading");
     }
   });
 

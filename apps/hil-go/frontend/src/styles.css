@@ -1655,6 +1655,22 @@ body {
 }
 .run-card-body:hover { background: rgba(79, 195, 247, 0.07); }
 
+.run-card-spinner {
+  display: none;
+  position: absolute;
+  top: 9px;
+  right: 8px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(33, 150, 212, .22);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: run-card-spin .7s linear infinite;
+}
+.run-card-loading .run-card-spinner { display: block; }
+.run-card-loading .run-card-body { opacity: .55; pointer-events: none; }
+@keyframes run-card-spin { to { transform: rotate(360deg); } }
+
 .run-card-actions {
   grid-column: 2;
   display: flex;
