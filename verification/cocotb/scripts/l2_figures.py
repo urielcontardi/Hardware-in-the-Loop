@@ -233,6 +233,16 @@ def save_fig(fig, out_dir: Path, name: str) -> None:
     plt.close(fig)
 
 
+def _display_mask(t_ms: np.ndarray, case: dict) -> np.ndarray:
+    """Recorta somente a janela informativa, sem alterar as métricas."""
+    window = case.get("display_window_ms")
+    if not window:
+        return np.ones(len(t_ms), dtype=bool)
+    a_ms, b_ms = window
+    mask = (np.asarray(t_ms) >= a_ms) & (np.asarray(t_ms) <= b_ms)
+    return mask if np.any(mask) else np.ones(len(t_ms), dtype=bool)
+
+
 # ── Plots ─────────────────────────────────────────────────────────────────────
 COL_TLOAD = "#000000"
 
@@ -243,16 +253,17 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
     t_step_s)`), um 4o painel com o valor de T_L(t) aplicado — assim o degrau
     fica com um numero (N.m) visivel, em vez de so uma faixa sombreada."""
     dut, ref = _labels(case)
-    t = t_ms / 1000.0  # s
-    vhdl_i = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
-    ref_i = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
+    show = _display_mask(t_ms, case)
+    t = t_ms[show] / 1000.0  # s
+    vhdl_i = tuple(np.asarray(x)[show] for x in cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"]))
+    ref_i = tuple(np.asarray(x)[show] for x in cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"]))
 
     def mag(a, b):
         a, b = np.asarray(a), np.asarray(b)
         return np.sqrt(a ** 2 + b ** 2)
 
-    vhdl_flux = mag(data["vhdl_flux_alpha"], data["vhdl_flux_beta"])
-    ref_flux = mag(data["ref_flux_alpha"], data["ref_flux_beta"])
+    vhdl_flux = mag(np.asarray(data["vhdl_flux_alpha"])[show], np.asarray(data["vhdl_flux_beta"])[show])
+    ref_flux = mag(np.asarray(data["ref_flux_alpha"])[show], np.asarray(data["ref_flux_beta"])[show])
 
     tload_step = case.get("tload_step")
     n_rows = 4 if tload_step else 3
@@ -271,8 +282,8 @@ def plot_overlay(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> Non
     axes[1].set_ylabel(r"$|\psi_r|$ [Wb]")
     axes[1].legend(loc="upper right", fontsize=8)
 
-    axes[2].plot(t, np.asarray(data["vhdl_speed"]), color=COL_VHDL, **VHDL_STYLE, label=dut)
-    axes[2].plot(t, np.asarray(data["ref_speed"]), color=COL_C, **REF_STYLE, label=ref)
+    axes[2].plot(t, np.asarray(data["vhdl_speed"])[show], color=COL_VHDL, **VHDL_STYLE, label=dut)
+    axes[2].plot(t, np.asarray(data["ref_speed"])[show], color=COL_C, **REF_STYLE, label=ref)
     axes[2].set_ylabel(r"$\omega$ [rad/s]")
     axes[2].legend(loc="upper right", fontsize=8)
 
@@ -308,11 +319,16 @@ def _subsample(n: int, target: int = 5000) -> slice:
 def plot_lissajous(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
     """Trajetoria espaco-vetorial i_beta x i_alpha (DUT vs ref)."""
     dut, ref = _labels(case)
-    s = _subsample(len(t_ms))
+    show = _display_mask(t_ms, case)
+    dut_alpha = np.asarray(data["vhdl_i_alpha"])[show]
+    dut_beta = np.asarray(data["vhdl_i_beta"])[show]
+    ref_alpha = np.asarray(data["ref_i_alpha"])[show]
+    ref_beta = np.asarray(data["ref_i_beta"])[show]
+    s = _subsample(len(dut_alpha))
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.plot(np.asarray(data["vhdl_i_alpha"])[s], np.asarray(data["vhdl_i_beta"])[s],
+    ax.plot(dut_alpha[s], dut_beta[s],
             color=COL_VHDL, label=dut, **VHDL_STYLE)
-    ax.plot(np.asarray(data["ref_i_alpha"])[s], np.asarray(data["ref_i_beta"])[s],
+    ax.plot(ref_alpha[s], ref_beta[s],
             color=COL_C, label=ref, **REF_STYLE)
     ax.set_xlabel(r"$i_\alpha$ [A]")
     ax.set_ylabel(r"$i_\beta$ [A]")
@@ -360,9 +376,10 @@ def plot_phase_zoom(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> 
 
 def plot_residual(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> None:
     """Traco de erro epsilon(t)=VHDL-C: correntes de fase e velocidade."""
-    t = t_ms / 1000.0
-    vhdl_i = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
-    ref_i = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
+    show = _display_mask(t_ms, case)
+    t = t_ms[show] / 1000.0
+    vhdl_i = tuple(np.asarray(x)[show] for x in cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"]))
+    ref_i = tuple(np.asarray(x)[show] for x in cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"]))
     labels = ("$\\varepsilon_{i_a}$", "$\\varepsilon_{i_b}$", "$\\varepsilon_{i_c}$")
 
     fig, axes = plt.subplots(2, 1, figsize=(7, 5), sharex=True)
@@ -375,7 +392,7 @@ def plot_residual(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) -> No
     axes[0].set_title(f"{_lvl(case)} — {case['label']}: erro {dut} − {ref}")
     axes[0].legend(loc="upper right", ncol=3, fontsize=8)
 
-    err_w = np.asarray(data["vhdl_speed"]) - np.asarray(data["ref_speed"])
+    err_w = np.asarray(data["vhdl_speed"])[show] - np.asarray(data["ref_speed"])[show]
     axes[1].plot(t, err_w, color=COL_ERR_SPEED, linewidth=1.0, label=r"$\varepsilon_\omega$")
     axes[1].axhline(0.0, color="0.5", linewidth=0.6)
     axes[1].set_ylabel("Erro veloc. [rad/s]")

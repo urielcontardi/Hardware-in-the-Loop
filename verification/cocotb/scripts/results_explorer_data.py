@@ -34,6 +34,10 @@ TIMESERIES_CSV_CANDIDATES = [
 # <run_dir>/capture/, and split the capture into partida/regime windows,
 # each its own .npz (fpga_*/cmod_* arrays) instead of a single flat CSV.
 NPZ_PREFIX_PAIR = ("fpga_", "cmod_")
+# Optional third series, injected by verification/cocotb/scripts/psim_csv_to_npz.py
+# when a PSIM run has been merged into an existing L4 npz (psim_* arrays,
+# alongside the fpga_*/cmod_* already there -- never required).
+NPZ_OPTIONAL_PREFIX = "psim_"
 
 
 @dataclass
@@ -134,6 +138,7 @@ class NpzChannelPair:
     suffix: str
     fpga_key: str
     cmod_key: str
+    psim_key: str | None = None
 
 
 def detect_npz_channel_pairs(keys: list[str]) -> list[NpzChannelPair]:
@@ -145,6 +150,10 @@ def detect_npz_channel_pairs(keys: list[str]) -> list[NpzChannelPair]:
             continue
         suffix = key[len(fpga_prefix):]
         cmod_key = f"{cmod_prefix}{suffix}"
-        if cmod_key in keyset:
-            pairs.append(NpzChannelPair(suffix=suffix, fpga_key=key, cmod_key=cmod_key))
+        if cmod_key not in keyset:
+            continue
+        psim_key = f"{NPZ_OPTIONAL_PREFIX}{suffix}"
+        if psim_key not in keyset or "psim_t" not in keyset:
+            psim_key = None
+        pairs.append(NpzChannelPair(suffix=suffix, fpga_key=key, cmod_key=cmod_key, psim_key=psim_key))
     return pairs

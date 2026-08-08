@@ -1,0 +1,12 @@
+services:
+  hil-results:
+    build:
+      context: ../..
+      dockerfile: verification/cocotb/Dockerfile.results
+    image: hil-results:local
+    container_name: hil-results
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8503:8503"
+    volumes:
+      - ../results:/app/verification/results:ro

@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import l2_figures as eng                # noqa: E402
 import chapter_common as cc              # noqa: E402
 import hilbin_vs_c as H                  # noqa: E402
+import l4_figures as l4                 # noqa: E402
 import psim_csv_to_npz as psim_mod       # noqa: E402
 
 
@@ -126,13 +127,18 @@ def render_l4b_table(all_metrics: dict[str, dict[str, dict[str, float]]]) -> str
     return "\n".join(lines)
 
 
-def _seg_case(case: dict, seg: str) -> dict:
+def _seg_case(case: dict, seg: str, t_ms: np.ndarray, tload: object = None) -> dict:
     """Per-segment copy of a case dict: fig_id becomes '<Id>_<Partida|Regime>'
     so eng._fig_name produces <fig_prefix>_<Id>_<Partida|Regime>_<Kind> file
     names, matching the existing HIL_L4_<Caso>_<Partida|Regime>_Overlay.pdf
     convention."""
     seg_case = dict(case)
     seg_case["fig_id"] = f"{case['id']}_{seg.capitalize()}"
+    if isinstance(tload, dict):
+        step_ms = float(tload["t_step_s"]) * 1000.0
+        seg_case["display_window_ms"] = ((step_ms - 100.0, step_ms) if seg == "partida" else (step_ms, step_ms + 100.0))
+    elif seg == "regime":
+        seg_case["display_window_ms"] = (float(t_ms[-1]) - 100.0, float(t_ms[-1]))
     return seg_case
 
 
@@ -140,11 +146,12 @@ def plot_overlay_l4b(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) ->
     """Correntes de fase (a/b/c, via Clarke inversa) + velocidade, FPGA
     (vhdl) vs. PSIM (ref) sobrepostos. Sem painel de fluxo -- PSIM nativo nao
     expoe fluxo do rotor."""
-    dut_ia, dut_ib, dut_ic = cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"])
-    ref_ia, ref_ib, ref_ic = cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"])
-    t_s = t_ms / 1000.0
+    show = eng._display_mask(t_ms, case)
+    dut_ia, dut_ib, dut_ic = (np.asarray(x)[show] for x in cc.inverse_clarke(data["vhdl_i_alpha"], data["vhdl_i_beta"]))
+    ref_ia, ref_ib, ref_ic = (np.asarray(x)[show] for x in cc.inverse_clarke(data["ref_i_alpha"], data["ref_i_beta"]))
+    t_s = t_ms[show] / 1000.0
 
-    fig, axes = plt.subplots(2, 1, figsize=(7, 6), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(7, 4.4), sharex=True)
 
     dut_label, ref_label = eng._labels(case)
     handles = [
@@ -161,8 +168,8 @@ def plot_overlay_l4b(t_ms: np.ndarray, data: dict, case: dict, out_dir: Path) ->
     ax.legend(handles=handles, loc="best", fontsize=8, framealpha=0.9)
 
     ax = axes[1]
-    ax.plot(t_s, data["vhdl_speed"], color=eng.COL_VHDL, **eng.VHDL_STYLE)
-    ax.plot(t_s, data["ref_speed"], color=eng.COL_C, **eng.REF_STYLE)
+    ax.plot(t_s, np.asarray(data["vhdl_speed"])[show], color=eng.COL_VHDL, **eng.VHDL_STYLE)
+    ax.plot(t_s, np.asarray(data["ref_speed"])[show], color=eng.COL_C, **eng.REF_STYLE)
     ax.set_ylabel(r"$\omega_{mec}$ [rad/s]")
     ax.set_xlabel("Tempo [s]")
 
@@ -226,6 +233,13 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
     fpga = {k: v[fpga_keep] for k, v in fpga.items()}
     psim = {k: v[psim_keep] for k, v in psim.items()}
 
+    focus = l4.OVERVIEW_FOCUS_S.get(case["id"])
+    if focus:
+        fm = (fpga["t"] >= focus[0]) & (fpga["t"] <= focus[1])
+        pm = (psim["t"] >= focus[0]) & (psim["t"] <= focus[1])
+        fpga = {k: v[fm] for k, v in fpga.items()}
+        psim = {k: v[pm] for k, v in psim.items()}
+
     mj_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / "metrics.json"
     wins: list[tuple[float, float, str, str]] = []
     if mj_path.is_file():
@@ -235,7 +249,7 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
             if w:
                 wins.append((w[0], w[1], lbl.capitalize(), col))
 
-    fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(8, 5.0), sharex=True)
 
     handles = [
         plt.Line2D([], [], color="black", **eng.VHDL_STYLE, label="FPGA (real)"),
@@ -249,7 +263,7 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
         ax.plot(fpga["t"], dut_y, color=color, **eng.VHDL_STYLE)
         ax.plot(psim["t"], ref_y, color=color, **eng.REF_STYLE)
     ax.set_ylabel("Corrente [A]")
-    ax.set_title("Correntes de fase")
+    ax.set_title(f"{case['label']}: transitório relevante")
     ax.legend(handles=handles, loc="best", fontsize=8, framealpha=0.9)
 
     ax = axes[1]
@@ -258,9 +272,14 @@ def plot_full_overview_l4b(case: dict, out_dir: Path, campaign: Path, repo_root:
     ax.set_ylabel(r"$\omega_{mec}$ [rad/s]")
     ax.set_xlabel("Tempo [s]")
 
+    t_lo, t_hi = float(fpga["t"][0]), float(fpga["t"][-1])
     for a, b, _label, col in wins:
+        lo, hi = max(a, t_lo), min(b, t_hi)
+        if lo >= hi:
+            continue
         for panel in axes:
-            panel.axvspan(a, b, color=col, alpha=0.13)
+            panel.axvspan(lo, hi, color=col, alpha=0.13)
+    axes[-1].set_xlim(t_lo, t_hi)
 
     fig.tight_layout()
     eng.save_fig(fig, out_dir, f"{case['fig_prefix']}_{case['id']}_Overview")
@@ -286,13 +305,15 @@ CASES_L4B = [
 
 def generate_case_l4b(case: dict, out_dir: Path, campaign: Path, repo_root: Path) -> dict:
     metrics: dict[str, dict] = {}
+    meta_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / "metrics.json"
+    tload = json.loads(meta_path.read_text()).get("tload") if meta_path.is_file() else None
     plot_full_overview_l4b(case, out_dir, campaign, repo_root)
     for seg in ("partida", "regime"):
         npz_path = campaign / case["dir"] / "l4_pwm_replay" / "capture" / f"{seg}.npz"
         if not npz_path.is_file():
             continue
         t_ms, data = load_l4b_segment(case, seg, campaign)
-        seg_case = _seg_case(case, seg)
+        seg_case = _seg_case(case, seg, t_ms, tload)
         plot_overlay_l4b(t_ms, data, seg_case, out_dir)
         eng.plot_lissajous(t_ms, data, seg_case, out_dir)
         eng.plot_residual(t_ms, data, seg_case, out_dir)

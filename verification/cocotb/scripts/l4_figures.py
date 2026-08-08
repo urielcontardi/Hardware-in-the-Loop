@@ -36,6 +36,11 @@ CASES_L4 = [
     {"id": "B2", "dir": "B2_l4", "label": "B2 — degrau 0,50→1,00 T$_n$"},
 ]
 
+OVERVIEW_FOCUS_S = {
+    "S0": (0.0, 1.4), "A1": (0.0, 0.9), "A3": (0.0, 1.4),
+    "A5": (0.0, 5.4), "B1": (0.35, 0.90), "B2": (0.35, 0.90),
+}
+
 
 def _npz_path(case: dict, seg: str, campaign: Path) -> Path:
     return campaign / case["dir"] / "l4_pwm_replay/capture" / f"{seg}.npz"
@@ -68,12 +73,16 @@ def load_segment(case: dict, seg: str, campaign: Path = CAMPAIGN_L4) -> tuple[np
     return t_ms, data
 
 
-def _seg_case(case: dict, seg: str, tload_step: tuple | None = None) -> dict:
+def _seg_case(case: dict, seg: str, t_ms: np.ndarray, tload_step: tuple | None = None) -> dict:
     c = {"id": case["id"], "tipo": "vf", "fig_prefix": "HIL_L4", "labels": _LAB,
          "fig_id": f"{case['id']}_{_SEG_NAME[seg]}",
          "label": f"{case['label']} · {_SEG_NAME[seg]}"}
     if tload_step:
         c["tload_step"] = tload_step
+        step_ms = tload_step[2] * 1000.0
+        c["display_window_ms"] = ((step_ms - 100.0, step_ms) if seg == "partida" else (step_ms, step_ms + 100.0))
+    elif seg == "regime":
+        c["display_window_ms"] = (float(t_ms[-1]) - 100.0, float(t_ms[-1]))
     return c
 
 
@@ -100,7 +109,7 @@ def generate_case_l4(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) ->
         if not _npz_path(case, seg, campaign).is_file():
             continue
         t_ms, data = load_segment(case, seg, campaign)
-        c = _seg_case(case, seg, tload_step)
+        c = _seg_case(case, seg, t_ms, tload_step)
         eng.plot_overlay(t_ms, data, c, out_dir)
         eng.plot_residual(t_ms, data, c, out_dir)
         if seg == "regime":
@@ -130,12 +139,15 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
     n = fpga["t"].size
     sl = slice(None, None, max(1, n // 4000))
     t = fpga["t"][sl]
+    focus = OVERVIEW_FOCUS_S.get(case["id"])
+    keep = ((t >= focus[0]) & (t <= focus[1])) if focus else np.ones(t.size, dtype=bool)
+    t = t[keep]
     # fpga["ia"]/["ib"] são, na verdade, i_alpha/i_beta (telemetria α/β da placa);
     # reconstrói as três fases físicas por Clarke inversa.
-    i_alpha, i_beta = fpga["ia"][sl], fpga["ib"][sl]
+    i_alpha, i_beta = fpga["ia"][sl][keep], fpga["ib"][sl][keep]
     ia, ib, ic = (np.asarray(x) for x in eng.cc.inverse_clarke(i_alpha, i_beta))
-    flux = np.sqrt(fpga["flux_a"][sl] ** 2 + fpga["flux_b"][sl] ** 2)
-    spd = fpga["speed"][sl]
+    flux = np.sqrt(fpga["flux_a"][sl][keep] ** 2 + fpga["flux_b"][sl][keep] ** 2)
+    spd = fpga["speed"][sl][keep]
 
     # janelas dos zooms (para sombrear), lidas do metrics.json
     wins = []
@@ -166,7 +178,7 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
     for k, (y, lbl) in enumerate(((ia, "$i_a$"), (ib, "$i_b$"), (ic, "$i_c$"))):
         axes[0].plot(t, y, color=eng.PHASE_COLORS[k], linewidth=0.7, label=lbl)
     axes[0].set_ylabel("Corrente [A]")
-    axes[0].set_title(f"L4 — {case['label']}: visão geral da captura (FPGA real)")
+    axes[0].set_title(f"L4 — {case['label']}: transitório relevante (FPGA real)")
     axes[1].plot(t, flux, color=eng.COL_VHDL, linewidth=0.9)
     axes[1].set_ylabel(r"$|\psi_r|$ [Wb]")
     axes[2].plot(t, spd, color=eng.COL_VHDL, linewidth=0.9)
@@ -185,9 +197,13 @@ def plot_full_overview(case: dict, out_dir: Path, campaign: Path = CAMPAIGN_L4) 
     axes[-1].set_xlabel("Tempo [s]")
 
     for (a, b, lbl, col) in wins:
+        lo, hi = max(a, float(t[0])), min(b, float(t[-1]))
+        if lo >= hi:
+            continue
         for ax in axes:
-            ax.axvspan(a, b, color=col, alpha=0.13)
-        axes[0].axvspan(a, b, color=col, alpha=0.13, label=lbl)
+            ax.axvspan(lo, hi, color=col, alpha=0.13)
+        axes[0].plot([], [], color=col, linewidth=8, alpha=0.3, label=lbl)
+    axes[-1].set_xlim(float(t[0]), float(t[-1]))
     if step_t is not None:
         for ax in axes:
             ax.axvline(step_t, color="black", linestyle="--", linewidth=1.1)

@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app/verification/cocotb
+
+COPY verification/cocotb/pyproject.toml verification/cocotb/uv.lock ./
+RUN uv sync --frozen --no-dev
+
+COPY verification/cocotb/scripts ./scripts
+COPY verification/cocotb/models ./models
+COPY verification/cocotb/.streamlit ./.streamlit
+
+EXPOSE 8503
+
+CMD ["uv", "run", "streamlit", "run", "scripts/results_presentation_app.py", \
+     "--server.port=8503", "--server.address=0.0.0.0", \
+     "--server.baseUrlPath=/results", "--server.headless=true"]
