@@ -822,6 +822,7 @@ func (s *server) handleSet(w http.ResponseWriter, r *http.Request) {
 	s.stateMu.Unlock()
 	if p.TorqueNm != nil {
 		s.recordLoadCommand(float64(*p.TorqueNm))
+		s.recorder.SetLoadNm(*p.TorqueNm)
 	}
 	if req.AttachUDP {
 		s.recv.Punch(ip, telemetryPort)
@@ -866,6 +867,9 @@ func (s *server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recorder.SetMetadata(s.captureMetadata(ip, status))
+	if status != nil {
+		s.recorder.SetLoadNm(status.TorqueNm)
+	}
 	s.recv.Punch(ip, telemetryPort)
 	s.pwmRecv.Punch(ip, pwmEventsPort)
 	writeJSON(w, http.StatusOK, stampBoardIP(ip, status))

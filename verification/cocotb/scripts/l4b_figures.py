@@ -90,6 +90,50 @@ def compute_metrics_l4b(data: dict) -> dict[str, float]:
     }
 
 
+def compute_aligned_metrics_l4b(data: dict, lag: int) -> dict[str, float]:
+    """Apply the electrical-current lag only to the other current component."""
+    def align(dut: np.ndarray, ref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if lag > 0:
+            return dut[lag:], ref[:-lag]
+        if lag < 0:
+            return dut[:lag], ref[-lag:]
+        return dut, ref
+
+    ia, ria = align(data["vhdl_i_alpha"], data["ref_i_alpha"])
+    ib, rib = align(data["vhdl_i_beta"], data["ref_i_beta"])
+    return {
+        "nrmse_i_alpha_pct": _nrmse_pct(ia, ria),
+        "nrmse_i_beta_pct": _nrmse_pct(ib, rib),
+    }
+
+
+def compute_fundamental_metrics_l4b(t_ms: np.ndarray, data: dict,
+                                    freq_hz: float = 60.0) -> dict[str, float]:
+    """Amplitude and phase of the regime fundamental from a sinusoidal LS fit."""
+    t_s = np.asarray(t_ms, dtype=float) / 1000.0
+    design = np.column_stack((
+        np.sin(2.0 * np.pi * freq_hz * t_s),
+        np.cos(2.0 * np.pi * freq_hz * t_s),
+        np.ones(t_s.size),
+    ))
+
+    def fit(signal: np.ndarray) -> tuple[float, float]:
+        coef = np.linalg.lstsq(design, np.asarray(signal, dtype=float), rcond=None)[0]
+        return float(np.hypot(coef[0], coef[1])), float(np.arctan2(coef[1], coef[0]))
+
+    amp_fpga, phase_fpga = fit(data["vhdl_i_alpha"])
+    amp_ref, phase_ref = fit(data["ref_i_alpha"])
+    phase_deg = float(np.degrees(phase_fpga - phase_ref))
+    phase_deg = (phase_deg + 180.0) % 360.0 - 180.0
+    return {
+        "frequency_hz": freq_hz,
+        "amplitude_fpga_A": amp_fpga,
+        "amplitude_ref_A": amp_ref,
+        "amplitude_delta_pct": 100.0 * (amp_fpga - amp_ref) / amp_ref,
+        "phase_delta_deg": phase_deg,
+    }
+
+
 def _fmt_pct(x: float) -> str:
     return f"{x:.2f}\\%"
 
@@ -292,7 +336,7 @@ CASES_L4B = [
      "psim_csv": "extras/induction-motor-model/data/S0/S0_1us_trapezoidal.csv", "labels": _L4B_LABELS},
     {"id": "A1", "dir": "A1_l4", "label": "A1 — t$_{acc}$=0,5 s, vazio", "fig_prefix": "HIL_L4B",
      "psim_csv": "extras/induction-motor-model/data/AX/A1_1us.csv", "labels": _L4B_LABELS},
-    {"id": "A3", "dir": "A3_l4", "label": "A3 — t$_{acc}$=1 s, carga leve", "fig_prefix": "HIL_L4B",
+    {"id": "A3", "dir": "A3_l4", "label": "A3 — t$_{acc}$=1 s, meia carga", "fig_prefix": "HIL_L4B",
      "psim_csv": "extras/induction-motor-model/data/AX/A3_1us.csv", "labels": _L4B_LABELS},
     {"id": "A5", "dir": "A5_l4", "label": "A5 — t$_{acc}$=5 s, vazio", "fig_prefix": "HIL_L4B",
      "psim_csv": "extras/induction-motor-model/data/AX/A5_1us.csv", "labels": _L4B_LABELS},
@@ -318,6 +362,24 @@ def generate_case_l4b(case: dict, out_dir: Path, campaign: Path, repo_root: Path
         eng.plot_lissajous(t_ms, data, seg_case, out_dir)
         eng.plot_residual(t_ms, data, seg_case, out_dir)
         metrics[seg] = compute_metrics_l4b(data)
+        # Métricas experimentais (mantém as acima intactas): mesma
+        # phase_analysis do L3 full-stack (lag por correlação cruzada +
+        # NRMSE e MAE brutos/alinhados), já que L4-B tem o
+        # mesmo risco de deriva de fase (integradores de ângulo
+        # independentes) e hoje não faz nenhum alinhamento antes de medir.
+        phase = eng.phase_analysis(
+            t_ms, data, window_s=(float(t_ms.min()) / 1000.0, float(t_ms.max()) / 1000.0))
+        # phase_analysis belongs to the L2/L3 pipeline and also returns
+        # RMS-normalized errors. L4-B uses range-normalized errors, so retain
+        # only its lag estimate here to avoid mixing both definitions in JSON.
+        metrics[seg]["phase"] = {
+            "phase_deg": phase["phase_deg"],
+            "lag_samples": phase["lag_samples"],
+        }
+        metrics[seg]["aligned"] = compute_aligned_metrics_l4b(
+            data, phase["lag_samples"])
+        if seg == "regime":
+            metrics[seg]["fundamental"] = compute_fundamental_metrics_l4b(t_ms, data)
     print(f"[ok] {case['id']}: figuras L4-B em {out_dir}")
     return metrics
 

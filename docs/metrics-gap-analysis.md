@@ -47,7 +47,7 @@ com uma evidência adicional e independente da NRMSE global.
 Ainda não incorporado à dissertação (`Mestrado_latex`) — só calculado e
 salvo aqui até decidir se entra no texto.
 
-## 1. Problema de rigor: "NRMSE" hoje são duas métricas diferentes com o mesmo nome
+## 1. Resolvido: normalizações de NRMSE explicitadas por nível
 
 - **L2/L3** (`verification/cocotb/tests/test_tim_solver_vf.py:351`,
   `test_top_hil.py`, `verification/cocotb/scripts/top_fullstack_mock.py`):
@@ -57,12 +57,11 @@ salvo aqui até decidir se entra no texto.
   `hilbin_vs_c.py`): `RMSE / (max(ref) - min(ref)) × 100` — normalizado pela
   faixa pico-a-pico, já em percentual.
 
-Consequência: comparar um NRMSE de L2/L3 com um de L4 hoje não é comparação
-direta, mesmo aparecendo lado a lado no dashboard, no plano e na dissertação.
-Nenhuma das duas implementações importa a outra — são cálculos duplicados de
-forma independente. **Prioridade sugerida: alta, e antes de reportar mais
-números novos**, porque cada resultado adicional escrito com a fórmula errada
-vira retrabalho depois.
+As duas normalizações foram mantidas porque respondem a avaliações distintas,
+mas passaram a ser identificadas sem ambiguidade: `NRMSE_RMS` em L2/L3 e
+`NRMSE_delta` em L4/L4-B. A dissertação define ambas as fórmulas e proíbe a
+comparação numérica direta entre elas. L4/L4-B complementam o erro ponto a
+ponto com amplitude fundamental, fase e grandezas mecânicas.
 
 ## 2. Métricas planejadas (`docs/experimental-validation-plan.md`, seção "Métricas") ausentes do pipeline reprodutível
 

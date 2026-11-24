@@ -35,7 +35,7 @@ _A = [
     ("A1", "A1_tacc0p5s_load000", "l2_vf_500ms_realts", "l3_top_pwm_replay_vf_500ms",
      "GrupoA_A1", r"A1 — $t_{acc}$=0,5 s, vazio", [(450.0, 500.0, "Regime", "#009E73")]),
     ("A3", "A3_tacc1s_load050", "l2_vf_1s_realts", "l3_top_pwm_replay_vf_1s",
-     "GrupoA_A3", r"A3 — $t_{acc}$=1 s, carga leve", [(900.0, 1000.0, "Regime", "#009E73")]),
+     "GrupoA_A3", r"A3 — $t_{acc}$=1 s, meia carga", [(900.0, 1000.0, "Regime", "#009E73")]),
     ("A5", "A5_tacc5s_load000", "l2_vf_5s_realts", "l3_top_pwm_replay_vf_5s",
      "GrupoA_A5", r"A5 — $t_{acc}$=5 s, vazio", [(4900.0, 5000.0, "Regime", "#009E73")]),
 ]

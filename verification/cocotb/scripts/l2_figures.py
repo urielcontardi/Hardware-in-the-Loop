@@ -133,10 +133,12 @@ def phase_drift_deg(data: dict) -> np.ndarray:
 
 def phase_analysis(t_ms: np.ndarray, data: dict, window_s: tuple | None = None,
                    f_hz: float = 60.0) -> dict[str, float]:
-    """Lag de fase (por correlação cruzada) e NRMSE bruto vs. alinhado numa janela.
+    """Lag por correlação e métricas brutas/alinhadas numa janela.
 
     Separa a parcela de erro que é só defasagem (removida ao alinhar) da parcela
-    de forma. `window_s` default = último quarto do registro (regime).
+    de forma. O atraso estimado em i_alpha é aplicado igualmente a todas as
+    grandezas, preservando o sincronismo físico entre os canais. `window_s`
+    default = último quarto do registro (regime).
     """
     t = np.asarray(t_ms, dtype=float) / 1000.0
     if window_s is None:
@@ -156,15 +158,43 @@ def phase_analysis(t_ms: np.ndarray, data: dict, window_s: tuple | None = None,
         return float(np.sqrt(np.mean((a_ - b_) ** 2)) / np.sqrt(np.mean(b_ ** 2)))
 
     n_raw = _n(v, r)
-    if lag > 0:
-        va, ra = v[lag:], r[:len(r) - lag]
-    elif lag < 0:
-        va, ra = v[:lag], r[-lag:]
-    else:
-        va, ra = v, r
+    def _align(dut_, ref_):
+        if lag > 0:
+            return dut_[lag:], ref_[:len(ref_) - lag]
+        if lag < 0:
+            return dut_[:lag], ref_[-lag:]
+        return dut_, ref_
+
+    va, ra = _align(v, r)
     n_aligned = _n(va, ra)
-    return {"phase_deg": phase_deg, "lag_samples": lag,
-            "nrmse_raw": n_raw, "nrmse_aligned": n_aligned}
+    out = {"phase_deg": phase_deg, "lag_samples": lag,
+           "nrmse_raw": n_raw, "nrmse_aligned": n_aligned,
+           "nrmse_i_alpha_raw": n_raw, "nrmse_i_alpha_aligned": n_aligned}
+
+    # Recalcula as demais métricas com o mesmo recorte e o mesmo atraso.
+    for sig in ("i_beta",):
+        dk, rk = f"vhdl_{sig}", f"ref_{sig}"
+        if dk in data and rk in data:
+            dut = np.asarray(data[dk], dtype=float)[m]
+            ref = np.asarray(data[rk], dtype=float)[m]
+            da, ra_ = _align(dut, ref)
+            out[f"nrmse_{sig}_raw"] = _n(dut, ref)
+            out[f"nrmse_{sig}_aligned"] = _n(da, ra_)
+    for sig in ("flux_alpha", "flux_beta"):
+        dk, rk = f"vhdl_{sig}", f"ref_{sig}"
+        if dk in data and rk in data:
+            dut = np.asarray(data[dk], dtype=float)[m]
+            ref = np.asarray(data[rk], dtype=float)[m]
+            da, ra_ = _align(dut, ref)
+            out[f"mae_{sig}_raw"] = float(np.mean(np.abs(dut - ref)))
+            out[f"mae_{sig}_aligned"] = float(np.mean(np.abs(da - ra_)))
+    # Speed has its own mechanical dynamics: report it only on the original
+    # physical time base, never shifted by an electrical-current phase lag.
+    if "vhdl_speed" in data and "ref_speed" in data:
+        dut = np.asarray(data["vhdl_speed"], dtype=float)[m]
+        ref = np.asarray(data["ref_speed"], dtype=float)[m]
+        out["mae_speed_raw"] = float(np.mean(np.abs(dut - ref)))
+    return out
 
 
 # ── Carregamento / gravação ───────────────────────────────────────────────────

@@ -30,7 +30,7 @@ SEGMENTS = ("partida", "regime")
 CASES_L4 = [
     {"id": "S0", "dir": "S0_l4", "label": "S0 — t$_{acc}$=1 s, vazio"},
     {"id": "A1", "dir": "A1_l4", "label": "A1 — t$_{acc}$=0,5 s, vazio"},
-    {"id": "A3", "dir": "A3_l4", "label": "A3 — t$_{acc}$=1 s, carga leve"},
+    {"id": "A3", "dir": "A3_l4", "label": "A3 — t$_{acc}$=1 s, meia carga"},
     {"id": "A5", "dir": "A5_l4", "label": "A5 — t$_{acc}$=5 s, vazio"},
     {"id": "B1", "dir": "B1_l4", "label": "B1 — degrau 0,25→0,75 T$_n$"},
     {"id": "B2", "dir": "B2_l4", "label": "B2 — degrau 0,50→1,00 T$_n$"},

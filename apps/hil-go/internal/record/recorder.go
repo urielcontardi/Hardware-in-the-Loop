@@ -90,6 +90,16 @@ type Recorder struct {
 	active        atomic.Bool
 	dropped       atomic.Uint64
 	written       atomic.Uint64
+	loadNm        atomic.Uint32 // float32 bits: commanded load torque stamped onto new samples (TL field)
+}
+
+// SetLoadNm updates the commanded load torque (N·m) stamped onto every
+// telemetry sample written from this point on. Safe for concurrent use;
+// callers set this whenever a "set torque_nm" command is issued so the TL
+// column in the .hilbin file reflects the load timeline, not just the value
+// at capture start.
+func (r *Recorder) SetLoadNm(v float32) {
+	r.loadNm.Store(math.Float32bits(v))
 }
 
 func New(dir string) *Recorder {
@@ -506,7 +516,8 @@ func (r *Recorder) writeBatch(b batch) {
 			continue
 		}
 		t := float32(float64(absCycles-r.baseAbsCycles) / clockHz)
-		values := [...]float32{t, s.Ia, s.Ib, s.FluxA, s.FluxB, s.Speed, 0}
+		tl := math.Float32frombits(r.loadNm.Load())
+		values := [...]float32{t, s.Ia, s.Ib, s.FluxA, s.FluxB, s.Speed, tl}
 		for _, value := range values {
 			binary.LittleEndian.PutUint32(buf[off:], math.Float32bits(value))
 			off += 4
